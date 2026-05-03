@@ -57,15 +57,33 @@ ExtractResult extract(const std::string& url,
   progress_start(url);
 
   std::string out_template = path_to_utf8(out_dir_path / "%(title)s.%(ext)s");
-  std::string fmt = opts.audio_format.empty() ? std::string("mp3") : opts.audio_format;
 
+  // Highest-quality default: -x without --audio-format leaves the
+  // audio stream in its source codec/container (m4a from YouTube
+  // DASH, opus from WebM, etc.). The user can re-encode in Lathe if
+  // they want a specific format. Passing an explicit audio_format
+  // still works — yt-dlp converts via ffmpeg post-extraction.
+  //
+  // -f bestaudio:
+  //   Explicit format selector. Without it, yt-dlp's defaults pick
+  //   the best video+audio merge which fails for -x mode on certain
+  //   signed-in accounts (YouTube serves DRM-protected combined
+  //   streams to logged-in users that yt-dlp can't decrypt).
+  // --js-runtimes deno --js-runtimes node:
+  //   YouTube's "n-parameter" challenge requires a JS runtime to
+  //   solve; without one yt-dlp only sees image-only formats for
+  //   signed-in users and fails format selection entirely. We try
+  //   deno first (yt-dlp's preferred), then Node — both pulled from
+  //   PATH. If neither is installed yt-dlp falls back gracefully.
   std::vector<std::string> argv = {
     ytdlp_path(),
     "--no-warnings",
     "--no-colors",
     "--newline",
     "-x",
-    "--audio-format", fmt,
+    "-f", "bestaudio",
+    "--js-runtimes", "deno",
+    "--js-runtimes", "node",
     "--ffmpeg-location", exe_dir(),
     "--progress-template",
     "download:LATCH_PROG\t%(progress._percent_str)s\t%(progress._speed_str)s\t%(progress._eta_str)s",
@@ -73,6 +91,10 @@ ExtractResult extract(const std::string& url,
     "--print", "after_move:LATCH_DONE\t%(filepath)s",
     "-o", out_template,
   };
+  if (!opts.audio_format.empty()) {
+    argv.push_back("--audio-format");
+    argv.push_back(opts.audio_format);
+  }
 
   if (opts.no_playlist) {
     argv.push_back("--no-playlist");
@@ -88,6 +110,23 @@ ExtractResult extract(const std::string& url,
   }
   if (opts.embed_thumbnail) {
     argv.push_back("--embed-thumbnail");
+  }
+  if (!opts.cookies_from_browser.empty()) {
+    argv.push_back("--cookies-from-browser");
+    argv.push_back(opts.cookies_from_browser);
+  }
+  if (!opts.section.empty()) {
+    // yt-dlp expects "*START-END" syntax for time-based sections.
+    // Re-encoding our own section string lets the GUI stay format-
+    // agnostic and pass plain "00:30-02:15".
+    argv.push_back("--download-sections");
+    argv.push_back(std::string("*") + opts.section);
+    // Without --force-keyframes-at-cuts, yt-dlp asks ffmpeg to slice
+    // at the requested times exactly which on YouTube often means
+    // re-encoding the input. The keyframe-snap variant is faster and
+    // good enough for sample-grabbing — the user can override by
+    // passing the raw section themselves if they need precision.
+    argv.push_back("--force-keyframes-at-cuts");
   }
   argv.push_back(url);
 

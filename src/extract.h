@@ -28,6 +28,17 @@ struct ExtractOptions {
   // yt-dlp --embed-thumbnail: writes the cover art into the output
   // (useful for mp3 / m4a / opus).
   bool        embed_thumbnail = false;
+  // yt-dlp --cookies-from-browser <browser>. Empty = don't pass.
+  // Workaround for sites (notably YouTube) that gate downloads behind
+  // bot-detection checks unless yt-dlp is sending a logged-in session
+  // cookie. Common values: chrome, firefox, edge, brave, safari, opera,
+  // chromium, vivaldi.
+  std::string cookies_from_browser;
+  // Time-range trim — passed straight to yt-dlp's --download-sections
+  // as "*<section>". Format is yt-dlp's own (HH:MM:SS-HH:MM:SS, or
+  // MM:SS-MM:SS, or seconds). Empty = full media. Useful for ripping a
+  // 90s clip from a 40-minute mix.
+  std::string section;
 };
 
 ExtractResult extract(const std::string& url,
