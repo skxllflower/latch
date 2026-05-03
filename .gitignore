@@ -1,0 +1,15 @@
+build/
+out/
+*.exe
+*.pdb
+.vs/
+.vscode/
+.idea/
+*.user
+CMakeUserPresets.json
+
+# Bundled binaries are not vendored — drop yt-dlp.exe and ffmpeg.exe into
+# binaries/ locally; CMake POST_BUILD copies them next to the latch
+# executable.
+binaries/
+test_data/
