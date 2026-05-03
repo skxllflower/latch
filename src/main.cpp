@@ -1,3 +1,4 @@
+#include "bootstrap.h"
 #include "extract.h"
 #include "process.h"
 
@@ -17,28 +18,40 @@ namespace {
 
 int print_help() {
   std::puts(
-    "latch " "0.1.0" " - URL media extractor (yt-dlp wrapper)\n"
+    "latch " "0.2.0" " - URL media extractor (yt-dlp wrapper)\n"
     "\n"
     "Usage:\n"
-    "  latch extract <url> <output-dir> [--format mp3|m4a|wav|opus|flac]\n"
+    "  latch extract <url> <output-dir> [options]\n"
+    "  latch bootstrap\n"
     "  latch --version\n"
     "  latch --help\n"
     "\n"
-    "Default audio format is mp3. Audio is extracted (video discarded) and\n"
-    "written into <output-dir>. Paths are UTF-8 (Windows).\n"
+    "Extract options (all optional):\n"
+    "  --format=<f>            mp3 / m4a / wav / opus / flac (default mp3)\n"
+    "  --playlist              opt-INTO downloading a full playlist\n"
+    "                          (default is single video — yt-dlp's\n"
+    "                          --no-playlist flag is set unless this is\n"
+    "                          passed)\n"
+    "  --audio-quality=<n>     yt-dlp -q 0..10 (0 = best)\n"
+    "  --embed-metadata        embed title / artist / album tags\n"
+    "  --embed-thumbnail       embed cover-art thumbnail (mp3 / m4a / opus)\n"
     "\n"
-    "Progress is emitted as newline-delimited JSON on stdout, one event per line:\n"
-    "  {\"type\":\"start\",     \"url\":...}\n"
-    "  {\"type\":\"info\",      \"title\":..., \"duration_s\":...}\n"
-    "  {\"type\":\"progress\",  \"percent\":..., \"speed\":..., \"eta\":...}\n"
-    "  {\"type\":\"done\",      \"output\":...}\n"
-    "  {\"type\":\"cancelled\"}\n"
-    "  {\"type\":\"error\",     \"message\":...}\n"
+    "If yt-dlp.exe or ffmpeg.exe is missing from the executable's\n"
+    "directory, latch will download both on first run. Run\n"
+    "`latch bootstrap` to pre-fetch without doing an extraction.\n"
     "\n"
-    "Cancellation: terminate the process (Ctrl+C, or TerminateProcess from a\n"
-    "parent). The yt-dlp + ffmpeg children die with us via Windows Job Object.\n"
+    "Progress is emitted as newline-delimited JSON on stdout, one event\n"
+    "per line: bootstrap / start / info / progress / done / cancelled / error.\n"
   );
   return 0;
+}
+
+bool parse_kv(const std::string& a, const std::string& key, std::string* out) {
+  if (a.rfind("--" + key + "=", 0) == 0) {
+    *out = a.substr(2 + key.size() + 1);
+    return true;
+  }
+  return false;
 }
 
 int run_cli(const std::vector<std::string>& args) {
@@ -48,8 +61,12 @@ int run_cli(const std::vector<std::string>& args) {
 
   if (cmd == "--help" || cmd == "-h") return print_help();
   if (cmd == "--version" || cmd == "-v") {
-    std::puts("latch 0.1.0");
+    std::puts("latch 0.2.0");
     return 0;
+  }
+
+  if (cmd == "bootstrap") {
+    return latch::ensure_required() ? 0 : 1;
   }
 
   if (cmd == "extract") {
@@ -59,22 +76,28 @@ int run_cli(const std::vector<std::string>& args) {
     }
     std::string url     = args[2];
     std::string out_dir = args[3];
-    std::string format  = "mp3";
+    latch::ExtractOptions opts;
+    opts.audio_format = "mp3";
     for (size_t i = 4; i < args.size(); ++i) {
       const std::string& a = args[i];
-      if (a == "--format" && i + 1 < args.size()) {
-        format = args[++i];
-      } else {
-        std::fprintf(stderr, "error: unknown argument '%s'\n", a.c_str());
-        return 2;
-      }
+      if      (parse_kv(a, "format",        &opts.audio_format))   continue;
+      else if (parse_kv(a, "audio-quality", &opts.audio_quality))  continue;
+      else if (a == "--playlist")        { opts.no_playlist = false; continue; }
+      else if (a == "--no-playlist")     { opts.no_playlist = true;  continue; }
+      else if (a == "--embed-metadata")  { opts.embed_metadata = true;  continue; }
+      else if (a == "--embed-thumbnail") { opts.embed_thumbnail = true; continue; }
+      // Tolerate the older positional --format style for backwards compat.
+      else if (a == "--format" && i + 1 < args.size()) { opts.audio_format = args[++i]; continue; }
+      std::fprintf(stderr, "error: unknown argument '%s'\n", a.c_str());
+      return 2;
     }
-    auto r = latch::extract(url, out_dir, format);
+    auto r = latch::extract(url, out_dir, opts);
     switch (r) {
-      case latch::ExtractResult::Ok:             return 0;
-      case latch::ExtractResult::Cancelled:      return 130;
-      case latch::ExtractResult::DownloadFailed: return 1;
-      case latch::ExtractResult::YtdlpMissing:   return 1;
+      case latch::ExtractResult::Ok:               return 0;
+      case latch::ExtractResult::Cancelled:        return 130;
+      case latch::ExtractResult::DownloadFailed:   return 1;
+      case latch::ExtractResult::YtdlpMissing:     return 1;
+      case latch::ExtractResult::BootstrapFailed:  return 1;
     }
     return 1;
   }

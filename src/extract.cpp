@@ -1,5 +1,6 @@
 #include "extract.h"
 
+#include "bootstrap.h"
 #include "process.h"
 #include "progress.h"
 
@@ -38,7 +39,12 @@ static std::string trim(const std::string& s) {
 
 ExtractResult extract(const std::string& url,
                       const std::string& output_dir,
-                      const std::string& audio_format) {
+                      const ExtractOptions& opts) {
+  if (!ensure_required()) {
+    progress_error("required binary (yt-dlp / ffmpeg) not available; bootstrap failed");
+    return ExtractResult::BootstrapFailed;
+  }
+
   fs::path out_dir_path = path_from_utf8(output_dir);
   std::error_code ec;
   fs::create_directories(out_dir_path, ec);
@@ -51,6 +57,7 @@ ExtractResult extract(const std::string& url,
   progress_start(url);
 
   std::string out_template = path_to_utf8(out_dir_path / "%(title)s.%(ext)s");
+  std::string fmt = opts.audio_format.empty() ? std::string("mp3") : opts.audio_format;
 
   std::vector<std::string> argv = {
     ytdlp_path(),
@@ -58,15 +65,31 @@ ExtractResult extract(const std::string& url,
     "--no-colors",
     "--newline",
     "-x",
-    "--audio-format", audio_format,
+    "--audio-format", fmt,
     "--ffmpeg-location", exe_dir(),
     "--progress-template",
     "download:LATCH_PROG\t%(progress._percent_str)s\t%(progress._speed_str)s\t%(progress._eta_str)s",
     "--print", "before_dl:LATCH_INFO\t%(title)s\t%(duration)s",
     "--print", "after_move:LATCH_DONE\t%(filepath)s",
     "-o", out_template,
-    url,
   };
+
+  if (opts.no_playlist) {
+    argv.push_back("--no-playlist");
+  } else {
+    argv.push_back("--yes-playlist");
+  }
+  if (!opts.audio_quality.empty()) {
+    argv.push_back("--audio-quality");
+    argv.push_back(opts.audio_quality);
+  }
+  if (opts.embed_metadata) {
+    argv.push_back("--embed-metadata");
+  }
+  if (opts.embed_thumbnail) {
+    argv.push_back("--embed-thumbnail");
+  }
+  argv.push_back(url);
 
   bool had_error = false;
   std::string final_path;
