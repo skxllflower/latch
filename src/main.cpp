@@ -20,7 +20,7 @@ namespace {
 
 int print_help() {
   std::puts(
-    "latch " "0.3.0" " - URL media extractor (yt-dlp wrapper)\n"
+    "latch " "0.4.0" " - URL media extractor (yt-dlp wrapper)\n"
     "\n"
     "Usage:\n"
     "  latch extract <url> <output-dir> [options]\n"
@@ -32,10 +32,15 @@ int print_help() {
     "  latch --help\n"
     "\n"
     "Extract options (all optional):\n"
-    "  --format=<f>                     mp3 / m4a / wav / opus / flac. Default is\n"
-    "                                   empty = leave the source codec (highest\n"
-    "                                   quality, no re-encode). Pass a format\n"
-    "                                   only if you specifically want conversion.\n"
+    "  --format=<f>                     audio format: mp3 / m4a / wav / opus /\n"
+    "                                   flac. Default is empty = leave the source\n"
+    "                                   codec (highest quality, no re-encode).\n"
+    "                                   Ignored when --video is set.\n"
+    "  --video                          download video instead of audio (keeps\n"
+    "                                   bestvideo+bestaudio, muxes via ffmpeg)\n"
+    "  --video-format=<f>               video container preference: mp4 / webm /\n"
+    "                                   mkv / mov. Empty = let yt-dlp pick. Only\n"
+    "                                   takes effect when --video is set.\n"
     "  --playlist                       opt-INTO downloading a full playlist\n"
     "  --no-playlist                    explicit single-video (default)\n"
     "  --audio-quality=<n>              yt-dlp -q 0..10 (0 = best)\n"
@@ -244,6 +249,11 @@ int run_expand(const std::vector<std::string>& args) {
   // a -f selector kicks in. Uploader has the same shape — some
   // extractors only populate uploader_id or channel.
   //
+  // Thumbnail: %(thumbnail)s returns the best-resolution thumbnail URL
+  // for the track. yt-dlp emits this in flat-playlist mode for most
+  // sites (YouTube, SoundCloud, Bandcamp); when missing it's NA and
+  // we emit empty string. The GUI uses this for the card-view preview.
+  //
   // Robustness flags (mirror probe):
   //   -f bestaudio                 — pick an audio-only format track;
   //                                  required for cookies-from-browser
@@ -260,7 +270,7 @@ int run_expand(const std::vector<std::string>& args) {
     "-f", "bestaudio",
     "--js-runtimes", "deno",
     "--js-runtimes", "node",
-    "--print", "LATCH_TRACK\t%(webpage_url,url,original_url)s\t%(title)s\t%(duration)s\t%(uploader,uploader_id,channel)s",
+    "--print", "LATCH_TRACK\t%(webpage_url,url,original_url)s\t%(title)s\t%(duration)s\t%(uploader,uploader_id,channel)s\t%(thumbnail)s",
   };
   if (!cookies.empty()) {
     argv.push_back("--cookies-from-browser");
@@ -292,47 +302,45 @@ int run_expand(const std::vector<std::string>& args) {
   std::string error_msg;
   int code = latch::run_subprocess(argv, [&](const std::string& line) {
     if (line.rfind("LATCH_TRACK\t", 0) == 0) {
-      // 12 = strlen("LATCH_TRACK\t")
+      // 12 = strlen("LATCH_TRACK\t"). Tab-separated layout, in order:
+      //   url \t title \t duration \t uploader \t thumbnail
       std::string rest = line.substr(12);
-      std::string url_s, title, duration, uploader;
-      auto t1 = rest.find('\t');
-      auto t2 = (t1 == std::string::npos) ? std::string::npos : rest.find('\t', t1 + 1);
-      auto t3 = (t2 == std::string::npos) ? std::string::npos : rest.find('\t', t2 + 1);
-      if (t1 != std::string::npos) {
-        url_s = rest.substr(0, t1);
-        if (t2 != std::string::npos) {
-          title = rest.substr(t1 + 1, t2 - t1 - 1);
-          if (t3 != std::string::npos) {
-            duration = rest.substr(t2 + 1, t3 - t2 - 1);
-            uploader = rest.substr(t3 + 1);
-          } else {
-            duration = rest.substr(t2 + 1);
-          }
-        } else {
-          title = rest.substr(t1 + 1);
+      std::string fields[5];
+      size_t fi = 0, start = 0;
+      for (size_t j = 0; j < rest.size() && fi < 5; ++j) {
+        if (rest[j] == '\t') {
+          fields[fi++] = rest.substr(start, j - start);
+          start = j + 1;
         }
-      } else {
-        url_s = rest;
       }
+      if (fi < 5) fields[fi] = rest.substr(start);
+
+      std::string url_s   = fields[0];
+      std::string title   = fields[1];
+      std::string dur_str = fields[2];
+      std::string uploader= fields[3];
+      std::string thumb   = fields[4];
 
       // Skip empty URL lines defensively — yt-dlp sometimes emits a
       // header/footer when a playlist fails partway.
       if (url_s.empty() || url_s == "NA") return;
 
       double dur_s = 0.0;
-      if (!duration.empty() && duration != "NA") {
-        try { dur_s = std::stod(duration); } catch (...) {}
+      if (!dur_str.empty() && dur_str != "NA") {
+        try { dur_s = std::stod(dur_str); } catch (...) {}
       }
 
-      std::string uploader_clean = (uploader == "NA") ? std::string() : uploader;
-      std::string title_clean    = (title    == "NA") ? std::string() : title;
+      auto clean = [](const std::string& s) {
+        return (s == "NA") ? std::string() : s;
+      };
 
       std::fprintf(stdout,
-        "{\"type\":\"track\",\"url\":\"%s\",\"title\":\"%s\",\"duration_s\":%.3f,\"uploader\":\"%s\"}\n",
+        "{\"type\":\"track\",\"url\":\"%s\",\"title\":\"%s\",\"duration_s\":%.3f,\"uploader\":\"%s\",\"thumbnail\":\"%s\"}\n",
         escape(url_s).c_str(),
-        escape(title_clean).c_str(),
+        escape(clean(title)).c_str(),
         dur_s,
-        escape(uploader_clean).c_str()
+        escape(clean(uploader)).c_str(),
+        escape(clean(thumb)).c_str()
       );
       std::fflush(stdout);
       ++track_count;
@@ -431,7 +439,7 @@ int run_cli(const std::vector<std::string>& args) {
 
   if (cmd == "--help" || cmd == "-h") return print_help();
   if (cmd == "--version" || cmd == "-v") {
-    std::puts("latch 0.3.0");
+    std::puts("latch 0.4.0");
     return 0;
   }
 
@@ -464,15 +472,18 @@ int run_cli(const std::vector<std::string>& args) {
     for (size_t i = 4; i < args.size(); ++i) {
       const std::string& a = args[i];
       if      (parse_kv(a, "format",                &opts.audio_format))         continue;
+      else if (parse_kv(a, "video-format",          &opts.video_format))         continue;
       else if (parse_kv(a, "audio-quality",         &opts.audio_quality))        continue;
       else if (parse_kv(a, "cookies-from-browser",  &opts.cookies_from_browser)) continue;
       else if (parse_kv(a, "section",               &opts.section))              continue;
+      else if (a == "--video")           { opts.video = true; continue; }
       else if (a == "--playlist")        { opts.no_playlist = false; continue; }
       else if (a == "--no-playlist")     { opts.no_playlist = true;  continue; }
       else if (a == "--embed-metadata")  { opts.embed_metadata = true;  continue; }
       else if (a == "--embed-thumbnail") { opts.embed_thumbnail = true; continue; }
       // Tolerate the older positional --format style for backwards compat.
       else if (a == "--format"                && i + 1 < args.size()) { opts.audio_format         = args[++i]; continue; }
+      else if (a == "--video-format"          && i + 1 < args.size()) { opts.video_format         = args[++i]; continue; }
       else if (a == "--cookies-from-browser"  && i + 1 < args.size()) { opts.cookies_from_browser = args[++i]; continue; }
       else if (a == "--section"               && i + 1 < args.size()) { opts.section              = args[++i]; continue; }
       std::fprintf(stderr, "error: unknown argument '%s'\n", a.c_str());

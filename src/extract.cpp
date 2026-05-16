@@ -58,17 +58,9 @@ ExtractResult extract(const std::string& url,
 
   std::string out_template = path_to_utf8(out_dir_path / "%(title)s.%(ext)s");
 
-  // Highest-quality default: -x without --audio-format leaves the
-  // audio stream in its source codec/container (m4a from YouTube
-  // DASH, opus from WebM, etc.). The user can re-encode in Lathe if
-  // they want a specific format. Passing an explicit audio_format
-  // still works — yt-dlp converts via ffmpeg post-extraction.
+  // Mode-agnostic base argv. Audio vs video is decided below by
+  // (a) whether `-x` is emitted and (b) which `-f` selector runs.
   //
-  // -f bestaudio:
-  //   Explicit format selector. Without it, yt-dlp's defaults pick
-  //   the best video+audio merge which fails for -x mode on certain
-  //   signed-in accounts (YouTube serves DRM-protected combined
-  //   streams to logged-in users that yt-dlp can't decrypt).
   // --js-runtimes deno --js-runtimes node:
   //   YouTube's "n-parameter" challenge requires a JS runtime to
   //   solve; without one yt-dlp only sees image-only formats for
@@ -80,8 +72,6 @@ ExtractResult extract(const std::string& url,
     "--no-warnings",
     "--no-colors",
     "--newline",
-    "-x",
-    "-f", "bestaudio",
     "--js-runtimes", "deno",
     "--js-runtimes", "node",
     "--ffmpeg-location", exe_dir(),
@@ -91,9 +81,43 @@ ExtractResult extract(const std::string& url,
     "--print", "after_move:LATCH_DONE\t%(filepath)s",
     "-o", out_template,
   };
-  if (!opts.audio_format.empty()) {
-    argv.push_back("--audio-format");
-    argv.push_back(opts.audio_format);
+
+  if (opts.video) {
+    // Video mode — best video + best audio, merged. yt-dlp picks the
+    // highest-resolution video stream and the best audio stream and
+    // muxes them via ffmpeg. `bestvideo*` (the splat) lets yt-dlp
+    // consider video-only AND combined streams; without it, sites
+    // that don't serve separate streams (e.g. SoundCloud's video
+    // mode if it ever launches) fall through to /best.
+    argv.push_back("-f");
+    argv.push_back("bestvideo*+bestaudio/best");
+    if (!opts.video_format.empty()) {
+      // --merge-output-format constrains the final container after
+      // muxing. Without it yt-dlp picks a container based on the
+      // input streams (usually mkv for arbitrary combos).
+      argv.push_back("--merge-output-format");
+      argv.push_back(opts.video_format);
+    }
+  } else {
+    // Audio mode (default). -x extracts audio post-download; without
+    // --audio-format the source codec/container is preserved (m4a
+    // from YouTube DASH, opus from WebM, etc.) — the user can re-
+    // encode in Lathe if they want a specific format. Passing an
+    // explicit audio_format still works — yt-dlp converts via ffmpeg
+    // post-extraction.
+    //
+    // -f bestaudio: explicit audio-only format selector. Without it,
+    // yt-dlp's defaults pick the best video+audio merge which fails
+    // for -x mode on certain signed-in accounts (YouTube serves DRM-
+    // protected combined streams to logged-in users that yt-dlp
+    // can't decrypt).
+    argv.push_back("-x");
+    argv.push_back("-f");
+    argv.push_back("bestaudio");
+    if (!opts.audio_format.empty()) {
+      argv.push_back("--audio-format");
+      argv.push_back(opts.audio_format);
+    }
   }
 
   if (opts.no_playlist) {

@@ -39,6 +39,16 @@ struct ExtractOptions {
   // MM:SS-MM:SS, or seconds). Empty = full media. Useful for ripping a
   // 90s clip from a 40-minute mix.
   std::string section;
+  // Download video instead of extracting audio. Flips off yt-dlp's -x
+  // mode and selects bestvideo+bestaudio for merge. Default false
+  // keeps Latch backwards-compatible as an audio-first tool — video
+  // mode is opt-in via the GUI's mode toggle or the --video CLI flag.
+  bool video = false;
+  // Video container preference passed to yt-dlp's --merge-output-format
+  // when video is true: mp4, webm, mkv, mov. Empty = let yt-dlp pick
+  // the best container for the chosen video+audio streams. Ignored
+  // when video is false.
+  std::string video_format;
 };
 
 ExtractResult extract(const std::string& url,
