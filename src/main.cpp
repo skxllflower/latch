@@ -20,11 +20,12 @@ namespace {
 
 int print_help() {
   std::puts(
-    "latch " "0.2.0" " - URL media extractor (yt-dlp wrapper)\n"
+    "latch " "0.3.0" " - URL media extractor (yt-dlp wrapper)\n"
     "\n"
     "Usage:\n"
     "  latch extract <url> <output-dir> [options]\n"
     "  latch probe   <url> [--cookies-from-browser=<name>]\n"
+    "  latch expand  <url> [--cookies-from-browser=<name>]\n"
     "  latch bootstrap\n"
     "  latch update\n"
     "  latch --version\n"
@@ -180,6 +181,178 @@ int run_probe(const std::vector<std::string>& args) {
   return 0;
 }
 
+// `latch expand <url> [--cookies-from-browser=X]` — resolves a URL
+// into a list of one or more individual track entries. Drives the
+// GUI's pre-extract playlist expansion: a pasted YouTube/SoundCloud
+// playlist URL gets turned into N separate queue items, each a
+// single-track URL with title/duration pre-filled, BEFORE any
+// download starts. A non-playlist URL just returns a single entry
+// — the GUI uses the same code path for both and looks at how many
+// tracks come back to decide whether to expand into multiple rows.
+//
+// Output (NDJSON to stdout, one event per line):
+//   {"type":"track","url":"...","title":"...","duration_s":N.N,"uploader":"..."}
+//   ... repeated for each track ...
+//   {"type":"end"}
+// On hard failure (yt-dlp missing, network error, unresolvable URL):
+//   {"type":"error","message":"..."}
+//
+// Exit code 0 on success, non-zero on failure.
+//
+// Implementation note: yt-dlp's `--flat-playlist --skip-download
+// --print` returns one tab-separated line per track without doing
+// any media download. Single-video URLs return one line; playlist
+// URLs return N lines (one per track). We parse and re-emit each
+// line as our `{"type":"track",...}` JSON shape so the GUI side
+// doesn't have to know yt-dlp's output template syntax.
+int run_expand(const std::vector<std::string>& args) {
+  if (args.size() < 3) {
+    std::fputs("{\"type\":\"error\",\"message\":\"expand requires <url>\"}\n", stdout);
+    return 2;
+  }
+  std::string url = args[2];
+  std::string cookies;
+  for (size_t i = 3; i < args.size(); ++i) {
+    const std::string& a = args[i];
+    if (a.rfind("--cookies-from-browser=", 0) == 0) cookies = a.substr(23);
+    else if (a == "--cookies-from-browser" && i + 1 < args.size()) cookies = args[++i];
+  }
+
+  namespace fs = std::filesystem;
+#ifdef _WIN32
+  fs::path ytdlp = fs::path(latch::utf8_to_utf16(latch::exe_dir())) / L"yt-dlp.exe";
+  std::string ytdlp_utf8 = latch::utf16_to_utf8(ytdlp.wstring());
+#else
+  fs::path ytdlp = fs::path(latch::exe_dir()) / "yt-dlp.exe";
+  std::string ytdlp_utf8 = ytdlp.string();
+#endif
+  std::error_code ec;
+  if (!fs::exists(ytdlp, ec)) {
+    std::fputs("{\"type\":\"error\",\"message\":\"yt-dlp.exe not found\"}\n", stdout);
+    return 1;
+  }
+
+  // Tab-separated print line — same parsing pattern as probe.
+  // Deliberately NOT passing --no-playlist; playlist URLs are
+  // SUPPOSED to expand here. For ambiguous watch+list URLs the
+  // user's "Single video only" toggle in the GUI handles trimming
+  // post-expansion (JS slices to first track).
+  // Field fallbacks (comma-separated, first non-NA wins): we want the
+  // CANONICAL webpage URL so the GUI can pass it back to extract.
+  // webpage_url is reliable for both flat-playlist tracks and single
+  // videos; `url` is sometimes overridden to the direct media URL once
+  // a -f selector kicks in. Uploader has the same shape — some
+  // extractors only populate uploader_id or channel.
+  //
+  // Robustness flags (mirror probe):
+  //   -f bestaudio                 — pick an audio-only format track;
+  //                                  required for cookies-from-browser
+  //                                  on YouTube to negotiate cleanly
+  //   --js-runtimes deno/node      — yt-dlp's signed-in YouTube path
+  //                                  needs a JS runtime to decrypt
+  //                                  signature ciphers
+  std::vector<std::string> argv = {
+    ytdlp_utf8,
+    "--no-warnings",
+    "--no-colors",
+    "--skip-download",
+    "--flat-playlist",
+    "-f", "bestaudio",
+    "--js-runtimes", "deno",
+    "--js-runtimes", "node",
+    "--print", "LATCH_TRACK\t%(webpage_url,url,original_url)s\t%(title)s\t%(duration)s\t%(uploader,uploader_id,channel)s",
+  };
+  if (!cookies.empty()) {
+    argv.push_back("--cookies-from-browser");
+    argv.push_back(cookies);
+  }
+  argv.push_back(url);
+
+  // Inline JSON escape — kept local for the same reason probe does.
+  auto escape = [](const std::string& s) {
+    std::string out; out.reserve(s.size() + 8);
+    for (char c : s) {
+      switch (c) {
+        case '"':  out += "\\\""; break;
+        case '\\': out += "\\\\"; break;
+        case '\n': out += "\\n";  break;
+        case '\r': out += "\\r";  break;
+        case '\t': out += "\\t";  break;
+        default:
+          if (static_cast<unsigned char>(c) < 0x20) {
+            char buf[8]; std::snprintf(buf, sizeof(buf), "\\u%04x", static_cast<unsigned char>(c));
+            out += buf;
+          } else out += c;
+      }
+    }
+    return out;
+  };
+
+  int track_count = 0;
+  std::string error_msg;
+  int code = latch::run_subprocess(argv, [&](const std::string& line) {
+    if (line.rfind("LATCH_TRACK\t", 0) == 0) {
+      // 12 = strlen("LATCH_TRACK\t")
+      std::string rest = line.substr(12);
+      std::string url_s, title, duration, uploader;
+      auto t1 = rest.find('\t');
+      auto t2 = (t1 == std::string::npos) ? std::string::npos : rest.find('\t', t1 + 1);
+      auto t3 = (t2 == std::string::npos) ? std::string::npos : rest.find('\t', t2 + 1);
+      if (t1 != std::string::npos) {
+        url_s = rest.substr(0, t1);
+        if (t2 != std::string::npos) {
+          title = rest.substr(t1 + 1, t2 - t1 - 1);
+          if (t3 != std::string::npos) {
+            duration = rest.substr(t2 + 1, t3 - t2 - 1);
+            uploader = rest.substr(t3 + 1);
+          } else {
+            duration = rest.substr(t2 + 1);
+          }
+        } else {
+          title = rest.substr(t1 + 1);
+        }
+      } else {
+        url_s = rest;
+      }
+
+      // Skip empty URL lines defensively — yt-dlp sometimes emits a
+      // header/footer when a playlist fails partway.
+      if (url_s.empty() || url_s == "NA") return;
+
+      double dur_s = 0.0;
+      if (!duration.empty() && duration != "NA") {
+        try { dur_s = std::stod(duration); } catch (...) {}
+      }
+
+      std::string uploader_clean = (uploader == "NA") ? std::string() : uploader;
+      std::string title_clean    = (title    == "NA") ? std::string() : title;
+
+      std::fprintf(stdout,
+        "{\"type\":\"track\",\"url\":\"%s\",\"title\":\"%s\",\"duration_s\":%.3f,\"uploader\":\"%s\"}\n",
+        escape(url_s).c_str(),
+        escape(title_clean).c_str(),
+        dur_s,
+        escape(uploader_clean).c_str()
+      );
+      std::fflush(stdout);
+      ++track_count;
+    } else if (line.rfind("ERROR:", 0) == 0) {
+      error_msg = line;
+    }
+  });
+
+  if (track_count == 0) {
+    std::fprintf(stdout, "{\"type\":\"error\",\"message\":\"%s\"}\n",
+      escape(error_msg.empty() ? "no tracks returned" : error_msg).c_str());
+    std::fflush(stdout);
+    return code == 0 ? 1 : code;
+  }
+
+  std::fputs("{\"type\":\"end\"}\n", stdout);
+  std::fflush(stdout);
+  return 0;
+}
+
 // `latch update` — runs `yt-dlp.exe -U` and streams its output as
 // newline-delimited update events. The wrapper doesn't try to parse
 // yt-dlp's output beyond start/done — yt-dlp's self-update is short
@@ -258,7 +431,7 @@ int run_cli(const std::vector<std::string>& args) {
 
   if (cmd == "--help" || cmd == "-h") return print_help();
   if (cmd == "--version" || cmd == "-v") {
-    std::puts("latch 0.2.0");
+    std::puts("latch 0.3.0");
     return 0;
   }
 
@@ -272,6 +445,10 @@ int run_cli(const std::vector<std::string>& args) {
 
   if (cmd == "probe") {
     return run_probe(args);
+  }
+
+  if (cmd == "expand") {
+    return run_expand(args);
   }
 
   if (cmd == "extract") {
