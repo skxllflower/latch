@@ -46,6 +46,11 @@ int print_help() {
     "  --audio-quality=<n>              yt-dlp -q 0..10 (0 = best)\n"
     "  --embed-metadata                 embed title / artist / album tags\n"
     "  --embed-thumbnail                embed cover-art thumbnail (mp3 / m4a / opus)\n"
+    "  --write-thumbnail                save the cover art as a sidecar .png next\n"
+    "                                   to the output (always converted to PNG)\n"
+    "  --crop-thumbnail                 centre-crop the cover art to a square\n"
+    "                                   before saving / embedding. No-op unless\n"
+    "                                   --write-thumbnail or --embed-thumbnail set.\n"
     "  --cookies-from-browser=<name>    pull cookies from an installed browser\n"
     "                                   (chrome / firefox / edge / brave / safari /\n"
     "                                   opera / chromium / vivaldi). Required for\n"
@@ -481,6 +486,8 @@ int run_cli(const std::vector<std::string>& args) {
       else if (a == "--no-playlist")     { opts.no_playlist = true;  continue; }
       else if (a == "--embed-metadata")  { opts.embed_metadata = true;  continue; }
       else if (a == "--embed-thumbnail") { opts.embed_thumbnail = true; continue; }
+      else if (a == "--write-thumbnail") { opts.write_thumbnail = true; continue; }
+      else if (a == "--crop-thumbnail")  { opts.crop_thumbnail = true;  continue; }
       // Tolerate the older positional --format style for backwards compat.
       else if (a == "--format"                && i + 1 < args.size()) { opts.audio_format         = args[++i]; continue; }
       else if (a == "--video-format"          && i + 1 < args.size()) { opts.video_format         = args[++i]; continue; }

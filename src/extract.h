@@ -28,6 +28,17 @@ struct ExtractOptions {
   // yt-dlp --embed-thumbnail: writes the cover art into the output
   // (useful for mp3 / m4a / opus).
   bool        embed_thumbnail = false;
+  // Keep a sidecar cover-art image next to the media file. Maps to
+  // yt-dlp --write-thumbnail; always paired with --convert-thumbnails
+  // png so the saved file is a predictable PNG regardless of the
+  // source format (YouTube serves webp, others jpg).
+  bool        write_thumbnail = false;
+  // Centre-crop the cover art to a square (album-cover shape) before it
+  // is saved and/or embedded. Applied during yt-dlp's thumbnail
+  // conversion pass, so the saved sidecar and the embedded copy are
+  // both square — they share the one converted image. No-op unless
+  // write_thumbnail or embed_thumbnail is also set.
+  bool        crop_thumbnail = false;
   // yt-dlp --cookies-from-browser <browser>. Empty = don't pass.
   // Workaround for sites (notably YouTube) that gate downloads behind
   // bot-detection checks unless yt-dlp is sending a logged-in session

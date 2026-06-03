@@ -132,9 +132,42 @@ ExtractResult extract(const std::string& url,
   if (opts.embed_metadata) {
     argv.push_back("--embed-metadata");
   }
+
+  // Cover-art / thumbnail handling. Three independent toggles that all
+  // operate on the same source thumbnail:
+  //   write_thumbnail  -> keep a sidecar image next to the media
+  //   crop_thumbnail   -> centre-crop it to a square (album-cover shape)
+  //   embed_thumbnail  -> mux it into the output container
+  // Whenever we touch the thumbnail at all we force PNG output so the
+  // saved sidecar matches the GUI's "save as PNG" promise and the crop
+  // filter has a deterministic raster target. The crop runs inside
+  // yt-dlp's ThumbnailsConvertor ffmpeg pass via --postprocessor-args,
+  // so BOTH the saved sidecar AND the embedded copy come out square —
+  // they share the one converted thumbnail.
+  const bool touches_thumbnail = opts.write_thumbnail || opts.embed_thumbnail;
+  if (opts.write_thumbnail) {
+    argv.push_back("--write-thumbnail");
+  }
+  if (touches_thumbnail) {
+    argv.push_back("--convert-thumbnails");
+    argv.push_back("png");
+    if (opts.crop_thumbnail) {
+      // crop=ih:ih = a centred square the height of the source (ffmpeg's
+      // crop filter centres by default). Comma-free on purpose: every
+      // comma inside -vf is a filtergraph separator, and routing
+      // min(iw,ih) through yt-dlp's shlex + ffmpeg's own unescaping is
+      // brittle. Music thumbnails are landscape (YouTube 16:9) or
+      // already square (SoundCloud / Bandcamp), so taking the height as
+      // the side is correct; the only unhandled case is a portrait
+      // source, which is effectively nonexistent for these platforms.
+      argv.push_back("--ppa");
+      argv.push_back("ThumbnailsConvertor+ffmpeg_o:-vf crop=ih:ih");
+    }
+  }
   if (opts.embed_thumbnail) {
     argv.push_back("--embed-thumbnail");
   }
+
   if (!opts.cookies_from_browser.empty()) {
     argv.push_back("--cookies-from-browser");
     argv.push_back(opts.cookies_from_browser);
