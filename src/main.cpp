@@ -1,4 +1,5 @@
 #include "bootstrap.h"
+#include "clip.h"
 #include "extract.h"
 #include "process.h"
 #include "progress.h"
@@ -24,12 +25,22 @@ int print_help() {
     "\n"
     "Usage:\n"
     "  latch extract <url> <output-dir> [options]\n"
+    "  latch clip    <input> <output> --start=<sec> --end=<sec> [--video|--audio-only]\n"
     "  latch probe   <url> [--cookies-from-browser=<name>]\n"
     "  latch expand  <url> [--cookies-from-browser=<name>]\n"
     "  latch bootstrap\n"
     "  latch update\n"
     "  latch --version\n"
     "  latch --help\n"
+    "\n"
+    "Clip options (cuts a local file with ffmpeg, re-encoding for an\n"
+    "exact sample/frame cut — no keyframe snapping):\n"
+    "  --start=<sec>                    clip start in seconds (e.g. 12.5)\n"
+    "  --end=<sec>                      clip end in seconds (must exceed start)\n"
+    "  --video                          re-encode video+audio (frame-accurate)\n"
+    "  --audio-only                     drop video, encode audio (default)\n"
+    "  --audio-format=<f>               audio-only output codec: wav (default) /\n"
+    "                                   flac / mp3 / m4a / aac / opus\n"
     "\n"
     "Extract options (all optional):\n"
     "  --format=<f>                     audio format: mp3 / m4a / wav / opus /\n"
@@ -503,6 +514,43 @@ int run_cli(const std::vector<std::string>& args) {
       case latch::ExtractResult::DownloadFailed:   return 1;
       case latch::ExtractResult::YtdlpMissing:     return 1;
       case latch::ExtractResult::BootstrapFailed:  return 1;
+    }
+    return 1;
+  }
+
+  if (cmd == "clip") {
+    if (args.size() < 4) {
+      std::fputs("error: clip requires <input> <output>\n", stderr);
+      return 2;
+    }
+    std::string input  = args[2];
+    std::string output = args[3];
+    latch::ClipOptions opts;
+    double start_sec = 0.0, end_sec = 0.0;
+    bool have_start = false, have_end = false;
+    for (size_t i = 4; i < args.size(); ++i) {
+      const std::string& a = args[i];
+      std::string v;
+      if (parse_kv(a, "start", &v)) { try { start_sec = std::stod(v); have_start = true; } catch (...) {} continue; }
+      if (parse_kv(a, "end",   &v)) { try { end_sec   = std::stod(v); have_end   = true; } catch (...) {} continue; }
+      if (parse_kv(a, "audio-format", &opts.audio_format)) continue;
+      if (a == "--video")      { opts.video = true;  continue; }
+      if (a == "--audio-only") { opts.video = false; continue; }
+      if (a == "--start" && i + 1 < args.size()) { try { start_sec = std::stod(args[++i]); have_start = true; } catch (...) {} continue; }
+      if (a == "--end"   && i + 1 < args.size()) { try { end_sec   = std::stod(args[++i]); have_end   = true; } catch (...) {} continue; }
+      std::fprintf(stderr, "error: unknown argument '%s'\n", a.c_str());
+      return 2;
+    }
+    if (!have_start || !have_end) {
+      std::fputs("error: clip requires --start=<sec> and --end=<sec>\n", stderr);
+      return 2;
+    }
+    auto r = latch::clip(input, output, start_sec, end_sec, opts);
+    switch (r) {
+      case latch::ClipResult::Ok:            return 0;
+      case latch::ClipResult::Cancelled:     return 130;
+      case latch::ClipResult::Failed:        return 1;
+      case latch::ClipResult::FfmpegMissing: return 1;
     }
     return 1;
   }

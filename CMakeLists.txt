@@ -8,6 +8,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 add_executable(latch
   src/main.cpp
   src/bootstrap.cpp
+  src/clip.cpp
   src/download.cpp
   src/extract.cpp
   src/process.cpp
