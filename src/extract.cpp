@@ -90,7 +90,18 @@ ExtractResult extract(const std::string& url,
     // that don't serve separate streams (e.g. SoundCloud's video
     // mode if it ever launches) fall through to /best.
     argv.push_back("-f");
-    argv.push_back("bestvideo*+bestaudio/best");
+    if (opts.video_max_height > 0) {
+      // Cap video height for a fast low-res grab; audio stays bestaudio so
+      // audio quality is untouched. Fallbacks keep it robust for sites that
+      // only serve combined streams.
+      char fmt[160];
+      std::snprintf(fmt, sizeof(fmt),
+        "bestvideo[height<=%d]+bestaudio/best[height<=%d]/bestvideo*+bestaudio/best",
+        opts.video_max_height, opts.video_max_height);
+      argv.push_back(fmt);
+    } else {
+      argv.push_back("bestvideo*+bestaudio/best");
+    }
     if (!opts.video_format.empty()) {
       // --merge-output-format constrains the final container after
       // muxing. Without it yt-dlp picks a container based on the

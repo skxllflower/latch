@@ -60,6 +60,10 @@ struct ExtractOptions {
   // the best container for the chosen video+audio streams. Ignored
   // when video is false.
   std::string video_format;
+  // Cap the video stream's height (e.g. 480) for a fast low-res download.
+  // The audio stream is still bestaudio, so audio quality is unaffected.
+  // 0 = no cap (best available). Ignored when video is false.
+  int video_max_height = 0;
 };
 
 ExtractResult extract(const std::string& url,

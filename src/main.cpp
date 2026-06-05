@@ -54,6 +54,9 @@ int print_help() {
     "  --video-format=<f>               video container preference: mp4 / webm /\n"
     "                                   mkv / mov. Empty = let yt-dlp pick. Only\n"
     "                                   takes effect when --video is set.\n"
+    "  --video-max-height=<n>           cap video height (e.g. 480) for a fast\n"
+    "                                   low-res grab; audio stays bestaudio.\n"
+    "                                   Only with --video.\n"
     "  --playlist                       opt-INTO downloading a full playlist\n"
     "  --no-playlist                    explicit single-video (default)\n"
     "  --audio-quality=<n>              yt-dlp -q 0..10 (0 = best)\n"
@@ -485,6 +488,7 @@ int run_cli(const std::vector<std::string>& args) {
     std::string url     = args[2];
     std::string out_dir = args[3];
     latch::ExtractOptions opts;
+    std::string vmh_str;
     // Default to empty audio_format = no conversion (source codec
     // preserved). Caller passes --format=<f> to opt INTO conversion.
     for (size_t i = 4; i < args.size(); ++i) {
@@ -492,6 +496,7 @@ int run_cli(const std::vector<std::string>& args) {
       if      (parse_kv(a, "format",                &opts.audio_format))         continue;
       else if (parse_kv(a, "video-format",          &opts.video_format))         continue;
       else if (parse_kv(a, "audio-quality",         &opts.audio_quality))        continue;
+      else if (parse_kv(a, "video-max-height",      &vmh_str))                   { try { opts.video_max_height = std::stoi(vmh_str); } catch (...) {} continue; }
       else if (parse_kv(a, "cookies-from-browser",  &opts.cookies_from_browser)) continue;
       else if (parse_kv(a, "section",               &opts.section))              continue;
       else if (a == "--video")           { opts.video = true; continue; }
