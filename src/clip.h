@@ -18,6 +18,11 @@ struct ClipOptions {
   // Audio container/codec for audio-only mode: wav / flac / mp3 / m4a /
   // aac / opus. Empty defaults to wav (pcm_s24le). Ignored for video.
   std::string audio_format;
+  // Display-only preview: encode a tiny mono, low-sample-rate, 16-bit WAV
+  // (just enough to draw a waveform). Used for the chop window's companion
+  // track — never for playback or clip export. Ignored for video / when the
+  // audio format is set.
+  bool preview = false;
 };
 
 // Cuts [start_sec, end_sec) out of `input` into `output` with ffmpeg.

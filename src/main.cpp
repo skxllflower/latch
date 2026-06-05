@@ -41,6 +41,8 @@ int print_help() {
     "  --audio-only                     drop video, encode audio (default)\n"
     "  --audio-format=<f>               audio-only output codec: wav (default) /\n"
     "                                   flac / mp3 / m4a / aac / opus\n"
+    "  --preview                        audio-only: tiny mono 22.05k 16-bit WAV\n"
+    "                                   for waveform display (not for playback)\n"
     "\n"
     "Extract options (all optional):\n"
     "  --format=<f>                     audio format: mp3 / m4a / wav / opus /\n"
@@ -536,6 +538,7 @@ int run_cli(const std::vector<std::string>& args) {
       if (parse_kv(a, "audio-format", &opts.audio_format)) continue;
       if (a == "--video")      { opts.video = true;  continue; }
       if (a == "--audio-only") { opts.video = false; continue; }
+      if (a == "--preview")    { opts.preview = true; continue; }
       if (a == "--start" && i + 1 < args.size()) { try { start_sec = std::stod(args[++i]); have_start = true; } catch (...) {} continue; }
       if (a == "--end"   && i + 1 < args.size()) { try { end_sec   = std::stod(args[++i]); have_end   = true; } catch (...) {} continue; }
       std::fprintf(stderr, "error: unknown argument '%s'\n", a.c_str());
