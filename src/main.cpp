@@ -57,6 +57,9 @@ int print_help() {
     "  --video-max-height=<n>           cap video height (e.g. 480) for a fast\n"
     "                                   low-res grab; audio stays bestaudio.\n"
     "                                   Only with --video.\n"
+    "  --restrict-filenames             ASCII-only output names (no spaces /\n"
+    "                                   Unicode) so the reported path always\n"
+    "                                   matches disk; for internal temp use\n"
     "  --playlist                       opt-INTO downloading a full playlist\n"
     "  --no-playlist                    explicit single-video (default)\n"
     "  --audio-quality=<n>              yt-dlp -q 0..10 (0 = best)\n"
@@ -500,6 +503,7 @@ int run_cli(const std::vector<std::string>& args) {
       else if (parse_kv(a, "cookies-from-browser",  &opts.cookies_from_browser)) continue;
       else if (parse_kv(a, "section",               &opts.section))              continue;
       else if (a == "--video")           { opts.video = true; continue; }
+      else if (a == "--restrict-filenames") { opts.restrict_filenames = true; continue; }
       else if (a == "--playlist")        { opts.no_playlist = false; continue; }
       else if (a == "--no-playlist")     { opts.no_playlist = true;  continue; }
       else if (a == "--embed-metadata")  { opts.embed_metadata = true;  continue; }

@@ -72,6 +72,10 @@ ExtractResult extract(const std::string& url,
     "--no-warnings",
     "--no-colors",
     "--newline",
+    // Force the progress-template to emit even though we use --print: yt-dlp
+    // otherwise suppresses progress when --print is active, leaving the GUI's
+    // bar frozen.
+    "--progress",
     "--js-runtimes", "deno",
     "--js-runtimes", "node",
     "--ffmpeg-location", exe_dir(),
@@ -129,6 +133,15 @@ ExtractResult extract(const std::string& url,
       argv.push_back("--audio-format");
       argv.push_back(opts.audio_format);
     }
+  }
+
+  if (opts.restrict_filenames) {
+    // ASCII-only, space-free, no trailing space, no Unicode. Used for the
+    // chop window's temp downloads (never user-facing) so the reported
+    // %(filepath)s always round-trips byte-for-byte to disk — otherwise an
+    // emoji/CJK title yields a path whose non-ASCII chars get dropped on
+    // stdout, and the file can't be reopened ("No such file or directory").
+    argv.push_back("--restrict-filenames");
   }
 
   if (opts.no_playlist) {

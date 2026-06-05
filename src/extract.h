@@ -64,6 +64,10 @@ struct ExtractOptions {
   // The audio stream is still bestaudio, so audio quality is unaffected.
   // 0 = no cap (best available). Ignored when video is false.
   int video_max_height = 0;
+  // Restrict output filenames to ASCII (no spaces/Unicode/trailing space).
+  // For internal temp downloads (the chop window) so the reported filepath
+  // round-trips to disk regardless of emoji/CJK titles.
+  bool restrict_filenames = false;
 };
 
 ExtractResult extract(const std::string& url,
