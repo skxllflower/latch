@@ -1,6 +1,7 @@
 #include "clip.h"
 
 #include "bootstrap.h"
+#include "paths.h"
 #include "process.h"
 #include "progress.h"
 
@@ -28,7 +29,7 @@ static std::string path_to_utf8(const fs::path& p) { return p.string(); }
 #endif
 
 static std::string ffmpeg_path() {
-  return path_to_utf8(path_from_utf8(exe_dir()) / "ffmpeg.exe");
+  return resolved_ffmpeg();
 }
 
 // Lower-cased file extension without the leading dot.
@@ -88,7 +89,7 @@ ClipResult clip(const std::string& input,
   std::string ff = ffmpeg_path();
   std::error_code ec;
   if (!fs::exists(path_from_utf8(ff), ec)) {
-    progress_error("ffmpeg.exe not found alongside latch executable");
+    progress_error("ffmpeg.exe not found; run `latch bootstrap` first");
     return ClipResult::FfmpegMissing;
   }
 

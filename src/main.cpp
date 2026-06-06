@@ -1,6 +1,7 @@
 #include "bootstrap.h"
 #include "clip.h"
 #include "extract.h"
+#include "paths.h"
 #include "process.h"
 #include "progress.h"
 
@@ -79,12 +80,15 @@ int print_help() {
     "                                   to yt-dlp --download-sections \"*<section>\".\n"
     "                                   Snaps to keyframes for speed.\n"
     "\n"
-    "`latch update` runs `yt-dlp -U` against the bundled yt-dlp.exe to pull the\n"
+    "`latch update` runs `yt-dlp -U` against the managed yt-dlp.exe to pull the\n"
     "latest release. Use this when extractors break against an updated site.\n"
     "\n"
-    "If yt-dlp.exe or ffmpeg.exe is missing from the executable's\n"
-    "directory, latch will download both on first run. Run\n"
-    "`latch bootstrap` to pre-fetch without doing an extraction.\n"
+    "yt-dlp.exe and ffmpeg.exe are resolved from the LATCH_YTDLP /\n"
+    "LATCH_FFMPEG env vars, then next to the executable (portable\n"
+    "override), then their managed homes (yt-dlp: Vacant Systems\\Latch,\n"
+    "ffmpeg: the Vacant Systems shared bin) — and downloaded there on\n"
+    "first run when missing. Run `latch bootstrap` to pre-fetch without\n"
+    "doing an extraction.\n"
     "\n"
     "Progress is emitted as newline-delimited JSON on stdout, one event\n"
     "per line: bootstrap / start / info / progress / done / cancelled / error / update.\n"
@@ -114,12 +118,11 @@ int run_probe(const std::vector<std::string>& args) {
   }
 
   namespace fs = std::filesystem;
+  std::string ytdlp_utf8 = latch::resolved_ytdlp();
 #ifdef _WIN32
-  fs::path ytdlp = fs::path(latch::utf8_to_utf16(latch::exe_dir())) / L"yt-dlp.exe";
-  std::string ytdlp_utf8 = latch::utf16_to_utf8(ytdlp.wstring());
+  fs::path ytdlp = fs::path(latch::utf8_to_utf16(ytdlp_utf8));
 #else
-  fs::path ytdlp = fs::path(latch::exe_dir()) / "yt-dlp.exe";
-  std::string ytdlp_utf8 = ytdlp.string();
+  fs::path ytdlp = fs::path(ytdlp_utf8);
 #endif
   std::error_code ec;
   if (!fs::exists(ytdlp, ec)) {
@@ -133,8 +136,13 @@ int run_probe(const std::vector<std::string>& args) {
   // Same -f bestaudio + --js-runtimes plumbing as extract — without it
   // YouTube probes fail on signed-in accounts (the print pipe relies
   // on a successfully-selected format being in the info dict).
+  // --ignore-config / --cache-dir mirror extract: a user's global yt-dlp
+  // config could alter the --print protocol, and the cache belongs in
+  // the vendor folder.
   std::vector<std::string> argv = {
     ytdlp_utf8,
+    "--ignore-config",
+    "--cache-dir", latch::ytdlp_cache_dir(),
     "--no-warnings",
     "--no-colors",
     "--skip-download",
@@ -248,12 +256,11 @@ int run_expand(const std::vector<std::string>& args) {
   }
 
   namespace fs = std::filesystem;
+  std::string ytdlp_utf8 = latch::resolved_ytdlp();
 #ifdef _WIN32
-  fs::path ytdlp = fs::path(latch::utf8_to_utf16(latch::exe_dir())) / L"yt-dlp.exe";
-  std::string ytdlp_utf8 = latch::utf16_to_utf8(ytdlp.wstring());
+  fs::path ytdlp = fs::path(latch::utf8_to_utf16(ytdlp_utf8));
 #else
-  fs::path ytdlp = fs::path(latch::exe_dir()) / "yt-dlp.exe";
-  std::string ytdlp_utf8 = ytdlp.string();
+  fs::path ytdlp = fs::path(ytdlp_utf8);
 #endif
   std::error_code ec;
   if (!fs::exists(ytdlp, ec)) {
@@ -287,6 +294,8 @@ int run_expand(const std::vector<std::string>& args) {
   //                                  signature ciphers
   std::vector<std::string> argv = {
     ytdlp_utf8,
+    "--ignore-config",
+    "--cache-dir", latch::ytdlp_cache_dir(),
     "--no-warnings",
     "--no-colors",
     "--skip-download",
@@ -392,16 +401,15 @@ int run_expand(const std::vector<std::string>& args) {
 // progress feed in the GUI.
 int run_update() {
   namespace fs = std::filesystem;
+  std::string ytdlp_utf8 = latch::resolved_ytdlp();
 #ifdef _WIN32
-  fs::path ytdlp = fs::path(latch::utf8_to_utf16(latch::exe_dir())) / L"yt-dlp.exe";
-  std::string ytdlp_utf8 = latch::utf16_to_utf8(ytdlp.wstring());
+  fs::path ytdlp = fs::path(latch::utf8_to_utf16(ytdlp_utf8));
 #else
-  fs::path ytdlp = fs::path(latch::exe_dir()) / "yt-dlp.exe";
-  std::string ytdlp_utf8 = ytdlp.string();
+  fs::path ytdlp = fs::path(ytdlp_utf8);
 #endif
   std::error_code ec;
   if (!fs::exists(ytdlp, ec)) {
-    latch::progress_error("yt-dlp.exe not found alongside latch executable; run `latch bootstrap` first");
+    latch::progress_error("yt-dlp.exe not found; run `latch bootstrap` first");
     return 1;
   }
 
@@ -409,7 +417,7 @@ int run_update() {
   std::fputs("{\"type\":\"update\",\"stage\":\"start\"}\n", stdout);
   std::fflush(stdout);
 
-  std::vector<std::string> argv = { ytdlp_utf8, "-U" };
+  std::vector<std::string> argv = { ytdlp_utf8, "--ignore-config", "-U" };
   std::string accumulated;
   int code = latch::run_subprocess(argv, [&](const std::string& line) {
     accumulated += line;
@@ -458,6 +466,11 @@ bool parse_kv(const std::string& a, const std::string& key, std::string* out) {
 
 int run_cli(const std::vector<std::string>& args) {
   if (args.size() < 2) return print_help();
+
+  // Pre-vendor-folder bootstraps left yt-dlp.exe / ffmpeg.exe next to the
+  // executable; adopt them into their managed homes once so they aren't
+  // re-downloaded.
+  latch::migrate_legacy_binaries();
 
   const std::string& cmd = args[1];
 

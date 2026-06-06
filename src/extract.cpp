@@ -1,6 +1,7 @@
 #include "extract.h"
 
 #include "bootstrap.h"
+#include "paths.h"
 #include "process.h"
 #include "progress.h"
 
@@ -27,7 +28,7 @@ static std::string path_to_utf8(const fs::path& p) { return p.string(); }
 #endif
 
 static std::string ytdlp_path() {
-  return path_to_utf8(path_from_utf8(exe_dir()) / "yt-dlp.exe");
+  return resolved_ytdlp();
 }
 
 static std::string trim(const std::string& s) {
@@ -50,7 +51,7 @@ ExtractResult extract(const std::string& url,
   fs::create_directories(out_dir_path, ec);
 
   if (!fs::exists(path_from_utf8(ytdlp_path()), ec)) {
-    progress_error("yt-dlp.exe not found alongside latch executable");
+    progress_error("yt-dlp.exe not found; run `latch bootstrap` first");
     return ExtractResult::YtdlpMissing;
   }
 
@@ -69,6 +70,13 @@ ExtractResult extract(const std::string& url,
   //   PATH. If neither is installed yt-dlp falls back gracefully.
   std::vector<std::string> argv = {
     ytdlp_path(),
+    // A user's global yt-dlp config (%APPDATA%\yt-dlp\config) can inject
+    // options that alter the --print/--progress-template protocol below;
+    // Latch's invocations must be hermetic.
+    "--ignore-config",
+    // Keep yt-dlp's signature/token cache inside the vendor folder
+    // instead of its default %LOCALAPPDATA%\yt-dlp.
+    "--cache-dir", ytdlp_cache_dir(),
     "--no-warnings",
     "--no-colors",
     "--newline",
@@ -78,7 +86,7 @@ ExtractResult extract(const std::string& url,
     "--progress",
     "--js-runtimes", "deno",
     "--js-runtimes", "node",
-    "--ffmpeg-location", exe_dir(),
+    "--ffmpeg-location", ffmpeg_location_dir(),
     "--progress-template",
     "download:LATCH_PROG\t%(progress._percent_str)s\t%(progress._speed_str)s\t%(progress._eta_str)s",
     "--print", "before_dl:LATCH_INFO\t%(title)s\t%(duration)s",
