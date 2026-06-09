@@ -86,7 +86,10 @@ ExtractResult extract(const std::string& url,
     "--progress",
     "--js-runtimes", "deno",
     "--js-runtimes", "node",
-    "--ffmpeg-location", ffmpeg_location_dir(),
+    // Full binary path (yt-dlp accepts a file or a dir) — strictly faithful
+    // to the resolution order; a dir-only value would mismatch an env
+    // override that names a nonstandard ffmpeg binary.
+    "--ffmpeg-location", resolved_ffmpeg(),
     "--progress-template",
     "download:LATCH_PROG\t%(progress._percent_str)s\t%(progress._speed_str)s\t%(progress._eta_str)s",
     "--print", "before_dl:LATCH_INFO\t%(title)s\t%(duration)s",

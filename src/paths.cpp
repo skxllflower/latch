@@ -168,23 +168,22 @@ std::string resolved_ffmpeg() {
   return resolve_binary("LATCH_FFMPEG", ffmpeg_name(), shared_bin_path());
 }
 
-std::string ffmpeg_location_dir() {
-  return path_to_utf8(path_from_utf8(resolved_ffmpeg()).parent_path());
-}
-
 std::string resolved_ytdlp() {
   return resolve_binary("LATCH_YTDLP", ytdlp_name(), latch_bin_path());
 }
 
-bool ffmpeg_exists() {
+// A zero-byte file counts as missing: a crashed pre-tmp-era download could
+// leave an empty binary that bare exists() would treat as installed,
+// permanently blocking re-bootstrap. file_size sets ec (and we require none)
+// on a missing OR unreadable path, so this is also the existence check.
+static bool binary_present(const std::string& path_utf8) {
   std::error_code ec;
-  return fs::exists(path_from_utf8(resolved_ffmpeg()), ec);
+  const std::uintmax_t sz = fs::file_size(path_from_utf8(path_utf8), ec);
+  return !ec && sz > 0;
 }
 
-bool ytdlp_exists() {
-  std::error_code ec;
-  return fs::exists(path_from_utf8(resolved_ytdlp()), ec);
-}
+bool ffmpeg_exists() { return binary_present(resolved_ffmpeg()); }
+bool ytdlp_exists()  { return binary_present(resolved_ytdlp()); }
 
 void migrate_legacy_binaries() {
   migrate_one(ffmpeg_name(), shared_bin_path(), "-version");

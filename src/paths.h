@@ -31,9 +31,6 @@ std::string ytdlp_cache_dir();
 // target so bootstrap and error messages agree on where it belongs.
 std::string resolved_ffmpeg();
 
-// Directory containing resolved_ffmpeg(), for yt-dlp's --ffmpeg-location.
-std::string ffmpeg_location_dir();
-
 // The yt-dlp binary to use. Resolution order mirrors ffmpeg:
 //   1. LATCH_YTDLP env var
 //   2. yt-dlp.exe next to latch.exe (portable override)

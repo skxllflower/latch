@@ -467,11 +467,6 @@ bool parse_kv(const std::string& a, const std::string& key, std::string* out) {
 int run_cli(const std::vector<std::string>& args) {
   if (args.size() < 2) return print_help();
 
-  // Pre-vendor-folder bootstraps left yt-dlp.exe / ffmpeg.exe next to the
-  // executable; adopt them into their managed homes once so they aren't
-  // re-downloaded.
-  latch::migrate_legacy_binaries();
-
   const std::string& cmd = args[1];
 
   if (cmd == "--help" || cmd == "-h") return print_help();
@@ -479,6 +474,12 @@ int run_cli(const std::vector<std::string>& args) {
     std::puts("latch 0.4.0");
     return 0;
   }
+
+  // Pre-vendor-folder bootstraps left yt-dlp.exe / ffmpeg.exe next to the
+  // executable; adopt them into their managed homes once so they aren't
+  // re-downloaded. After the trivial --help/--version returns so a pure
+  // help query never triggers a migration move or a -version subprocess.
+  latch::migrate_legacy_binaries();
 
   if (cmd == "bootstrap") {
     return latch::ensure_required() ? 0 : 1;

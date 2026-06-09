@@ -191,8 +191,12 @@ ClipResult clip(const std::string& input,
     return ClipResult::Cancelled;
   }
 
+  // file_size returns uintmax_t(-1) on error, and (-1 > 0) is TRUE for
+  // unsigned — so the zero-byte guard must gate on the error_code, not the
+  // size comparison, or a stat failure on the fresh file reads as success.
   std::error_code ec2;
-  const bool produced = fs::exists(out_path, ec2) && fs::file_size(out_path, ec2) > 0;
+  const std::uintmax_t out_sz = fs::file_size(out_path, ec2);
+  const bool produced = !ec2 && out_sz > 0;
   if (code != 0 || !produced) {
     progress_error(err_tail.empty()
       ? ("ffmpeg clip failed (exit " + std::to_string(code) + ")")
