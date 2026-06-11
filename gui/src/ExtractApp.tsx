@@ -410,6 +410,33 @@ export default function ExtractApp() {
     try { localStorage.setItem('wd-latch-output-dir', outputDir); } catch {}
   }, [outputDir]);
 
+  // Main-window close owns full app teardown: the satellite windows
+  // (chop, the pre-spawned drag overlay) would otherwise keep a headless
+  // app alive. Active downloads prompt first — closing cancels them and
+  // the Rust side kills every child + sweeps the chop temp root.
+  useEffect(() => {
+    const w = getCurrentWindow();
+    const un = w.onCloseRequested(async (e) => {
+      e.preventDefault();
+      const active = itemsRef.current.filter(it => isActive(it.status));
+      if (active.length > 0) {
+        const goAhead = await confirmInWindow({
+          title:        `${active.length} download${active.length === 1 ? '' : 's'} in progress`,
+          message:      'Closing cancels the active downloads. Partial files are cleaned up.',
+          confirmLabel: 'Cancel & close',
+          cancelLabel:  'Keep working',
+        });
+        if (!goAhead) return;
+        for (const it of active) {
+          if (it.jobId) void invoke('latch_cancel', { jobId: it.jobId });
+        }
+      }
+      void invoke('app_exit');
+    });
+    return () => { void un.then(u => u()).catch(() => {}); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Clips rendered in the Chop window surface in the downloads column,
   // so they're revealable / removable like any other Latch output.
   useEffect(() => {
@@ -1215,7 +1242,7 @@ export default function ExtractApp() {
             }
           >
             {binStatus.resolved
-              ? <Link2     size={10} className={binStatus.source === 'configured' ? 'text-emerald-400' : 'text-[color:var(--theme-warn-fg)]'} />
+              ? <Link2     size={10} className="text-emerald-400" />
               : <Link2Off  size={10} className="text-zinc-400" />}
           </span>
         )}
@@ -2060,7 +2087,7 @@ export default function ExtractApp() {
                 }
               >
                 {binStatus.resolved
-                  ? <Link2     size={9} className={binStatus.source === 'configured' ? 'text-emerald-400' : 'text-[color:var(--theme-warn-fg)]'} />
+                  ? <Link2     size={9} className="text-emerald-400" />
                   : <Link2Off  size={9} className="text-zinc-400" />}
                 <span className="text-zinc-500 uppercase tracking-wider">
                   {binStatus.resolved ? 'latch.exe' : 'no binary'}

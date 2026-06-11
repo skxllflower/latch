@@ -95,3 +95,12 @@ html, body, #root {
   opacity: 1;
   animation: wd-latch-caret-blink 1s step-end infinite;
 }
+
+/* Kill browser-default jank: tap highlights, image/link ghost drags,
+   focus rings, stray text selection (inputs keep theirs). The native
+   context menu is suppressed in main.tsx. */
+* { -webkit-tap-highlight-color: transparent; }
+img, a { -webkit-user-drag: none; }
+body { user-select: none; }
+input, textarea { user-select: text; }
+*:focus { outline: none; }

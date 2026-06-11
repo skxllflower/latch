@@ -12,6 +12,13 @@ import './styles.css';
 // spawned dialog window (dialogWindows.ts).
 const wd = new URLSearchParams(window.location.search).get('wd');
 
+// No native browser context menu anywhere except text fields.
+window.addEventListener('contextmenu', (e) => {
+  const t = e.target as HTMLElement | null;
+  if (t?.closest('input, textarea')) return;
+  e.preventDefault();
+});
+
 // Blocks input on the parent window while a dialog window is up.
 function DialogLock() {
   const count = useSyncExternalStore(subscribeOpenDialogs, getOpenDialogCount);

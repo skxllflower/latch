@@ -891,38 +891,102 @@ export default function ChopApp() {
     return null;
   }, [audioPath]);
 
-  // Drag a region out as a file: render the clip to the persistent clips
-  // folder and hand it to the OS drag; the floating chip is the visual.
-  // cleanupTempOnShellDrop deletes our copy after an Explorer/desktop
-  // drop (the OS made the user's copy); app drops keep the path live.
-  const beginRegionDragOut = useCallback(async (r: ChopRegion, forceVideo?: boolean) => {
-    if (!audioPath || !tempDirRef.current) return;
+  // Render a region's clip to the persistent clips folder. Backs both
+  // the background PRE-render (so a drag can start instantly inside the
+  // gesture) and the drag path's render-on-miss. Stamps clipPath only
+  // if the region's bounds didn't change mid-render.
+  const renderRegionClip = useCallback(async (id: string, forceVideo?: boolean): Promise<string | null> => {
+    const r = regionsRef.current.find((x) => x.id === id);
+    if (!r || !audioPath || r.clipState === 'rendering') return null;
     const { input, video, ext } = clipInputFor(r, forceVideo);
-    const idx = regionsRef.current.findIndex((x) => x.id === r.id);
+    const idx = regionsRef.current.findIndex((x) => x.id === id);
     const stem = regionFileStem(r, idx < 0 ? 0 : idx, sourceStem);
-    const fileName = `${stem}.${ext}`;
-    let clipsDir = tempDirRef.current;
-    try { clipsDir = await ensureClipsDir(); } catch { /* fall back to temp */ }
+    let clipsDir = tempDirRef.current ?? '';
+    try { clipsDir = await ensureClipsDir(); } catch { /* temp fallback */ }
+    if (!clipsDir) return null;
     const dsep = clipsDir.includes('\\') ? '\\' : '/';
-    const out = `${clipsDir}${dsep}${fileName}`;
-    const chip = await buildDragChip(r, video);
+    setClip(id, 'rendering');
     try {
-      await startOverlayDrag({
-        paths: [out], fileName, isDirectory: false, count: 1,
-        waveformDataUrl: chip?.url ?? null, bgColor: chip?.bg ?? null,
+      const path = await runClip({
+        input, output: `${clipsDir}${dsep}${stem}.${ext}`,
+        startSec: r.startSec, endSec: r.endSec, video, overwrite: false,
       });
-      // Render fresh each drag: a prior render may have been cleaned up
-      // after a folder drop, so a cached path can't be trusted. No-clobber
-      // keeps any path an app has already linked byte-stable.
-      setClip(r.id, 'rendering');
-      const path = await runClip({ input, output: out, startSec: r.startSec, endSec: r.endSec, video, overwrite: false });
-      setClip(r.id, 'ready', path);
-      await invoke('start_os_file_drag', { paths: [path], previewPng: null, transparent: true, cleanupTempOnShellDrop: true });
+      const cur = regionsRef.current.find((x) => x.id === id);
+      const variantIsDefault = (forceVideo ?? (r.exportVideo ?? false)) === (cur?.exportVideo ?? false);
+      if (cur && cur.startSec === r.startSec && cur.endSec === r.endSec && variantIsDefault) {
+        setClip(id, 'ready', path);
+      } else if (cur) {
+        setClip(id, 'none'); // bounds/variant moved on — the cache is stale
+      }
+      return path;
     } catch {
-      setClip(r.id, 'error');
-      void endOverlayDrag();
+      setClip(id, 'error');
+      return null;
     }
-  }, [audioPath, clipInputFor, runClip, setClip, buildDragChip, sourceStem, ensureClipsDir]);
+  }, [audioPath, clipInputFor, runClip, setClip, sourceStem, ensureClipsDir]);
+
+  // Background pre-render, debounced — runs after a region settles so the
+  // file EXISTS by drag time. DoDragDrop must start inside the pointer
+  // gesture; a multi-second render outlives it (the no-op-drag /
+  // stuck-chip failure this replaces).
+  const renderTimersRef = useRef<Map<string, number>>(new Map());
+  const scheduleClipRender = useCallback((id: string) => {
+    const prev = renderTimersRef.current.get(id);
+    if (prev) window.clearTimeout(prev);
+    renderTimersRef.current.set(id, window.setTimeout(() => {
+      renderTimersRef.current.delete(id);
+      const r = regionsRef.current.find((x) => x.id === id);
+      if (r && r.clipState !== 'ready' && r.clipState !== 'rendering') {
+        void renderRegionClip(id);
+      }
+    }, 700));
+  }, [renderRegionClip]);
+
+  // The selected region keeps a fresh render at all times (bound edits
+  // invalidate clipState, which re-arms this).
+  useEffect(() => {
+    if (phase !== 'ready' || !selectedId) return;
+    const r = regions.find((x) => x.id === selectedId);
+    if (r && r.clipState === 'none') scheduleClipRender(selectedId);
+  }, [phase, regions, selectedId, scheduleClipRender]);
+
+  // Drag a region out as a file. With a fresh pre-render the OS drag
+  // starts immediately (inside the gesture); without one, kick the
+  // render and tell the user to drag again — starting DoDragDrop after
+  // the button is already up is the no-op-drag failure mode.
+  const beginRegionDragOut = useCallback(async (r: ChopRegion, forceVideo?: boolean) => {
+    if (!audioPath) return;
+    const wantVideo = forceVideo ?? r.exportVideo ?? false;
+    const cachedVariantMatches = wantVideo === (r.exportVideo ?? false);
+    if (r.clipPath && r.clipState === 'ready' && cachedVariantMatches) {
+      const fileName = r.clipPath.split(/[\\/]/).pop() ?? 'clip';
+      const chip = await buildDragChip(r, wantVideo);
+      try {
+        await startOverlayDrag({
+          paths: [r.clipPath], fileName, isDirectory: false, count: 1,
+          waveformDataUrl: chip?.url ?? null, bgColor: chip?.bg ?? null,
+        });
+        // The clips folder is the persistence story (DAW references) —
+        // never delete the cache after a shell drop.
+        await invoke('start_os_file_drag', {
+          paths: [r.clipPath], previewPng: null, transparent: true,
+          cleanupTempOnShellDrop: false,
+        });
+      } catch {
+        void endOverlayDrag();
+      }
+      return;
+    }
+    setExportMsg(wantVideo
+      ? 'Rendering video clip… drag again when the spinner clears'
+      : 'Rendering clip… drag again in a moment');
+    const path = await renderRegionClip(r.id, forceVideo);
+    if (path) {
+      const name = path.split(/[\\/]/).pop() ?? 'clip';
+      setExportMsg(`Ready: ${name} (drag again, or find it in Latch Clips)`);
+      void emit('wd-latch-clip-exported', { path, title: name });
+    }
+  }, [audioPath, buildDragChip, renderRegionClip]);
 
   const handleRegionDragOut = useCallback((id: string, opts: { video: boolean }) => {
     const r = regionsRef.current.find((x) => x.id === id);
@@ -952,7 +1016,10 @@ export default function ChopApp() {
           {seed?.title ? baseName(seed.title) : (seed?.url ?? 'no source')}
           {hasVideo ? ' · video' : ''}
         </span>
-        <button onClick={() => { void getCurrentWindow().close(); }}
+        <button onClick={() => {
+            const w = getCurrentWindow();
+            void w.close().catch(() => w.destroy().catch(() => {}));
+          }}
           className="text-[color:var(--theme-text-muted)] hover:text-[color:var(--theme-text-heading)] hover:bg-[var(--theme-bg-elevated)] p-0.5 transition-none shrink-0" title="Close">
           <X size={11} />
         </button>
@@ -971,11 +1038,15 @@ export default function ChopApp() {
             <VideoPreview ref={videoRef} src={convertFileSrc(videoPath)} path={videoPath} suppressChip disableKeyboard
               onPlayingChange={setVideoPlaying}
               onReady={() => {
-                // After the low-res → HD swap reload, restore the playhead.
+                // After the low-res → HD swap reload, restore the playhead —
+                // and the PAUSE state: the engine autoplays on open, so a
+                // paused session would otherwise burst into playback when
+                // the HD file lands mid-thought.
                 if (pendingSeekRef.current != null) {
                   const t = pendingSeekRef.current; pendingSeekRef.current = null;
                   videoRef.current?.seek(t);
                   if (pendingPlayRef.current) videoRef.current?.play();
+                  else videoRef.current?.pause();
                   pendingPlayRef.current = false;
                 }
               }} />

@@ -72,6 +72,7 @@ pub fn run() {
             tools::tool_binary_probe,
             tools::os_reveal_path,
             tools::os_open_path,
+            tools::app_exit,
             chop::latch_chop_alloc_dir,
             chop::latch_chop_cleanup_dir,
             chop::latch_clips_dir,

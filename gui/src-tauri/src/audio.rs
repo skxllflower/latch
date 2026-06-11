@@ -67,6 +67,12 @@ const VA_CH: u16 = 2;
 // without unbounded growth.
 const VA_RING_CAP: usize = (VA_SR as usize) * (VA_CH as usize) * 4;
 
+// Samples are counted when PULLED into the device pipeline, which runs
+// a couple hundred ms ahead of what's audible — report position minus
+// this estimate so the video lands on the HEARD audio. Ear-tunable:
+// raise if audio still trails the picture, lower if it leads.
+const VA_OUTPUT_LATENCY_SEC: f64 = 0.15;
+
 struct VaShared {
     ring: std::sync::Mutex<std::collections::VecDeque<f32>>,
     done: std::sync::atomic::AtomicBool,
@@ -447,10 +453,13 @@ fn audio_thread(app: AppHandle, rx: Receiver<Cmd>) {
             if done && empty {
                 v_drained = true;
             } else {
-                let vpos = stream.position();
+                let raw = stream.position();
+                let vpos = (raw - VA_OUTPUT_LATENCY_SEC).max(stream.start_sec);
+                // Loop wraps on the RAW (pulled) position — the compensated
+                // one would let 150ms past the out-point reach the speakers.
                 if vd.playing {
                     if let Some((lo, hi)) = vd.looping {
-                        if vpos >= hi {
+                        if raw >= hi {
                             v_wrap_to = Some(lo);
                         }
                     }

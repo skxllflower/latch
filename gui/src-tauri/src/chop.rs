@@ -37,13 +37,23 @@ pub fn latch_chop_cleanup_dir(dir: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Remove the whole chop temp root — app-exit cleanup so cancelled
+/// sessions never strand downloads in %TEMP%.
+pub fn sweep_temp_root() {
+    let _ = std::fs::remove_dir_all(chop_root());
+}
+
 /// Persistent clips folder (Documents\Latch Clips) — exported + rendered
-/// clips land here so DAW references survive the temp-dir sweep.
+/// clips land here so DAW references survive the temp-dir sweep. Resolved
+/// through the OS known-folder API (NOT %USERPROFILE%\Documents string
+/// math) so OneDrive-redirected Documents folders land correctly.
 #[tauri::command]
-pub fn latch_clips_dir() -> Result<String, String> {
-    let docs = std::env::var_os("USERPROFILE")
-        .map(|h| PathBuf::from(h).join("Documents"))
-        .ok_or_else(|| "no home directory".to_string())?;
+pub fn latch_clips_dir(app: AppHandle) -> Result<String, String> {
+    use tauri::Manager;
+    let docs = app
+        .path()
+        .document_dir()
+        .map_err(|e| format!("no Documents dir: {e}"))?;
     let dir = docs.join("Latch Clips");
     std::fs::create_dir_all(&dir).map_err(|e| format!("clips dir: {e}"))?;
     Ok(dir.to_string_lossy().into_owned())

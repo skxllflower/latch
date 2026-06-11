@@ -67,27 +67,31 @@ export const DragChip: React.FC<DragChipProps> = ({
         overflow: 'hidden',
         lineHeight: 0,
       }}>
-        <img
-          src={waveformDataUrl}
-          alt=""
-          style={{
-            display: 'block',
-            // Fit within the chip box PRESERVING ASPECT RATIO. A fixed
-            // width with only maxHeight squished tall sources (e.g. a
-            // 16:9 video frame got crushed to 320x140); max-both + auto
-            // scales down to fit 320x140 with the source's real aspect,
-            // so video frames and waveform crops alike stay undistorted.
-            maxWidth:  320,
-            maxHeight: 140,
-            width:     'auto',
-            height:    'auto',
-            // Centered over the label strip — a long filename makes the
-            // strip (and thus the card) wider than a 16:9 frame, which
-            // otherwise reads as deadspace to the image's right.
-            margin:    '0 auto',
-            background: stripBg,
-          }}
-        />
+        {/* Fixed image stage: a blurred cover-scaled copy fills the box
+            behind a sharp aspect-fit foreground, so any source aspect
+            (16:9 frame, wide waveform crop) fills the chip with no
+            letterbox deadspace. */}
+        <div style={{ position: 'relative', width: 320, height: 140, overflow: 'hidden', background: stripBg }}>
+          <img
+            src={waveformDataUrl}
+            alt=""
+            aria-hidden
+            style={{
+              position: 'absolute', inset: 0, width: '100%', height: '100%',
+              objectFit: 'cover',
+              filter: 'blur(10px) brightness(0.55)',
+              transform: 'scale(1.2)',
+            }}
+          />
+          <img
+            src={waveformDataUrl}
+            alt=""
+            style={{
+              position: 'absolute', inset: 0, width: '100%', height: '100%',
+              objectFit: 'contain',
+            }}
+          />
+        </div>
         <div style={{
           padding: '3px 8px',
           fontSize: '0.625rem',

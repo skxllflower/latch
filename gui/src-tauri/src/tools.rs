@@ -31,16 +31,18 @@ fn latch_jobs() -> &'static JobMap {
 //   2) sibling dev checkout at %USERPROFILE%\Dev\{name}\build\Debug
 //   3) installed locations (exe-relative siblings, then the default
 //      vendor spaces — Program Files\Vacant Systems on Windows)
-fn dev_tool_fallback(name: &str) -> Option<PathBuf> {
-    let home = std::env::var_os("USERPROFILE")?;
-    Some(
-        PathBuf::from(home)
-            .join("Dev")
-            .join(name)
-            .join("build")
-            .join("Debug")
-            .join(format!("{}.exe", name)),
-    )
+// Release first: a Debug-built decoder can't sustain realtime video
+// (decode throughput caps near 1x — shuttle/reverse starve), so when
+// both configurations exist the Release build must win.
+fn dev_tool_fallbacks(name: &str) -> Vec<PathBuf> {
+    let Some(home) = std::env::var_os("USERPROFILE") else {
+        return Vec::new();
+    };
+    let base = PathBuf::from(home).join("Dev").join(name).join("build");
+    vec![
+        base.join("Release").join(format!("{}.exe", name)),
+        base.join("Debug").join(format!("{}.exe", name)),
+    ]
 }
 
 fn tool_dir_name(name: &str) -> String {
@@ -112,10 +114,9 @@ pub(crate) fn find_tool_binary(name: &str, configured: &str) -> Result<PathBuf, 
             return Ok(pb);
         }
     }
-    let dev = dev_tool_fallback(name);
-    if let Some(d) = &dev {
-        if d.exists() {
-            return Ok(d.clone());
+    for cand in dev_tool_fallbacks(name) {
+        if cand.exists() {
+            return Ok(cand);
         }
     }
     for cand in installed_tool_fallbacks(name) {
@@ -128,8 +129,7 @@ pub(crate) fn find_tool_binary(name: &str, configured: &str) -> Result<PathBuf, 
         name,
         env_var,
         tool_dir_name(name),
-        dev.map(|d| d.display().to_string())
-            .unwrap_or_else(|| format!(r"%USERPROFILE%\Dev\{}\build\Debug", name)),
+        format!(r"%USERPROFILE%\Dev\{}\build", name),
     ))
 }
 
@@ -530,12 +530,11 @@ pub fn tool_binary_probe(name: String, configured: String) -> ToolBinaryStatus {
             };
         }
     }
-    let dev = dev_tool_fallback(&name);
-    if let Some(d) = &dev {
-        if d.exists() {
+    for cand in dev_tool_fallbacks(&name) {
+        if cand.exists() {
             return ToolBinaryStatus {
                 resolved: true,
-                path:     d.display().to_string(),
+                path:     cand.display().to_string(),
                 source:   "dev".into(),
                 message:  "dev fallback".into(),
             };
@@ -559,10 +558,26 @@ pub fn tool_binary_probe(name: String, configured: String) -> ToolBinaryStatus {
             "{}.exe not found. Set {} env, reinstall, or build at {}.",
             name,
             env_var,
-            dev.map(|d| d.display().to_string())
-                .unwrap_or_else(|| format!(r"%USERPROFILE%\Dev\{}\build\Debug", name)),
+            format!(r"%USERPROFILE%\Dev\{}\build", name),
         ),
     }
+}
+
+/// Tear the whole app down: kill every tracked child, sweep the chop
+/// temp root, exit. The main window's close flow calls this so the
+/// satellite windows (chop, the pre-spawned drag overlay) never keep a
+/// headless app alive, and no yt-dlp/ffmpeg tree outlives the GUI.
+#[tauri::command]
+pub fn app_exit(app: AppHandle) {
+    if let Ok(mut map) = latch_jobs().lock() {
+        for (_, child) in map.drain() {
+            if let Ok(mut c) = child.lock() {
+                let _ = c.kill();
+            }
+        }
+    }
+    crate::chop::sweep_temp_root();
+    app.exit(0);
 }
 
 /// Whole-track audio peak bins for the video preview's scrubber waveform.
