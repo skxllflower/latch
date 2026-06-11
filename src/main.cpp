@@ -150,7 +150,10 @@ int run_probe(const std::vector<std::string>& args) {
     "-f", "bestaudio",
     "--js-runtimes", "deno",
     "--js-runtimes", "node",
-    "--print", "LATCH_PROBE\t%(title)s\t%(duration)s\t%(uploader)s",
+    // %(chapters)j renders the chapter list as JSON (a j-converted field
+    // never contains a raw tab — control chars are escaped), so it can ride
+    // the same tab-separated line. Missing chapters print as "NA".
+    "--print", "LATCH_PROBE\t%(title)s\t%(duration)s\t%(uploader)s\t%(chapters)j",
   };
   if (!cookies.empty()) {
     argv.push_back("--cookies-from-browser");
@@ -158,25 +161,25 @@ int run_probe(const std::vector<std::string>& args) {
   }
   argv.push_back(url);
 
-  std::string title, duration, uploader, error_msg;
+  std::string title, duration, uploader, chapters_json, error_msg;
   bool got_line = false;
   latch::run_subprocess(argv, [&](const std::string& line) {
     if (line.rfind("LATCH_PROBE\t", 0) == 0) {
       got_line = true;
       std::string rest = line.substr(12);
-      auto t1 = rest.find('\t');
-      auto t2 = (t1 == std::string::npos) ? std::string::npos : rest.find('\t', t1 + 1);
-      if (t1 != std::string::npos) {
-        title = rest.substr(0, t1);
-        if (t2 != std::string::npos) {
-          duration = rest.substr(t1 + 1, t2 - t1 - 1);
-          uploader = rest.substr(t2 + 1);
-        } else {
-          duration = rest.substr(t1 + 1);
+      std::string fields[4];
+      size_t fi = 0, start = 0;
+      for (size_t j = 0; j < rest.size() && fi < 3; ++j) {
+        if (rest[j] == '\t') {
+          fields[fi++] = rest.substr(start, j - start);
+          start = j + 1;
         }
-      } else {
-        title = rest;
       }
+      fields[fi] = rest.substr(start);
+      title         = fields[0];
+      duration      = fields[1];
+      uploader      = fields[2];
+      chapters_json = fields[3];
     } else if (line.rfind("ERROR:", 0) == 0) {
       error_msg = line;
     }
@@ -212,9 +215,13 @@ int run_probe(const std::vector<std::string>& args) {
   double dur_s = 0.0;
   if (duration != "NA") { try { dur_s = std::stod(duration); } catch (...) {} }
 
+  // chapters_json is yt-dlp's own JSON (or "NA"/"null" when absent) —
+  // embed it raw, gated on it actually being a JSON array.
+  const bool has_chapters = !chapters_json.empty() && chapters_json[0] == '[';
   std::fprintf(stdout,
-    "{\"type\":\"probe\",\"title\":\"%s\",\"duration_s\":%.3f,\"uploader\":\"%s\"}\n",
-    escape(title).c_str(), dur_s, escape(uploader == "NA" ? "" : uploader).c_str());
+    "{\"type\":\"probe\",\"title\":\"%s\",\"duration_s\":%.3f,\"uploader\":\"%s\",\"chapters\":%s}\n",
+    escape(title).c_str(), dur_s, escape(uploader == "NA" ? "" : uploader).c_str(),
+    has_chapters ? chapters_json.c_str() : "[]");
   return 0;
 }
 
