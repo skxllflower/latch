@@ -30,7 +30,9 @@ import {
 import { playbackEngine } from './playbackEngine';
 import { WaveformView, type WaveAudioFile } from './Waveform';
 import { ChopRegionOverlay } from './ChopRegionOverlay';
-import { type VideoViewHandle, VideoPreview } from './videoStub';
+import { type VideoViewHandle } from './VideoView';
+import { VideoPreview } from './VideoPreview';
+import { latheStatus } from './latheStatus';
 import { RegionLoopWatcher } from './chopAudition';
 import { useChopRegions } from './useChopRegions';
 import {
@@ -462,6 +464,14 @@ export default function ChopApp() {
     });
     void emit('wd-latch-chop-ready', {});
     return () => { void un.then((u) => u()).catch(() => {}); };
+  }, []);
+
+  // Resolve lathe once at boot — the video preview (frame server + the
+  // peaks scrubber) reads latheStatus synchronously. Missing lathe
+  // degrades gracefully (VideoPreview shows its notice; audio chop is
+  // unaffected).
+  useEffect(() => {
+    void latheStatus.refresh('');
   }, []);
 
   // Reveal after first paint (created hidden → no white flash). Also pin a
@@ -1161,7 +1171,13 @@ export default function ChopApp() {
               Chapters · {chapters.length}
             </button>
           )}
-          {/* Video preview toggle returns with the video-engine port. */}
+          {phase === 'ready' && (
+            <button className={railBtn(hasVideo ? showVideo : false)} onClick={onToggleVideo} disabled={videoFetching && !videoPath}
+              title={(videoFetching && !videoPath) ? 'Fetching video…' : hasVideo ? (showVideo ? 'Hide the video preview' : 'Show the video preview') : 'Fetch this link as video and show the preview'}>
+              {(videoFetching && !videoPath) ? <Loader2 size={10} className="inline -mt-px mr-1 animate-spin" /> : <Film size={10} className="inline -mt-px mr-1" />}
+              Video
+            </button>
+          )}
           <span className={`flex-1 min-w-0 truncate ${mutedLabel} tabular-nums`}>
             {exportMsg || (hdLoading
               ? 'Full-res video loading (video export soon)…'

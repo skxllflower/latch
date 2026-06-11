@@ -8,9 +8,11 @@ mod explorer_folder;
 mod job_object;
 #[cfg(target_os = "windows")]
 mod native_drag_chip;
+mod cursor;
 mod os_drag;
 mod peaks;
 mod tools;
+mod video_stream_server;
 
 use tauri::{WebviewUrl, WebviewWindowBuilder};
 
@@ -57,6 +59,7 @@ pub fn run() {
             }
             #[cfg(target_os = "windows")]
             chip_bitmap_server::start();
+            video_stream_server::start();
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -83,6 +86,17 @@ pub fn run() {
             drag_overlay::drag_chip_set_bitmap,
             drag_overlay::get_chip_bitmap_endpoint,
             os_drag::start_os_file_drag,
+            video_stream_server::video_stream_endpoint,
+            audio::start_video_audio,
+            audio::pause_video_audio,
+            audio::resume_video_audio,
+            audio::stop_video_audio,
+            audio::seek_video_audio,
+            audio::set_video_audio_volume,
+            audio::set_video_audio_rate,
+            audio::set_video_audio_loop,
+            tools::video_audio_peaks,
+            cursor::set_native_cursor_position,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Latch");

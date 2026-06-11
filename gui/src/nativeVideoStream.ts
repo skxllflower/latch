@@ -1,0 +1,693 @@
+// Webview engine for native video preview (video_stream_server.rs +
+// `lathe decode-server` / `lathe stream-frames`). Owns a localhost frame
+// stream, a bounded decoded-frame buffer, and a playback clock, and presents
+// the frame matching the clock; the audio daemon is the sync master (the
+// clock eases onto its vaudio_pos events).
+//
+// The picture path never touches WebView2's <video> decoder (the thing that
+// hard-crashes the host on big/exotic video): frames are decoded natively by
+// lathe and drawn to a canvas, which Chromium handles reliably.
+//
+// Two stream dialects, told apart by the X-Wavdesk-Proto response header:
+//
+//  "pts" (persistent decode-server): chunks of [u64 LE pts us][u32 LE len]
+//  [payload]; a zero-length chunk is a SEEK MARKER. seek/play/pause are
+//  POSTs to /vcontrol (the decoder seeks IN-PROCESS — no re-spawn, which is
+//  what makes scrubbing smooth). Frames carry their REAL time, so placement
+//  across seeks is exact. Stale in-flight frames between issuing a seek and
+//  its marker arriving are discarded (holdingForSeek + pendingMarkers).
+//
+//  "raw" (stream-frames fallback): headerless concatenated RGBA frames timed
+//  by streamStart + index/fps; seek = abort + reconnect with start=<t>.
+//
+// Backpressure does the realtime throttling: the reader only fills the buffer
+// ~BUFFER_AHEAD_SEC past the clock, so when it's full the socket buffer fills,
+// the Rust server's write blocks, lathe blocks, and the decode paces to ~1x.
+
+import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
+import { latheStatus } from './latheStatus';
+
+export interface NativeStreamConfig {
+  path: string;
+  height: number;
+  fps: number;
+}
+
+export interface NativeGeom {
+  w: number;
+  h: number;
+  fps: number;
+  dur: number;
+  // HDR transfer of the source ('pq' / 'hlg'), or '' for SDR. The decoder
+  // tone-maps HDR to SDR by default; setTonemap toggles the raw view.
+  hdr: '' | 'pq' | 'hlg';
+}
+
+export interface NativeVideoCallbacks {
+  onGeom?: (g: NativeGeom) => void;
+  onDuration?: (d: number) => void;
+  // Present this frame now. The ENGINE owns the bitmap's lifecycle (it closes
+  // frames as they fall out of the buffer) — the consumer must NOT close it.
+  onFrame: (bmp: ImageBitmap) => void;
+  onTime?: (t: number) => void;
+  onState?: (playing: boolean) => void;
+  // A reverse shuttle ran out of video (clock hit 0): the engine stops itself;
+  // the GUI clears its JKL level indicator here.
+  onShuttleEnd?: () => void;
+  onError?: (msg: string) => void;
+}
+
+// Read at most this far ahead of the clock, in seconds. Small = tight
+// backpressure (decode ~1x) + low memory; big enough to smooth jitter.
+const BUFFER_AHEAD_SEC = 0.6;
+
+// Present frames this far AHEAD of the (audio-driven) clock to compensate for
+// the video pipeline's latency (decode → transport → ImageBitmap → canvas),
+// which otherwise leaves the picture a touch behind the sound. Tune to taste:
+// raise if video still lags audio, lower if it starts to lead.
+const VIDEO_AV_LEAD_SEC = 0.18;
+
+// Seek debounce. Persistent commands are cheap (no re-spawn) but each still
+// costs the decoder a keyframe + decode-forward, so a held scrub coalesces;
+// raw restarts both ffmpeg pipes and needs the wider window.
+const SEEK_DEBOUNCE_PTS_MS = 50;
+const SEEK_DEBOUNCE_RAW_MS = 120;
+
+const sleep = (ms: number) => new Promise<void>((r) => window.setTimeout(r, ms));
+
+function parseGeomHeader(h: string | null): NativeGeom | null {
+  if (!h) return null;
+  let w = 0, hh = 0, fps = 0, dur = 0;
+  let hdr: NativeGeom['hdr'] = '';
+  for (const part of h.split(';')) {
+    const [k, v] = part.split('=');
+    if (k === 'hdr') { hdr = v === 'pq' || v === 'hlg' ? v : ''; continue; }
+    const n = Number(v);
+    if (k === 'w') w = n;
+    else if (k === 'h') hh = n;
+    else if (k === 'fps') fps = n;
+    else if (k === 'dur') dur = n;
+  }
+  return w > 0 && hh > 0 ? { w, h: hh, fps, dur, hdr } : null;
+}
+
+export class NativeVideoEngine {
+  private readonly cfg: NativeStreamConfig;
+  private readonly cb: NativeVideoCallbacks;
+
+  private frames: { t: number; bmp: ImageBitmap }[] = [];
+  private w = 0;
+  private h = 0;
+  private fps = 30;
+  private frameSize = 0;
+  private _duration = 0;
+  private _playing = false;
+  private clock = 0;          // playback position, seconds
+  private lastNow = 0;        // wall clock at last present() tick
+  private streamStart = 0;    // raw mode: -ss offset of the live connection
+  private frameIdx = 0;       // raw mode: frame counter within the connection
+  private presentedT = -1;    // t of the frame currently on screen
+  private lastTimeEmit = 0;
+  private endpointBase = '';
+  private ac: AbortController | null = null;
+  private connToken = 0;      // bumped on (re)connect; stale readers self-cancel
+  private raf = 0;
+  private destroyed = false;
+
+  // Transport state mirrored from the GUI. rate is tape-style (the daemon
+  // repitches the stream; position events already track it). loopRegion wraps
+  // the clock back to inSec when it crosses outSec.
+  private rate = 1;
+  private volume = 1;
+  private loopRegion: { inSec: number; outSec: number } | null = null;
+  // True while the DECODERS hold the loop region (persistent dialect): they
+  // wrap themselves gaplessly and the clock just follows; false = raw-dialect
+  // fallback, where present() wraps with a plain seek.
+  private decoderLoop = false;
+  // Streamed height (the engine reconnects at the current clock when the
+  // display target outgrows/shrinks past it — fullscreen, popout resize).
+  private curHeight: number;
+  private connectedHeight = 0;     // height the live stream was opened at
+  // HDR→SDR tone-mapping: the decoder defaults ON for HDR sources; this
+  // mirrors the toggle so reconnects re-apply an OFF state.
+  private tonemapOn = true;
+  // Persistent streams never EOF on their own; an instant-death respawn loop
+  // (file deleted, decoder crashing on load) is capped here.
+  private connectedAt = 0;
+  private quickDeaths = 0;
+
+  // Playback direction. -1 = TRUE reverse: the decoders stream backward
+  // (backward-GOP video chunks, sample-reversed audio), the reversed audio
+  // plays audibly and stays the clock MASTER (vaudio_pos descends), and the
+  // video follows — same sync model as forward, just with a negative slope.
+  // (NEVER WebCodecs here; that decoder is the host-crasher this engine
+  // exists to avoid.)
+  private dir: 1 | -1 = 1;
+  // JKL shuttle: a forward/reverse speed override riding the audio-rate path
+  // (tape-style, audio caps at 4x). 0 = no shuttle (the speed button's rate).
+  private shuttleRate = 0;
+
+  // Persistent (pts) dialect state.
+  private persistent = false;
+  private streamId = '';
+  // Stale-frame gate around an in-process seek: holdingForSeek covers the
+  // window between seek() snapping locally and the debounced /vcontrol POST;
+  // pendingMarkers counts seek commands whose marker hasn't come back. Frames
+  // are accepted only when both are clear.
+  private holdingForSeek = false;
+  private pendingMarkers = 0;
+
+  // Audio-master sync. The daemon plays the video's audio and emits
+  // vaudio_pos; when audio is present it drives the clock and the video
+  // follows. No audio track → audioActive stays false and we fall back to
+  // the wall-clock (muted video).
+  private audioActive = false;
+  private audioPos = 0;       // last vaudio_pos (sec)
+  private audioPosAt = 0;     // performance.now() when audioPos arrived
+  // Set once the first frame is buffered: the clock holds until then (no startup
+  // race), then runs on the wall clock and eases onto the audio position. Reset
+  // on seek so the same hold re-arms while the new position spins up.
+  private started = false;
+  private seekTimer = 0;      // debounce: coalesces a held scrub / arrow flurry
+  private unlistenAudio: (() => void) | null = null;
+
+  constructor(cfg: NativeStreamConfig, cb: NativeVideoCallbacks) {
+    this.cfg = cfg;
+    this.cb = cb;
+    this.curHeight = cfg.height;
+    this.lastNow = performance.now();
+    this._playing = true; // autoplay on open
+    void this.connect(0);
+    void this.startAudio();
+    this.raf = requestAnimationFrame(this.present);
+    this.cb.onState?.(true);
+  }
+
+  // Subscribe to the daemon's video-audio position, then ask it to start playing
+  // this file's audio. Best-effort: if there's no audio track the daemon reports
+  // vaudio_state{active:false} and the video stays on the wall-clock, muted.
+  private async startAudio(): Promise<void> {
+    try {
+      this.unlistenAudio = await listen('audio_event', (e) => {
+        const p = e.payload as { event?: string; sec?: number; active?: boolean } | null;
+        if (!p) return;
+        if (p.event === 'vaudio_pos' && typeof p.sec === 'number') {
+          // Only a position event activates the audio clock — it carries the
+          // anchor (audioPos + audioPosAt) the ease needs. (vaudio_state{active:
+          // true} is just "audio is coming"; activating on it would ease from an
+          // un-anchored audioPosAt=0 and race to page-uptime seconds.)
+          this.audioPos = p.sec;
+          this.audioPosAt = performance.now();
+          this.audioActive = true;
+        } else if (p.event === 'vaudio_state' && !p.active) {
+          this.audioActive = false; // confirmed no audio track → wall clock, muted
+        }
+      });
+    } catch { this.unlistenAudio = null; }
+    if (this.destroyed) { this.unlistenAudio?.(); return; }
+    const lathe = latheStatus.get().path ?? '';
+    try {
+      await invoke('start_video_audio', { path: this.cfg.path, start: 0, lathe });
+      // The daemon resets per-stream volume/rate to 1.0 at begin — re-apply
+      // what the GUI set (it may have called the setters before the stream
+      // existed, where the daemon-side ops were no-ops).
+      void invoke('set_video_audio_volume', { vol: this.volume }).catch(() => {});
+      if (this.rate !== 1) void invoke('set_video_audio_rate', { rate: this.rate }).catch(() => {});
+    } catch { /* no audio / failure → muted video (wall clock) */ }
+  }
+
+  get duration(): number { return this._duration; }
+  get playing(): boolean { return this._playing; }
+  get currentTime(): number { return this.clock; }
+
+  play(): void {
+    if (this.destroyed || this._playing) return;
+    if (this.dir > 0 && this._duration > 0 && this.clock >= this._duration) this.seek(0);
+    this._playing = true;
+    this.lastNow = performance.now();
+    void this.control('play');
+    void invoke('resume_video_audio').catch(() => {});
+    this.cb.onState?.(true);
+  }
+
+  pause(): void {
+    if (this.destroyed || !this._playing) return;
+    this._playing = false;
+    void this.control('pause');
+    void invoke('pause_video_audio').catch(() => {});
+    this.cb.onState?.(false);
+  }
+
+  toggle(): void { this._playing ? this.pause() : this.play(); }
+
+  // Volume fader (0..1; the daemon composes it with the Control Room master).
+  setVolume(v: number): void {
+    this.volume = Math.max(0, Math.min(1, v));
+    void invoke('set_video_audio_volume', { vol: this.volume }).catch(() => {});
+  }
+
+  // Playback rate (tape-style: pitch follows speed). The audio is repitched in
+  // the daemon and stays the clock master — its position events advance at the
+  // new rate, so the video follows automatically; the wall-clock fallback and
+  // the A/V lead are scaled here for the muted / between-events cases.
+  setRate(r: number): void {
+    this.rate = Math.max(0.25, Math.min(4, r));
+    void invoke('set_video_audio_rate', { rate: this.rate }).catch(() => {});
+  }
+
+  // Loop the in→out section while playing. null clears. In the persistent
+  // dialect BOTH decoders arm the region and wrap themselves GAPLESSLY (the
+  // audio is sample-exact; position rebases ride the in-band wrap markers);
+  // the raw fallback keeps the old seek-at-out behavior in present().
+  setLoopRegion(region: { inSec: number; outSec: number } | null): void {
+    this.loopRegion = region && region.outSec > region.inSec ? region : null;
+    void this.armDecoderLoop();
+  }
+
+  private async armDecoderLoop(): Promise<void> {
+    const r = this.loopRegion;
+    const params = { in: r ? r.inSec : 0, out: r ? r.outSec : 0 };
+    if (this.persistent) {
+      this.decoderLoop = !!r && (await this.control('loop', undefined, params));
+    } else {
+      this.decoderLoop = false;
+    }
+    void invoke('set_video_audio_loop', { inSec: params.in, outSec: params.out }).catch(() => {});
+  }
+
+  // Re-stream at a new capped height (display target grew/shrank: fullscreen,
+  // popout resize). Reconnects at the current clock; audio is untouched, so a
+  // mid-play switch is just a brief picture swap. Deferred while reversing (a
+  // fresh stream starts forward) — it lands when the shuttle lets go.
+  setHeight(h: number): void {
+    if (this.destroyed || h === this.curHeight || h <= 0) return;
+    this.curHeight = h;
+    if (this.dir < 0) return;
+    void this.connect(this.clock);
+  }
+
+  // Toggle HDR→SDR tone-mapping (only meaningful for hdr-flagged sources;
+  // the decoder defaults ON).
+  setTonemap(on: boolean): void {
+    this.tonemapOn = on;
+    void this.control('tonemap', undefined, undefined, on);
+  }
+
+  // The unsigned rate the audio master is running at (shuttle overrides the
+  // speed button). Drives the wall-clock fallback, the between-events audio
+  // extrapolation, and the A/V lead. Multiply by `dir` for the clock slope.
+  private effRate(): number {
+    return this.shuttleRate > 0 ? this.shuttleRate : this.rate;
+  }
+
+  // Flip the playback direction at the current clock: one dir-carrying seek
+  // re-points BOTH decoders (each emits a marker, so the stale-frame gating
+  // is identical to a normal seek), immediately — a held J shouldn't wait out
+  // the scrub debounce.
+  private setDirection(d: 1 | -1): void {
+    if (this.dir === d) return;
+    this.dir = d;
+    if (this.seekTimer) { window.clearTimeout(this.seekTimer); this.seekTimer = 0; }
+    const tt = this.clock;
+    this.presentedT = -1;
+    this.started = false;
+    // Returning to forward with a resolution switch deferred during reverse:
+    // reconnect (lands the new height AND the direction); audio still gets
+    // its own dir-flip seek since connect() only restarts the picture.
+    if (d === 1 && this.persistent && this.connectedHeight !== this.curHeight) {
+      void this.connect(tt);
+      void invoke('seek_video_audio', { sec: tt, dir: 1 }).catch(() => {});
+      if (!this._playing) void invoke('pause_video_audio').catch(() => {});
+      return;
+    }
+    this.holdingForSeek = true;
+    this.clearBuffer();
+    this.applySeek(tt);
+  }
+
+  // JKL shuttle level: 0 = stop (pause), +N = forward N×, −N = TRUE reverse N×
+  // (reversed audio plays and stays the clock master).
+  shuttle(level: number): void {
+    if (this.destroyed) return;
+    const lv = Math.max(-8, Math.min(8, Math.round(level)));
+    if (lv !== 0) {
+      this.shuttleRate = Math.min(4, Math.abs(lv));
+      void invoke('set_video_audio_rate', { rate: this.shuttleRate }).catch(() => {});
+      this.setDirection(lv > 0 ? 1 : -1);
+      this.play();
+    } else {
+      this.shuttleRate = 0;
+      void invoke('set_video_audio_rate', { rate: this.rate }).catch(() => {});
+      this.setDirection(1); // re-anchors forward exactly where the shuttle stopped
+      this.pause(); // shuttle-stop = pause (mirrors the <video> path)
+    }
+  }
+
+  seek(t: number): void {
+    if (this.destroyed) return;
+    const tt = Math.max(0, this._duration > 0 ? Math.min(this._duration, t) : Math.max(0, t));
+    // Snap clock + scrubber to the target immediately, then HOLD there: empty
+    // the buffer and re-arm the first-frame gate so present() can't advance
+    // past tt until frames from the new position arrive. The actual command is
+    // DEBOUNCED so a flurry of arrow presses / a held scrub coalesces.
+    this.clock = tt;
+    this.audioPos = tt;
+    this.audioPosAt = performance.now();
+    this.lastNow = performance.now();
+    this.presentedT = -1;
+    this.started = false;
+    if (this.persistent) {
+      // The stream stays OPEN: discard in-flight pre-seek frames until the
+      // decoder's marker comes back through the same body.
+      this.holdingForSeek = true;
+      this.clearBuffer();
+    } else {
+      // Raw dialect: the stream is sequential from its -ss; abort it now (no
+      // stale frames drift the playhead forward) and reconnect at tt.
+      this.ac?.abort();
+      this.connToken++;
+      this.clearBuffer();
+    }
+    this.cb.onTime?.(tt);
+    if (this.seekTimer) window.clearTimeout(this.seekTimer);
+    const debounce = this.persistent ? SEEK_DEBOUNCE_PTS_MS : SEEK_DEBOUNCE_RAW_MS;
+    this.seekTimer = window.setTimeout(() => { this.seekTimer = 0; this.applySeek(tt); }, debounce);
+  }
+
+  private applySeek(tt: number): void {
+    if (this.destroyed) return;
+    if (this.persistent) {
+      this.pendingMarkers++;
+      this.holdingForSeek = false;
+      void this.control('seek', tt).then((ok) => {
+        if (ok || this.destroyed) return;
+        // Decoder gone (control 404 / network failure): the marker will never
+        // come, which would discard frames forever. Reconnect — /vstream
+        // spawns a fresh decoder at tt.
+        this.pendingMarkers = 0;
+        this.dir = 1; // a fresh stream starts forward
+        void this.connect(tt);
+      });
+    } else {
+      this.dir = 1;
+      void this.connect(tt); // new frame stream at tt (raw pipe is forward-only)
+    }
+    void invoke('seek_video_audio', { sec: tt, dir: this.dir }).catch(() => {});
+    // The daemon keeps play/pause state across seeks, but re-assert pause in
+    // case any layer resumed (raw fallback restarts the audio playing).
+    if (!this._playing) void invoke('pause_video_audio').catch(() => {});
+  }
+
+  // POST a transport command to the persistent decoder. True on 2xx. Seeks
+  // carry the playback direction (the decoder streams backward for -1); loop
+  // carries the region bounds.
+  private async control(
+    op: 'seek' | 'play' | 'pause' | 'loop' | 'tonemap',
+    sec?: number,
+    loop?: { in: number; out: number },
+    on?: boolean,
+  ): Promise<boolean> {
+    if (!this.persistent || !this.streamId || !this.endpointBase) return false;
+    const base = this.endpointBase.replace('/vstream', '/vcontrol');
+    const url =
+      `${base}?id=${this.streamId}&op=${op}` +
+      (sec !== undefined ? `&sec=${sec}&dir=${this.dir}` : '') +
+      (loop ? `&in=${loop.in}&out=${loop.out}` : '') +
+      (on !== undefined ? `&on=${on ? 1 : 0}` : '');
+    try {
+      const r = await fetch(url, { method: 'POST' });
+      return r.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  destroy(): void {
+    this.destroyed = true;
+    this.connToken++;
+    if (this.seekTimer) { window.clearTimeout(this.seekTimer); this.seekTimer = 0; }
+    if (this.raf) cancelAnimationFrame(this.raf);
+    this.ac?.abort(); // server kills the decoder when the socket drops
+    if (this.unlistenAudio) { this.unlistenAudio(); this.unlistenAudio = null; }
+    void invoke('stop_video_audio').catch(() => {});
+    this.clearBuffer();
+  }
+
+  private clearBuffer(): void {
+    for (const f of this.frames) f.bmp.close();
+    this.frames = [];
+  }
+
+  private bufferedAhead(): number {
+    if (this.frames.length === 0) return 0;
+    // "Ahead" is in PLAYBACK order: above the clock going forward, below it in
+    // reverse (the stream's times descend there).
+    const last = this.frames[this.frames.length - 1].t;
+    return this.dir > 0 ? last - this.clock : this.clock - last;
+  }
+
+  private async connect(start: number): Promise<void> {
+    this.ac?.abort();
+    this.clearBuffer();
+    const token = ++this.connToken;
+    this.streamStart = start;
+    this.frameIdx = 0;
+    this.persistent = false;
+    this.streamId = '';
+    this.holdingForSeek = false;
+    this.pendingMarkers = 0;
+    this.dir = 1; // a fresh stream always starts forward
+    this.decoderLoop = false; // re-armed after the headers land
+    const ac = new AbortController();
+    this.ac = ac;
+
+    try {
+      if (!this.endpointBase) {
+        this.endpointBase = (await invoke<string>('video_stream_endpoint').catch(() => '')) || '';
+      }
+      if (!this.endpointBase) { this.cb.onError?.('frame server not available'); return; }
+      if (token !== this.connToken) return;
+
+      const lathePath = latheStatus.get().path ?? '';
+      const url =
+        `${this.endpointBase}?path=${encodeURIComponent(this.cfg.path)}` +
+        `&height=${this.curHeight}&fps=${this.cfg.fps}&start=${start}` +
+        `&lathe=${encodeURIComponent(lathePath)}`;
+
+      const resp = await fetch(url, { signal: ac.signal });
+      if (token !== this.connToken) return;
+      if (!resp.ok || !resp.body) { this.cb.onError?.(`stream HTTP ${resp.status}`); return; }
+
+      const geom = parseGeomHeader(resp.headers.get('x-wavdesk-geom'));
+      if (!geom) { this.cb.onError?.('missing/invalid geometry header'); return; }
+      this.w = geom.w;
+      this.h = geom.h;
+      this.fps = geom.fps > 0 ? geom.fps : this.cfg.fps;
+      this.frameSize = geom.w * geom.h * 4;
+      this.streamId = resp.headers.get('x-wavdesk-stream-id') ?? '';
+      this.persistent = resp.headers.get('x-wavdesk-proto') === 'pts' && this.streamId !== '';
+      if (geom.dur > 0 && this._duration === 0) { this._duration = geom.dur; this.cb.onDuration?.(geom.dur); }
+      this.cb.onGeom?.(geom);
+      this.connectedHeight = this.curHeight;
+      this.connectedAt = performance.now();
+      // A fresh decoder knows nothing of the loop region — re-arm it. Same
+      // for a tone-map the user toggled OFF (the decoder defaults ON for HDR).
+      if (this.loopRegion) void this.armDecoderLoop();
+      if (!this.tonemapOn && geom.hdr) void this.control('tonemap', undefined, undefined, false);
+
+      const reader = resp.body.getReader();
+      const queue: Uint8Array[] = [];
+      let queued = 0;
+      const readExact = async (n: number): Promise<Uint8Array | null> => {
+        while (queued < n) {
+          const { value, done } = await reader.read();
+          if (done) return null;
+          if (value && value.length) { queue.push(value); queued += value.length; }
+        }
+        const out = new Uint8Array(n);
+        let off = 0;
+        while (off < n) {
+          const head = queue[0];
+          const take = Math.min(head.length, n - off);
+          out.set(head.subarray(0, take), off);
+          if (take === head.length) queue.shift();
+          else queue[0] = head.subarray(take);
+          queued -= take;
+          off += take;
+        }
+        return out;
+      };
+
+      while (token === this.connToken && !this.destroyed) {
+        // Backpressure: don't read past BUFFER_AHEAD beyond the clock — except
+        // while waiting out a seek, when the pipe must drain to reach the
+        // marker no matter how full the (about-to-be-cleared) buffer is.
+        while (
+          token === this.connToken && !this.destroyed &&
+          this.bufferedAhead() > BUFFER_AHEAD_SEC &&
+          !(this.persistent && (this.holdingForSeek || this.pendingMarkers > 0))
+        ) {
+          await sleep(12);
+        }
+        if (token !== this.connToken || this.destroyed) break;
+
+        let frameT: number;
+        let payload: Uint8Array | null;
+        if (this.persistent) {
+          const hdr = await readExact(12);
+          if (!hdr) break; // decoder exited
+          const dv = new DataView(hdr.buffer, hdr.byteOffset, 12);
+          frameT = Number(dv.getBigUint64(0, true)) / 1e6;
+          const len = dv.getUint32(8, true);
+          if (len === 0) {
+            // Seek marker: the boundary between stale and fresh. Drop anything
+            // that slipped into the buffer and, once the LAST outstanding
+            // seek's marker is in, start accepting frames again.
+            this.pendingMarkers = Math.max(0, this.pendingMarkers - 1);
+            this.clearBuffer();
+            continue;
+          }
+          if (len === 0xffffffff) {
+            // Wrap marker (gapless loop): continuity — the buffered tail still
+            // plays out; present() handles the clock. Nothing to flush.
+            continue;
+          }
+          if (len !== this.frameSize) { this.cb.onError?.('frame stream desync'); break; }
+          payload = await readExact(len);
+          if (!payload) break;
+          if (this.holdingForSeek || this.pendingMarkers > 0) continue; // stale
+        } else {
+          frameT = this.streamStart + this.frameIdx / this.fps;
+          payload = await readExact(this.frameSize);
+          if (!payload) break; // EOF (end of video in the raw dialect)
+        }
+        if (token !== this.connToken) break;
+        // Frames are opaque sRGB-ish RGBA already — skip the alpha/color
+        // conversion passes (a per-frame cost at video rates).
+        const bmp = await createImageBitmap(
+          new ImageData(new Uint8ClampedArray(payload.buffer, payload.byteOffset, this.frameSize), this.w, this.h),
+          { premultiplyAlpha: 'none', colorSpaceConversion: 'none' },
+        );
+        if (token !== this.connToken || this.destroyed) { bmp.close(); break; }
+        this.frames.push({ t: frameT, bmp });
+        this.frameIdx++;
+      }
+      try { await reader.cancel(); } catch { /* ignore */ }
+
+      // A persistent stream never EOFs on its own (the decoder idles at end of
+      // video) — the body ending means the decoder died. Resurrect at the
+      // current position rather than freezing, but an instant-death respawn
+      // loop (file gone, decoder crashing on load) gets three strikes.
+      if (this.persistent && token === this.connToken && !this.destroyed) {
+        this.quickDeaths = performance.now() - this.connectedAt < 2000 ? this.quickDeaths + 1 : 0;
+        if (this.quickDeaths >= 3) {
+          this.cb.onError?.('video stream failed repeatedly');
+          return;
+        }
+        await sleep(300);
+        if (token === this.connToken && !this.destroyed) void this.connect(this.clock);
+      }
+    } catch (e) {
+      const aborted = e instanceof DOMException && e.name === 'AbortError';
+      if (token === this.connToken && !this.destroyed && !aborted) {
+        this.cb.onError?.(`stream read failed: ${e}`);
+      }
+    }
+  }
+
+  private present = (): void => {
+    if (this.destroyed) return;
+    const now = performance.now();
+    const dt = (now - this.lastNow) / 1000;
+
+    // Hold until the first frame is buffered, then start the clock — so there's
+    // no audio-wait freeze and no racing ahead of the picture.
+    if (!this.started && this._playing && this.frames.length > 0) this.started = true;
+
+    if (this.started && this._playing) {
+      // Signed clock: forward at +rate, TRUE reverse at -rate (the reversed
+      // audio's position descends and remains the master either way).
+      this.clock += dt * this.effRate() * this.dir;
+      if (this.audioActive) {
+        // Audio is the master, but EASE onto it rather than snapping: smooth
+        // startup takeover + rejection of bursty/late position events. A big
+        // drift (a seek) snaps. Between events the position extrapolates at
+        // the playback rate (the daemon's cursor advances at rate too).
+        const target = this.audioPos + ((now - this.audioPosAt) / 1000) * this.effRate() * this.dir;
+        const err = target - this.clock;
+        if (Math.abs(err) > 0.75) this.clock = target;
+        else this.clock += err * Math.min(1, dt * 4);
+      }
+      if (this.dir < 0) {
+        if (this.clock <= 0) {
+          // Reverse ran out of video: stop the shuttle where it landed.
+          this.clock = 0;
+          this.shuttle(0);
+          this.cb.onShuttleEnd?.();
+        }
+      } else if (this.loopRegion && this.clock >= this.loopRegion.outSec) {
+        // Loop region wraps before the end-of-video check (out may sit at the
+        // very end).
+        if (!this.decoderLoop) {
+          this.seek(this.loopRegion.inSec); // raw fallback: seek-based loop
+        } else if (this.audioActive) {
+          // Gapless: the decoders already wrapped; hard-follow the audio
+          // cursor through the seam (the ease's snap threshold can exceed a
+          // SHORT loop's whole length, which would smear the wrap).
+          this.clock = this.audioPos + ((now - this.audioPosAt) / 1000) * this.effRate() * this.dir;
+        } else {
+          // Muted video: wrap the wall clock locally, keeping the overshoot
+          // so cycle length stays exact.
+          this.clock = this.loopRegion.inSec + (this.clock - this.loopRegion.outSec);
+        }
+      } else if (this._duration > 0 && this.clock >= this._duration) {
+        this.clock = this._duration;
+        this._playing = false;
+        void this.control('pause'); // idle the decoder at end-of-video
+        void invoke('pause_video_audio').catch(() => {});
+        this.cb.onState?.(false);
+      }
+    } else if (this.started && this.audioActive) {
+      this.clock = this.audioPos; // paused: hold exactly at the audio cursor
+    }
+    this.lastNow = now;
+
+    // Present slightly ahead of the clock to offset the video pipeline latency
+    // so the picture lands on the sound (see VIDEO_AV_LEAD_SEC). The latency
+    // is wall-time, so in content-seconds it scales with the playback rate;
+    // "ahead" flips with the direction (reverse frames descend in time).
+    const lead = VIDEO_AV_LEAD_SEC * this.effRate();
+    // Gapless loop: after a wrap the buffer head still holds tail-of-cycle
+    // frames; once the clock is back near the in-point they're BEHIND us in
+    // loop order (the t-scan below would wedge on them) — drop them.
+    if (this.decoderLoop && this.loopRegion && this.dir > 0) {
+      const half = (this.loopRegion.outSec - this.loopRegion.inSec) / 2;
+      while (this.frames.length > 1 && this.clock < this.frames[0].t - half) {
+        this.frames[0].bmp.close();
+        this.frames.shift();
+      }
+    }
+    let idx = -1;
+    for (let i = 0; i < this.frames.length; i++) {
+      const ahead = this.dir > 0
+        ? this.frames[i].t <= this.clock + lead
+        : this.frames[i].t >= this.clock - lead;
+      if (ahead) idx = i;
+      else break;
+    }
+    if (idx < 0 && this.frames.length > 0) idx = 0; // nothing at the clock yet (just seeked) — show the earliest
+    if (idx > 0) {
+      for (let i = 0; i < idx; i++) this.frames[i].bmp.close();
+      this.frames.splice(0, idx);
+    }
+    const cur = this.frames[0];
+    if (cur && cur.t !== this.presentedT) {
+      this.presentedT = cur.t;
+      this.cb.onFrame(cur.bmp);
+    }
+
+    if (now - this.lastTimeEmit > 50) { this.lastTimeEmit = now; this.cb.onTime?.(this.clock); }
+    this.raf = requestAnimationFrame(this.present);
+  };
+}

@@ -565,6 +565,34 @@ pub fn tool_binary_probe(name: String, configured: String) -> ToolBinaryStatus {
     }
 }
 
+/// Whole-track audio peak bins for the video preview's scrubber waveform.
+/// Runs `lathe audio-peaks`, which decodes once and emits
+/// {"bins":N,"dur":<sec>,"peaks":[..]}. Fork of WAVdesk's video_audio_peaks.
+#[tauri::command]
+pub async fn video_audio_peaks(
+    binary_path: String,
+    path: String,
+    bins: Option<u32>,
+) -> Result<serde_json::Value, String> {
+    let bin = find_tool_binary("lathe", &binary_path)?;
+    let n = bins.unwrap_or(2000).max(1);
+    let mut cmd = Command::new(&bin);
+    cmd.args(["audio-peaks", &path, &format!("--bins={n}")])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(target_os = "windows")]
+    {
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let output = tauri::async_runtime::spawn_blocking(move || cmd.output())
+        .await
+        .map_err(|e| format!("audio-peaks join: {e}"))?
+        .map_err(|e| format!("audio-peaks spawn: {e}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let line = stdout.lines().last().unwrap_or("").trim();
+    serde_json::from_str(line).map_err(|e| format!("audio-peaks parse: {e} (raw: {line})"))
+}
+
 /// Open a directory (or file) with the OS default handler — the clips
 /// folder button. ShellExecute-equivalent via the platform opener.
 #[tauri::command]

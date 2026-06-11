@@ -1425,7 +1425,7 @@ export default function ExtractApp() {
                         Hidden while a search is still resolving. */}
                     {q.kind !== 'search' && (
                       <button
-                        onClick={(e) => { e.stopPropagation(); void openChopWindow({ url: q.url, includeVideo: false, latchPath, title: q.title, durationSec: q.duration, cookiesFromBrowser }); }}
+                        onClick={(e) => { e.stopPropagation(); void openChopWindow({ url: q.url, includeVideo: linkSourceKind(q.url) === 'video', latchPath, title: q.title, durationSec: q.duration, cookiesFromBrowser }); }}
                         className="text-sky-500/80 hover:text-sky-300 transition-none shrink-0 cursor-pointer"
                         title="Chop: draw waveform selections and export clips (audio)"
                       >
@@ -1545,7 +1545,7 @@ export default function ExtractApp() {
                         )}
                         {q.kind !== 'search' && (
                           <button
-                            onClick={() => void openChopWindow({ url: q.url, includeVideo: false, latchPath, title: q.title, durationSec: q.duration, cookiesFromBrowser })}
+                            onClick={() => void openChopWindow({ url: q.url, includeVideo: linkSourceKind(q.url) === 'video', latchPath, title: q.title, durationSec: q.duration, cookiesFromBrowser })}
                             className="text-sky-500/80 hover:text-sky-300 transition-none cursor-pointer"
                             title="Chop: draw waveform selections and export clips (audio)"
                           >
