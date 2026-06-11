@@ -23,14 +23,29 @@ tauri-plugin-single-instance = "2"
 # seek/position, owned by a dedicated thread (see src/audio.rs). WAV-only
 # decode — the chop pipeline always auditions a WAV it produced itself.
 rodio = { version = "0.20", default-features = false, features = ["wav"] }
+log = "0.4"
+# Native drag-source for dragging files OUT into Explorer / DAWs —
+# wraps DoDragDrop / NSDraggingSource / XDND (see os_drag.rs).
+drag = "2"
+# OS-level keyboard polling for the drag chip's modifier state —
+# DoDragDrop's modal pump blocks JS keydown during a drag.
+device_query = "2"
 
 # Job Objects tie every spawned latch.exe (and its yt-dlp/ffmpeg
 # children, by job inheritance) to this process's lifetime — same
-# orphan prevention WAVdesk uses (see src/job_object.rs).
+# orphan prevention WAVdesk uses (see src/job_object.rs). GDI + COM/
+# Shell features back the native drag chip.
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.61", features = [
   "Win32_Foundation",
   "Win32_System_JobObjects",
   "Win32_System_Threading",
   "Win32_Security",
+  "Win32_Graphics_Gdi",
+  "Win32_UI_WindowsAndMessaging",
+  "Win32_System_Com",
+  "Win32_System_Ole",
+  "Win32_System_Variant",
+  "Win32_UI_Shell",
+  "Win32_UI_Shell_Common",
 ] }

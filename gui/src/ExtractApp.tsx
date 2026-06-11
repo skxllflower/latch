@@ -23,6 +23,7 @@ import {
   Scissors,
 } from 'lucide-react';
 import { useTheme, THEME_BG } from './theme';
+import { startOverlayDrag, endOverlayDrag } from './internalDragHandoff';
 import { confirmInWindow } from './dialogs';
 import { openChopWindow } from './chopWindow';
 import { WdSelect, type WdSelectOption } from './WdSelect';
@@ -1164,6 +1165,13 @@ export default function ExtractApp() {
     () => items.filter(it => isActive(it.status)).length,
     [items]
   );
+  // Done items the user actually wants to drag/export. Multi-select
+  // drag-out drags all selected-and-done; if nothing is selected,
+  // single-row drag still works on whatever row started it.
+  const selectedDonePaths = useMemo(
+    () => items.filter(it => it.selected && it.status === 'done' && it.output).map(it => it.output!),
+    [items]
+  );
   // Batch-aware progress: finished/total + summed percent over the items
   // of the CURRENT batch only, so old session rows don't skew the bar.
   const batchProgress = useMemo(() => {
@@ -1869,6 +1877,7 @@ export default function ExtractApp() {
               </div>
             ) : (
               items.map(it => {
+                const dragOK = it.status === 'done' && !!it.output;
                 return (
                 <div
                   key={it.id}
@@ -1876,12 +1885,42 @@ export default function ExtractApp() {
                     it.selected
                       ? 'bg-zinc-800/70 text-zinc-100'
                       : 'hover:bg-zinc-900/60'
-                  }`}
+                  } ${dragOK ? 'cursor-grab active:cursor-grabbing' : ''}`}
                   title={it.error ?? it.output ?? it.url}
                   onClick={(e) => {
                     e.stopPropagation();
                     const mode = e.shiftKey ? 'range' : (e.ctrlKey || e.metaKey) ? 'toggle' : 'single';
                     selectItem(it.id, mode);
+                  }}
+                  draggable={dragOK}
+                  onDragStart={(e) => {
+                    if (!dragOK) return;
+                    // preventDefault stops the WebView from rendering its
+                    // own drag image; the overlay window owns the chip.
+                    e.preventDefault();
+                    const bulk = it.selected && selectedDonePaths.length > 1;
+                    const paths = bulk ? selectedDonePaths : [it.output!];
+                    const name = bulk
+                      ? `${paths.length} files`
+                      : (it.title ?? it.output!.split(/[\\/]/).pop() ?? 'audio');
+                    void (async () => {
+                      await startOverlayDrag({
+                        paths,
+                        fileName:    name,
+                        isDirectory: false,
+                        count:       paths.length,
+                      });
+                      try {
+                        await invoke('start_os_file_drag', {
+                          paths,
+                          previewPng:  null,
+                          transparent: true,
+                        });
+                      } catch (err) {
+                        console.warn('start_os_file_drag (latch) failed:', err);
+                        await endOverlayDrag();
+                      }
+                    })();
                   }}
                 >
                   <span className="mt-0.5 shrink-0">

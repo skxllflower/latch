@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "default permissions for the Latch window",
-  "windows": ["main", "chop"],
+  "windows": ["main", "chop", "dialog-*", "drag-overlay"],
   "permissions": [
     "core:default",
     "core:window:allow-start-dragging",
@@ -14,6 +14,9 @@
     "core:window:allow-set-min-size",
     "core:window:allow-set-title",
     "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-set-position",
+    "core:window:allow-center",
     "core:window:allow-set-always-on-top",
     "core:webview:allow-create-webview-window",
     "dialog:allow-open",

@@ -37,6 +37,8 @@ import {
   ChopRegion, regionFileStem, resizeEdge, moveRegion,
   nextRegionId, nextRegionColor, MIN_REGION_SEC,
 } from './chopRegions';
+import { startOverlayDrag, endOverlayDrag } from './internalDragHandoff';
+import { cropCanvasFractionToDataUrl, videoFrameToChipDataUrl, peaksToChipDataUrl } from './dragChipPng';
 import type { ChopSeed } from './chopWindow';
 
 interface IpcWaveformData {
@@ -847,35 +849,75 @@ export default function ChopApp() {
     setExportMsg(`Exported ${ok} clip${ok !== 1 ? 's' : ''}${fail ? ` · ${fail} failed` : ''}`);
   }, [audioPath, stagedRegions, clipInputFor, runClip, sourceStem, ensureClipsDir]);
 
-  // Standalone delta: no OS drag chips yet — the export pill renders the
-  // region straight into the persistent clips folder instead (a clip a
-  // DAW can then reference). Surfaces in exportMsg + the Extract window's
-  // downloads list via the clip-exported event.
-  const renderRegionToClips = useCallback(async (r: ChopRegion, forceVideo?: boolean) => {
+  // Build the drag-out chip image: in video mode, a snapshot of the
+  // currently-visible frame; otherwise a crisp mini-waveform rendered
+  // from peaks fetched for JUST this region (sharp at any zoom). Falls
+  // back to cropping the on-screen canvas.
+  const buildDragChip = useCallback(async (r: ChopRegion, wantVideo: boolean): Promise<{ url: string; bg: string | null } | null> => {
+    if (wantVideo && videoRef.current) {
+      const frame = videoRef.current.captureFrame();
+      if (frame) return videoFrameToChipDataUrl(frame);
+      // No painted frame → fall through to the waveform chip.
+    }
+    if (audioPath) {
+      try {
+        const data = await invoke<IpcWaveformData>('generate_waveform', {
+          path: audioPath, points: 240, startSec: r.startSec, endSec: r.endSec,
+        });
+        if (data?.success && data.points?.length) {
+          // The standalone peaks IPC returns max-abs scalars; the chip
+          // renderer (ported verbatim) wants [min, max, rms] triplets.
+          const triplets = data.points.map((p) => [-p, p, p] as [number, number, number]);
+          return peaksToChipDataUrl(triplets, r.color);
+        }
+      } catch { /* fall back to a canvas crop */ }
+    }
+    const cv = waveContainerRef.current?.querySelector('canvas') as HTMLCanvasElement | null;
+    const vp = vpRef.current;
+    if (cv && vp) {
+      const span = Math.max(1e-6, vp.tEnd - vp.tStart);
+      return cropCanvasFractionToDataUrl(cv, (r.startSec - vp.tStart) / span, (r.endSec - vp.tStart) / span);
+    }
+    return null;
+  }, [audioPath]);
+
+  // Drag a region out as a file: render the clip to the persistent clips
+  // folder and hand it to the OS drag; the floating chip is the visual.
+  // cleanupTempOnShellDrop deletes our copy after an Explorer/desktop
+  // drop (the OS made the user's copy); app drops keep the path live.
+  const beginRegionDragOut = useCallback(async (r: ChopRegion, forceVideo?: boolean) => {
     if (!audioPath || !tempDirRef.current) return;
     const { input, video, ext } = clipInputFor(r, forceVideo);
     const idx = regionsRef.current.findIndex((x) => x.id === r.id);
     const stem = regionFileStem(r, idx < 0 ? 0 : idx, sourceStem);
+    const fileName = `${stem}.${ext}`;
     let clipsDir = tempDirRef.current;
     try { clipsDir = await ensureClipsDir(); } catch { /* fall back to temp */ }
     const dsep = clipsDir.includes('\\') ? '\\' : '/';
-    const out = `${clipsDir}${dsep}${stem}.${ext}`;
+    const out = `${clipsDir}${dsep}${fileName}`;
+    const chip = await buildDragChip(r, video);
     try {
+      await startOverlayDrag({
+        paths: [out], fileName, isDirectory: false, count: 1,
+        waveformDataUrl: chip?.url ?? null, bgColor: chip?.bg ?? null,
+      });
+      // Render fresh each drag: a prior render may have been cleaned up
+      // after a folder drop, so a cached path can't be trusted. No-clobber
+      // keeps any path an app has already linked byte-stable.
       setClip(r.id, 'rendering');
       const path = await runClip({ input, output: out, startSec: r.startSec, endSec: r.endSec, video, overwrite: false });
       setClip(r.id, 'ready', path);
-      void emit('wd-latch-clip-exported', { path, title: stem });
-      setExportMsg(`Saved to Latch Clips: ${stem}.${ext}`);
+      await invoke('start_os_file_drag', { paths: [path], previewPng: null, transparent: true, cleanupTempOnShellDrop: true });
     } catch {
       setClip(r.id, 'error');
-      setExportMsg('Clip render failed');
+      void endOverlayDrag();
     }
-  }, [audioPath, clipInputFor, runClip, setClip, sourceStem, ensureClipsDir]);
+  }, [audioPath, clipInputFor, runClip, setClip, buildDragChip, sourceStem, ensureClipsDir]);
 
   const handleRegionDragOut = useCallback((id: string, opts: { video: boolean }) => {
     const r = regionsRef.current.find((x) => x.id === id);
-    if (r) void renderRegionToClips(r, opts.video);
-  }, [renderRegionToClips]);
+    if (r) void beginRegionDragOut(r, opts.video);
+  }, [beginRegionDragOut]);
 
   // ---- Render -------------------------------------------------------------
   const railBtn = (active: boolean) =>
@@ -1040,9 +1082,12 @@ export default function ChopApp() {
               return (
                 <div
                   key={r.id}
+                  draggable
+                  onDragStart={(e) => { e.preventDefault(); select(r.id); void beginRegionDragOut(r, e.altKey ? true : undefined); }}
                   onMouseDown={() => select(r.id)}
-                  className={`flex items-center gap-1.5 px-2 h-7 border-b border-[color:var(--theme-border)] ${
+                  className={`flex items-center gap-1.5 px-2 h-7 border-b border-[color:var(--theme-border)] cursor-grab ${
                     sel ? 'bg-[var(--theme-bg-hover)]' : 'hover:bg-[var(--theme-bg-elevated)]'}`}
+                  title="Drag out to drop as a file"
                 >
                   <span className="shrink-0 w-1.5 h-4 rounded-sm" style={{ background: r.color }} />
                   <input
