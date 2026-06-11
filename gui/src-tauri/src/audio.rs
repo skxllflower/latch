@@ -142,6 +142,11 @@ impl VaStream {
 // wall clock — reverse plays muted).
 struct VideoDeck {
     stream: Option<VaStream>,
+    // Pre-warmed next cycle for the loop region: spawned at the in-point
+    // with its ring filling while the current pass plays out, swapped in
+    // at the wrap. Without it the respawn gap reads as a slow, glitchy
+    // loop start (position crawls through the refill underrun).
+    next: Option<VaStream>,
     path: String,
     lathe: String,
     playing: bool,
@@ -155,6 +160,7 @@ impl VideoDeck {
     fn new() -> Self {
         VideoDeck {
             stream: None,
+            next: None,
             path: String::new(),
             lathe: String::new(),
             playing: false,
@@ -165,20 +171,40 @@ impl VideoDeck {
         }
     }
 
-    fn drop_stream(&mut self) {
+    fn drop_all(&mut self) {
         if let Some(s) = self.stream.take() {
             s.kill();
         }
+        if let Some(n) = self.next.take() {
+            n.kill();
+        }
     }
 
-    // (Re)spawn `lathe stream-audio --start=<at>` and a sink over its
-    // PCM, applying the deck's rate/volume/play-state. False when lathe
-    // is unresolvable or won't spawn (no audio → the child just EOFs
-    // fast, which reads as a drained sink → vaudio inactive).
+    // (Re)spawn the live stream, applying the deck's play-state. False
+    // when lathe is unresolvable or won't spawn (no audio → the child
+    // just EOFs fast, which reads as a drained sink → vaudio inactive).
     fn rebuild(&mut self, handle: &rodio::OutputStreamHandle, at_sec: f64) -> bool {
-        self.drop_stream();
+        self.drop_all();
+        match self.spawn_stream(handle, at_sec, self.playing) {
+            Some(s) => {
+                self.stream = Some(s);
+                true
+            }
+            None => false,
+        }
+    }
+
+    // Spawn `lathe stream-audio --start=<at>` and a sink over its PCM
+    // with the deck's rate/volume applied; `playing` false parks the
+    // sink paused (the prewarm case — its ring fills while parked).
+    fn spawn_stream(
+        &self,
+        handle: &rodio::OutputStreamHandle,
+        at_sec: f64,
+        playing: bool,
+    ) -> Option<VaStream> {
         let Ok(bin) = crate::tools::find_tool_binary("lathe", &self.lathe) else {
-            return false;
+            return None;
         };
         let mut cmd = std::process::Command::new(&bin);
         cmd.args([
@@ -194,11 +220,11 @@ impl VideoDeck {
             use std::os::windows::process::CommandExt;
             cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
         }
-        let Ok(mut child) = cmd.spawn() else { return false };
+        let Ok(mut child) = cmd.spawn() else { return None };
         crate::job_object::assign_child(&child);
         let Some(stdout) = child.stdout.take() else {
             let _ = child.kill();
-            return false;
+            return None;
         };
 
         let shared = std::sync::Arc::new(VaShared {
@@ -254,18 +280,17 @@ impl VideoDeck {
         let Ok(sink) = rodio::Sink::try_new(handle) else {
             shared.done.store(true, std::sync::atomic::Ordering::Relaxed);
             let _ = child.kill();
-            return false;
+            return None;
         };
         sink.append(PcmSource { shared: shared.clone() });
         sink.set_speed(self.rate);
         sink.set_volume(self.volume);
-        if self.playing {
+        if playing {
             sink.play();
         } else {
             sink.pause();
         }
-        self.stream = Some(VaStream { child, shared, sink, start_sec: at_sec.max(0.0) });
-        true
+        Some(VaStream { child, shared, sink, start_sec: at_sec.max(0.0) })
     }
 }
 
@@ -370,7 +395,7 @@ fn audio_thread(app: AppHandle, rx: Receiver<Cmd>) {
                     if let Some(s) = &vd.stream { s.sink.play(); }
                 }
                 Cmd::VStop => {
-                    vd.drop_stream();
+                    vd.drop_all();
                     vd.path = String::new();
                     vd.looping = None;
                 }
@@ -381,25 +406,36 @@ fn audio_thread(app: AppHandle, rx: Receiver<Cmd>) {
                         // backward — go inactive so the video wall-clocks
                         // it (reverse plays muted), resume on the next
                         // dir=1 seek.
-                        vd.drop_stream();
+                        vd.drop_all();
                         emit_vstate(&app, false);
                     } else if !vd.path.is_empty() {
                         // Seek = respawn the PCM stream at --start=sec.
                         if !vd.rebuild(&handle, sec) {
                             emit_vstate(&app, false);
+                        } else if let Some((lo, _)) = vd.looping {
+                            vd.next = vd.spawn_stream(&handle, lo, false);
                         }
                     }
                 }
                 Cmd::VSetVolume(v) => {
                     vd.volume = v.clamp(0.0, 1.0);
                     if let Some(s) = &vd.stream { s.sink.set_volume(vd.volume); }
+                    if let Some(n) = &vd.next { n.sink.set_volume(vd.volume); }
                 }
                 Cmd::VSetRate(r) => {
                     vd.rate = r.clamp(0.25, 4.0);
                     if let Some(s) = &vd.stream { s.sink.set_speed(vd.rate); }
+                    if let Some(n) = &vd.next { n.sink.set_speed(vd.rate); }
                 }
                 Cmd::VSetLoop { in_sec, out_sec } => {
                     vd.looping = if out_sec > in_sec { Some((in_sec, out_sec)) } else { None };
+                    // Re-arm the prewarm for the new region (or clear it).
+                    if let Some(n) = vd.next.take() { n.kill(); }
+                    if let Some((lo, _)) = vd.looping {
+                        if vd.stream.is_some() {
+                            vd.next = vd.spawn_stream(&handle, lo, false);
+                        }
+                    }
                 }
             },
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
@@ -474,11 +510,36 @@ fn audio_thread(app: AppHandle, rx: Receiver<Cmd>) {
             }
         }
         if v_drained {
-            vd.drop_stream();
+            vd.drop_all();
             emit_vstate(&app, false);
         } else if let Some(lo) = v_wrap_to {
-            if !vd.rebuild(&handle, lo) {
+            // Promote the prewarmed in-point stream — its ring filled
+            // while the last pass played, so the seam is one tick.
+            let promoted = vd.next.take();
+            if let Some(s) = vd.stream.take() {
+                s.kill();
+            }
+            if let Some(p) = promoted {
+                p.sink.set_speed(vd.rate);
+                p.sink.set_volume(vd.volume);
+                if vd.playing {
+                    p.sink.play();
+                }
+                vd.stream = Some(p);
+            } else if !vd.rebuild(&handle, lo) {
                 emit_vstate(&app, false);
+            }
+            if vd.stream.is_some() {
+                // Anchor the engine clock at the in-point immediately —
+                // waiting for the next 33ms broadcast lets it extrapolate
+                // past the out-point first.
+                let _ = app.emit("audio_event", serde_json::json!({
+                    "event": "vaudio_pos",
+                    "sec": lo,
+                }));
+                last_vemit = Instant::now();
+                // Arm the next cycle.
+                vd.next = vd.spawn_stream(&handle, lo, false);
             }
         }
     }

@@ -899,6 +899,14 @@ export default function ChopApp() {
   const renderRegionClip = useCallback(async (id: string, forceVideo?: boolean): Promise<string | null> => {
     const r = regionsRef.current.find((x) => x.id === id);
     if (!r || !audioPath || r.clipState === 'rendering') return null;
+    // A video render before the full-res file lands would silently fall
+    // back to an AUDIO cut (clipInputFor's gate) while the UI says
+    // "video" — be honest instead.
+    const wantsVideo = forceVideo ?? r.exportVideo ?? false;
+    if (wantsVideo && !hdVideoPath) {
+      setExportMsg('Full-res video still downloading… try the video export shortly');
+      return null;
+    }
     const { input, video, ext } = clipInputFor(r, forceVideo);
     const idx = regionsRef.current.findIndex((x) => x.id === id);
     const stem = regionFileStem(r, idx < 0 ? 0 : idx, sourceStem);
@@ -924,7 +932,7 @@ export default function ChopApp() {
       setClip(id, 'error');
       return null;
     }
-  }, [audioPath, clipInputFor, runClip, setClip, sourceStem, ensureClipsDir]);
+  }, [audioPath, hdVideoPath, clipInputFor, runClip, setClip, sourceStem, ensureClipsDir]);
 
   // Background pre-render, debounced — runs after a region settles so the
   // file EXISTS by drag time. DoDragDrop must start inside the pointer

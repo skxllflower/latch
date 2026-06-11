@@ -714,11 +714,13 @@ export const VideoView = forwardRef<VideoViewHandle, VideoViewProps>(function Vi
         : null,
     );
   }, [loopRegion, inPoint, outPoint]);
-  // Surface the loop points to the host (chop mirrors them into a region).
-  useEffect(() => {
-    onLoopPointsChange?.(inPoint, outPoint);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [inPoint, outPoint]);
+  // Loop points surface to the host ONLY from explicit user actions (the
+  // IN/OUT buttons + I/O keys, via the emit sites below) — an effect on
+  // inPoint/outPoint also fired for the imperative setLoop() the chop
+  // host calls when ACTIVATING a region, feeding the points straight
+  // back as a new-region request (sliver regions, selection chaos).
+  const inPointRef = useRef(inPoint); inPointRef.current = inPoint;
+  const outPointRef = useRef(outPoint); outPointRef.current = outPoint;
   const toggleFullscreen = useCallback(() => {
     const el = containerRef.current; if (!el) return;
     if (document.fullscreenElement) void document.exitFullscreen().catch(() => {});
@@ -1019,8 +1021,18 @@ export const VideoView = forwardRef<VideoViewHandle, VideoViewProps>(function Vi
         }
         // Native: the unsourced <video>'s currentTime is stuck at 0 — the
         // engine clock is the playhead.
-        case 'KeyI':        setInPoint(nativeEngineRef.current?.currentTime ?? v.currentTime); break;
-        case 'KeyO':        setOutPoint(nativeEngineRef.current?.currentTime ?? v.currentTime); break;
+        case 'KeyI': {
+          const t = nativeEngineRef.current?.currentTime ?? v.currentTime;
+          setInPoint(t);
+          onLoopPointsChange?.(t, outPointRef.current);
+          break;
+        }
+        case 'KeyO': {
+          const t = nativeEngineRef.current?.currentTime ?? v.currentTime;
+          setOutPoint(t);
+          onLoopPointsChange?.(inPointRef.current, t);
+          break;
+        }
         case 'KeyX':        if (e.altKey) { setInPoint(null); setOutPoint(null); } else handled = false; break;
         case 'KeyM':        toggleMute(); break;
         case 'KeyF':        toggleFullscreen(); break;
@@ -1230,8 +1242,8 @@ export const VideoView = forwardRef<VideoViewHandle, VideoViewProps>(function Vi
 
           <div className="flex-1" />
 
-          {!compact && <button type="button" onClick={() => setInPoint(currentTime)} title="Set loop in (I)" className={`${TEXT_BTN} ${inPoint != null ? BTN_ON : BTN}`}>IN</button>}
-          {!compact && <button type="button" onClick={() => setOutPoint(currentTime)} title="Set loop out (O)" className={`${TEXT_BTN} ${outPoint != null ? BTN_ON : BTN}`}>OUT</button>}
+          {!compact && <button type="button" onClick={() => { setInPoint(currentTime); onLoopPointsChange?.(currentTime, outPointRef.current); }} title="Set loop in (I)" className={`${TEXT_BTN} ${inPoint != null ? BTN_ON : BTN}`}>IN</button>}
+          {!compact && <button type="button" onClick={() => { setOutPoint(currentTime); onLoopPointsChange?.(inPointRef.current, currentTime); }} title="Set loop out (O)" className={`${TEXT_BTN} ${outPoint != null ? BTN_ON : BTN}`}>OUT</button>}
           <button type="button" onClick={() => setLoopRegion((l) => !l)} title="Loop in→out section" className={`${ICON_BTN} ${loopRegion ? BTN_ON : BTN}`}><Repeat size={11} /></button>
 
           <button type="button" onClick={cycleSpeed} title="Playback speed" className={`${TEXT_BTN} tabular-nums ${BTN}`}>{speed}×</button>
