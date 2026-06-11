@@ -13,7 +13,11 @@ const DIRECT_PLAY_MAX_DIM = 1920;
 // preview pane is small; 4K decodes once and scales in-process). fps is only
 // the raw-dialect fallback's pacing — the persistent decoder delivers every
 // frame at its true PTS.
-const NATIVE_PREVIEW_HEIGHT = 720;
+// 480 (not WAVdesk's 720): the chop pane is small, and RGBA frame bytes
+// scale with height squared-ish — 720p is ~3.7MB/frame, which saturates
+// the localhost pipe at shuttle rates and turns reverse GOP-bursts into
+// scoop-and-wait. 480p (~1.2MB) leaves 2x/4x headroom.
+const NATIVE_PREVIEW_HEIGHT = 480;
 const NATIVE_PREVIEW_FPS = 30;
 
 // Router around VideoView: EVERY video previews through the native frame

@@ -104,3 +104,7 @@ img, a { -webkit-user-drag: none; }
 body { user-select: none; }
 input, textarea { user-select: text; }
 *:focus { outline: none; }
+
+/* Checkboxes follow the theme accent (WAVdesk convention is accent-zinc;
+   the browser-default blue reads alien against the chrome). */
+input[type="checkbox"] { accent-color: var(--theme-accent, #71717a); }

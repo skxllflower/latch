@@ -38,6 +38,7 @@ import { useChopRegions } from './useChopRegions';
 import {
   ChopRegion, regionFileStem, resizeEdge, moveRegion,
   nextRegionId, nextRegionColor, MIN_REGION_SEC,
+  createDragRegion, setRegionBounds,
 } from './chopRegions';
 import { startOverlayDrag, endOverlayDrag } from './internalDragHandoff';
 import { cropCanvasFractionToDataUrl, videoFrameToChipDataUrl, peaksToChipDataUrl } from './dragChipPng';
@@ -701,7 +702,7 @@ export default function ChopApp() {
       out.push({
         id: nextRegionId(), startSec: start, endSec: end,
         label: c.title.slice(0, 60), color: nextRegionColor(),
-        staged: false, clipState: 'none',
+        staged: true, clipState: 'none',
       });
       prevEnd = end;
     }
@@ -942,13 +943,15 @@ export default function ChopApp() {
     }, 700));
   }, [renderRegionClip]);
 
-  // The selected region keeps a fresh render at all times (bound edits
-  // invalidate clipState, which re-arms this).
+  // EVERY region keeps a fresh render, one at a time (the completing
+  // render flips its clipState, which re-runs this and picks the next
+  // 'none'). Bound edits invalidate clipState, re-arming the queue.
   useEffect(() => {
-    if (phase !== 'ready' || !selectedId) return;
-    const r = regions.find((x) => x.id === selectedId);
-    if (r && r.clipState === 'none') scheduleClipRender(selectedId);
-  }, [phase, regions, selectedId, scheduleClipRender]);
+    if (phase !== 'ready') return;
+    if (regions.some((r) => r.clipState === 'rendering')) return;
+    const next = regions.find((r) => r.clipState === 'none');
+    if (next) scheduleClipRender(next.id);
+  }, [phase, regions, scheduleClipRender]);
 
   // Drag a region out as a file. With a fresh pre-render the OS drag
   // starts immediately (inside the gesture); without one, kick the
@@ -960,7 +963,7 @@ export default function ChopApp() {
     const cachedVariantMatches = wantVideo === (r.exportVideo ?? false);
     if (r.clipPath && r.clipState === 'ready' && cachedVariantMatches) {
       const fileName = r.clipPath.split(/[\\/]/).pop() ?? 'clip';
-      const chip = await buildDragChip(r, wantVideo);
+      const chip = await buildDragChip(r, wantVideo).catch(() => null);
       try {
         await startOverlayDrag({
           paths: [r.clipPath], fileName, isDirectory: false, count: 1,
@@ -972,9 +975,15 @@ export default function ChopApp() {
           paths: [r.clipPath], previewPng: null, transparent: true,
           cleanupTempOnShellDrop: false,
         });
-      } catch {
+      } catch (err) {
+        // Surface it — a silent failure here reads as "drag is broken".
+        setExportMsg(`Drag failed: ${String((err as Error)?.message ?? err)}`);
         void endOverlayDrag();
       }
+      return;
+    }
+    if (r.clipState === 'rendering') {
+      setExportMsg('Clip still rendering… drag again when the spinner clears');
       return;
     }
     setExportMsg(wantVideo
@@ -992,6 +1001,32 @@ export default function ChopApp() {
     const r = regionsRef.current.find((x) => x.id === id);
     if (r) void beginRegionDragOut(r, opts.video);
   }, [beginRegionDragOut]);
+
+  // VideoView's IN/OUT loop points double as region authors: with both
+  // set, a dedicated region tracks them (created once, then re-bounded).
+  // Insertion respects the non-overlap invariant — an IN inside an
+  // existing region is a no-op.
+  const ioRegionRef = useRef<string | null>(null);
+  const onLoopPoints = useCallback((inSec: number | null, outSec: number | null) => {
+    if (inSec == null || outSec == null || outSec - inSec < MIN_REGION_SEC) return;
+    const dur = durationSec;
+    if (dur <= 0) return;
+    const existing = ioRegionRef.current
+      ? regionsRef.current.find((x) => x.id === ioRegionRef.current)
+      : null;
+    pushHistory('io-region', 1200);
+    if (existing) {
+      setRegions(setRegionBounds(regionsRef.current, existing.id, inSec, outSec, dur));
+      select(existing.id);
+    } else {
+      const { regions: next, id } = createDragRegion(regionsRef.current, inSec, outSec, dur);
+      if (id) {
+        ioRegionRef.current = id;
+        setRegions(next);
+        select(id);
+      }
+    }
+  }, [durationSec, pushHistory, setRegions, select]);
 
   // ---- Render -------------------------------------------------------------
   const railBtn = (active: boolean) =>
@@ -1037,6 +1072,7 @@ export default function ChopApp() {
                 video links, so the WAV transport below is hidden then. */}
             <VideoPreview ref={videoRef} src={convertFileSrc(videoPath)} path={videoPath} suppressChip disableKeyboard
               onPlayingChange={setVideoPlaying}
+              onLoopPointsChange={onLoopPoints}
               onReady={() => {
                 // After the low-res → HD swap reload, restore the playhead —
                 // and the PAUSE state: the engine autoplays on open, so a

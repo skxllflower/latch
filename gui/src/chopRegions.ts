@@ -100,7 +100,7 @@ export function createDefaultRegion(
   if (end - start < MIN_REGION_SEC) { start = gap.lo; end = gap.hi; }
   const region: ChopRegion = {
     id: nextRegionId(), startSec: start, endSec: end,
-    label: '', staged: false, clipState: 'none', color: nextRegionColor(),
+    label: '', staged: true, clipState: 'none', color: nextRegionColor(),
   };
   return { regions: sortRegions([...regions, region]), id: region.id };
 }
@@ -122,7 +122,7 @@ export function createDragRegion(
   if (hi - lo < MIN_REGION_SEC) return { regions, id: null };
   const region: ChopRegion = {
     id: nextRegionId(), startSec: lo, endSec: hi,
-    label: '', staged: false, clipState: 'none', color: nextRegionColor(),
+    label: '', staged: true, clipState: 'none', color: nextRegionColor(),
   };
   return { regions: sortRegions([...regions, region]), id: region.id };
 }

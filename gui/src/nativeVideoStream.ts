@@ -61,6 +61,10 @@ export interface NativeVideoCallbacks {
 // Read at most this far ahead of the clock, in seconds. Small = tight
 // backpressure (decode ~1x) + low memory; big enough to smooth jitter.
 const BUFFER_AHEAD_SEC = 0.6;
+// Reverse reads much further ahead: backward chunks arrive in whole-GOP
+// bursts with a decode gap between them — a 0.6s buffer drains dry
+// during the gap (the scoop-and-wait look). Cover a typical GOP.
+const BUFFER_AHEAD_REVERSE_SEC = 3.0;
 
 // Present frames this far AHEAD of the (audio-driven) clock to compensate for
 // the video pipeline's latency (decode → transport → ImageBitmap → canvas),
@@ -525,7 +529,7 @@ export class NativeVideoEngine {
         // marker no matter how full the (about-to-be-cleared) buffer is.
         while (
           token === this.connToken && !this.destroyed &&
-          this.bufferedAhead() > BUFFER_AHEAD_SEC &&
+          this.bufferedAhead() > (this.dir < 0 ? BUFFER_AHEAD_REVERSE_SEC : BUFFER_AHEAD_SEC) &&
           !(this.persistent && (this.holdingForSeek || this.pendingMarkers > 0))
         ) {
           await sleep(12);

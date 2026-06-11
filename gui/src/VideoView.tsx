@@ -85,6 +85,9 @@ export interface VideoViewProps {
   path?: string;
   label?: string;
   onPopOut?: () => void;
+  // Fired whenever the IN/OUT loop points change — lets a host (the
+  // Latch chop window) mirror them into its own region model.
+  onLoopPointsChange?: (inSec: number | null, outSec: number | null) => void;
   // Suppress the first-load text while the parent pane's freeze overlay is up.
   suppressChip?: boolean;
   // Fired when the first frame is ready — clears the parent's transition freeze.
@@ -116,7 +119,7 @@ export interface VideoViewProps {
 }
 
 export const VideoView = forwardRef<VideoViewHandle, VideoViewProps>(function VideoView(
-  { src, onPopOut, suppressChip = false, onReady, onTime, disableKeyboard = false, onPlayingChange, nativeStream }, ref,
+  { src, onPopOut, suppressChip = false, onReady, onTime, disableKeyboard = false, onPlayingChange, nativeStream, onLoopPointsChange }, ref,
 ) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -666,19 +669,29 @@ export const VideoView = forwardRef<VideoViewHandle, VideoViewProps>(function Vi
     v.pause();
     seek(v.currentTime + dir / Math.max(1, fpsRef.current));
   }, [seek]);
+  // These set React state FIRST and only touch the <video> element when
+  // one exists — in native-engine mode there is no <video>, and the old
+  // `if (!v) return` guard dead-ended the whole control (the speed
+  // button silently did nothing; the engine mirror effects below never
+  // saw a state change).
   const cycleSpeed = useCallback(() => {
-    const v = videoRef.current; if (!v) return;
     const i = SPEEDS.indexOf(speed);
     const next = SPEEDS[(i + 1) % SPEEDS.length];
-    v.playbackRate = next; setSpeed(next);
+    const v = videoRef.current;
+    if (v) v.playbackRate = next;
+    setSpeed(next);
   }, [speed]);
   const toggleMute = useCallback(() => {
-    const v = videoRef.current; if (!v) return;
-    v.muted = !v.muted; setMuted(v.muted);
+    setMuted((m) => {
+      const v = videoRef.current;
+      if (v) v.muted = !m;
+      return !m;
+    });
   }, []);
   const onVolume = useCallback((val: number) => {
-    const v = videoRef.current; if (!v) return;
-    v.volume = val; v.muted = val === 0; setVolume(val); setMuted(val === 0);
+    const v = videoRef.current;
+    if (v) { v.volume = val; v.muted = val === 0; }
+    setVolume(val); setMuted(val === 0);
   }, []);
   // Mirror volume/mute onto the reverse-audio bus (WebAudio gain). waveReady
   // re-fires this once the decoder exists, so the initial level lands too.
@@ -701,6 +714,11 @@ export const VideoView = forwardRef<VideoViewHandle, VideoViewProps>(function Vi
         : null,
     );
   }, [loopRegion, inPoint, outPoint]);
+  // Surface the loop points to the host (chop mirrors them into a region).
+  useEffect(() => {
+    onLoopPointsChange?.(inPoint, outPoint);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inPoint, outPoint]);
   const toggleFullscreen = useCallback(() => {
     const el = containerRef.current; if (!el) return;
     if (document.fullscreenElement) void document.exitFullscreen().catch(() => {});
