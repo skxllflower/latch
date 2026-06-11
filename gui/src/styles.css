@@ -1,0 +1,55 @@
+@import "tailwindcss";
+
+/* Theme tokens the ported components reference. Single dark theme for
+   now — the multi-theme system stays a WAVdesk thing until the shared
+   UI kit gets promoted to a package. */
+:root {
+  --theme-warn-fg:  #fbbf24;
+  --theme-warn-dim: #b4884b;
+  --wd-select-section-bg: #18181b;
+  --wd-select-section-fg: #71717a;
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: transparent;
+}
+
+/* WdSelect section header rows (copied from WAVdesk's themed-components). */
+.wd-select-section-row {
+  background-color: var(--wd-select-section-bg);
+  color:            var(--wd-select-section-fg);
+  font-style:       normal;
+  font-weight:      700;
+  font-size:        0.5625rem;
+  text-transform:   uppercase;
+  letter-spacing:   0.05em;
+  display:          flex;
+  align-items:      center;
+  min-height:       16px;
+  padding:          0 4px;
+  line-height:      1;
+  user-select:      none;
+}
+
+/* Terminal prompt's block caret — solid square, hard-step blink for the
+   Winamp feel. Rests dim when the prompt isn't focused. */
+@keyframes wd-latch-caret-blink {
+  0%, 49%   { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+.wd-latch-caret {
+  display: inline-block;
+  width: 0.55em;
+  height: 1em;
+  background-color: currentColor;
+  opacity: 0.3;
+  align-self: center;
+  transform: translateY(0.5px);
+}
+.wd-latch-caret--active {
+  opacity: 1;
+  animation: wd-latch-caret-blink 1s step-end infinite;
+}
