@@ -20,9 +20,11 @@ import {
   CheckCircle2, XCircle, Loader2, ChevronRight, ChevronDown, CloudDownload,
   Link2, Link2Off, RefreshCw, Cookie, AlertTriangle, CheckSquare,
   Terminal, LayoutList, Image as ImageIcon, Film, Music, Check, Search, Minus,
+  Scissors,
 } from 'lucide-react';
 import { useTheme, THEME_BG } from './theme';
 import { confirmInWindow } from './dialogs';
+import { openChopWindow } from './chopWindow';
 import { WdSelect, type WdSelectOption } from './WdSelect';
 
 interface LatchOptionsPayload {
@@ -406,6 +408,27 @@ export default function ExtractApp() {
   useEffect(() => {
     try { localStorage.setItem('wd-latch-output-dir', outputDir); } catch {}
   }, [outputDir]);
+
+  // Clips rendered in the Chop window surface in the downloads column,
+  // so they're revealable / removable like any other Latch output.
+  useEffect(() => {
+    let unlisten: UnlistenFn | null = null;
+    void (async () => {
+      unlisten = await listen<{ path?: string; title?: string }>('wd-latch-clip-exported', (e) => {
+        const path = e.payload?.path;
+        if (!path) return;
+        const title = e.payload?.title || (path.split(/[\\/]/).pop() ?? path);
+        setItems(prev => {
+          if (prev.some(it => it.output === path)) return prev;
+          return [...prev, {
+            id: uid(), url: '', title, jobId: '',
+            status: 'done' as const, percent: 100, output: path, selected: false,
+          }];
+        });
+      });
+    })();
+    return () => { if (unlisten) unlisten(); };
+  }, []);
 
   useEffect(() => {
     void (async () => {
@@ -1388,8 +1411,19 @@ export default function ExtractApp() {
                         {linkSourceKind(q.url) === 'video' ? <Film size={9} /> : <Music size={9} />}
                       </span>
                     )}
-                    {/* Chop entry point returns here once the standalone
-                        Chop window (own audio engine) lands — next phase. */}
+                    {/* Chop entry point — audio-only in the standalone app
+                        until the video-engine port (the chop window runs
+                        its own download, so it doesn't wait on the probe).
+                        Hidden while a search is still resolving. */}
+                    {q.kind !== 'search' && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); void openChopWindow({ url: q.url, includeVideo: false, latchPath, title: q.title, durationSec: q.duration, cookiesFromBrowser }); }}
+                        className="text-sky-500/80 hover:text-sky-300 transition-none shrink-0 cursor-pointer"
+                        title="Chop: draw waveform selections and export clips (audio)"
+                      >
+                        <Scissors size={10} />
+                      </button>
+                    )}
                     <button
                       onClick={(e) => { e.stopPropagation(); removeQueuedUrl(q.id); }}
                       className="text-zinc-600 hover:text-zinc-300 opacity-0 group-hover:opacity-100 transition-none shrink-0"
@@ -1500,6 +1534,15 @@ export default function ExtractApp() {
                           >
                             {linkSourceKind(q.url) === 'video' ? <Film size={10} /> : <Music size={10} />}
                           </span>
+                        )}
+                        {q.kind !== 'search' && (
+                          <button
+                            onClick={() => void openChopWindow({ url: q.url, includeVideo: false, latchPath, title: q.title, durationSec: q.duration, cookiesFromBrowser })}
+                            className="text-sky-500/80 hover:text-sky-300 transition-none cursor-pointer"
+                            title="Chop: draw waveform selections and export clips (audio)"
+                          >
+                            <Scissors size={10} />
+                          </button>
                         )}
                       </div>
                     </div>

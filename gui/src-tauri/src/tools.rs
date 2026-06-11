@@ -93,7 +93,7 @@ fn installed_tool_fallbacks(name: &str) -> Vec<PathBuf> {
     out
 }
 
-fn find_tool_binary(name: &str, configured: &str) -> Result<PathBuf, String> {
+pub(crate) fn find_tool_binary(name: &str, configured: &str) -> Result<PathBuf, String> {
     if !configured.trim().is_empty() {
         let pb = PathBuf::from(configured.trim());
         if pb.exists() {
@@ -133,7 +133,7 @@ fn find_tool_binary(name: &str, configured: &str) -> Result<PathBuf, String> {
     ))
 }
 
-fn spawn_tool(
+pub(crate) fn spawn_tool(
     binary: PathBuf,
     args: Vec<String>,
 ) -> Result<(Child, std::process::ChildStdout), String> {
@@ -153,15 +153,21 @@ fn spawn_tool(
     Ok((child, stdout))
 }
 
-fn run_reader(
+pub(crate) fn register_job(job_id: String, child: Arc<Mutex<Child>>) {
+    if let Ok(mut map) = latch_jobs().lock() {
+        map.insert(job_id, child);
+    }
+}
+
+pub(crate) fn run_reader(
     tool: &'static str,
     job_id: String,
     window_label: String,
     app: AppHandle,
     stdout: std::process::ChildStdout,
     child_arc: Arc<Mutex<Child>>,
-    jobs: &'static JobMap,
 ) {
+    let jobs = latch_jobs();
     std::thread::spawn(move || {
         let event_name = format!("{}-event", tool);
         let reader = BufReader::new(stdout);
@@ -292,7 +298,7 @@ pub async fn latch_extract(
         map.insert(job_id.clone(), child_arc.clone());
     }
 
-    run_reader("latch", job_id, window_label, app, stdout, child_arc, latch_jobs());
+    run_reader("latch", job_id, window_label, app, stdout, child_arc);
     Ok(())
 }
 
@@ -462,7 +468,7 @@ pub async fn latch_update_ytdlp(
     if let Ok(mut map) = latch_jobs().lock() {
         map.insert(job_id.clone(), child_arc.clone());
     }
-    run_reader("latch", job_id, window_label, app, stdout, child_arc, latch_jobs());
+    run_reader("latch", job_id, window_label, app, stdout, child_arc);
     Ok(())
 }
 
@@ -480,7 +486,7 @@ pub async fn latch_bootstrap(
     if let Ok(mut map) = latch_jobs().lock() {
         map.insert(job_id.clone(), child_arc.clone());
     }
-    run_reader("latch", job_id, window_label, app, stdout, child_arc, latch_jobs());
+    run_reader("latch", job_id, window_label, app, stdout, child_arc);
     Ok(())
 }
 
@@ -556,6 +562,39 @@ pub fn tool_binary_probe(name: String, configured: String) -> ToolBinaryStatus {
             dev.map(|d| d.display().to_string())
                 .unwrap_or_else(|| format!(r"%USERPROFILE%\Dev\{}\build\Debug", name)),
         ),
+    }
+}
+
+/// Open a directory (or file) with the OS default handler — the clips
+/// folder button. ShellExecute-equivalent via the platform opener.
+#[tauri::command]
+pub fn os_open_path(path: String) -> Result<(), String> {
+    if path.is_empty() {
+        return Err("os_open_path: empty path".to_string());
+    }
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("explorer")
+            .arg(&path)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("explorer spawn: {}", e))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .arg(&path)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("open spawn: {}", e))
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        Command::new("xdg-open")
+            .arg(&path)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("xdg-open spawn: {}", e))
     }
 }
 

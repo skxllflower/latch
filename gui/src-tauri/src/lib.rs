@@ -1,4 +1,7 @@
+mod audio;
+mod chop;
 mod job_object;
+mod peaks;
 mod tools;
 
 pub fn run() {
@@ -23,6 +26,14 @@ pub fn run() {
             tools::latch_bootstrap,
             tools::tool_binary_probe,
             tools::os_reveal_path,
+            tools::os_open_path,
+            chop::latch_chop_alloc_dir,
+            chop::latch_chop_cleanup_dir,
+            chop::latch_clips_dir,
+            chop::latch_clip,
+            audio::audio_cmd,
+            peaks::generate_waveform,
+            peaks::wav_nearest_zero_cross,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Latch");

@@ -19,6 +19,10 @@ tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 # Second launch focuses the running window instead of spawning a twin.
 tauri-plugin-single-instance = "2"
+# Chop-window audition engine: cpal output + wav decode + resampling +
+# seek/position, owned by a dedicated thread (see src/audio.rs). WAV-only
+# decode — the chop pipeline always auditions a WAV it produced itself.
+rodio = { version = "0.20", default-features = false, features = ["wav"] }
 
 # Job Objects tie every spawned latch.exe (and its yt-dlp/ffmpeg
 # children, by job inheritance) to this process's lifetime — same
