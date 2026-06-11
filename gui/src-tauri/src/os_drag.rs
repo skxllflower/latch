@@ -90,7 +90,8 @@ pub fn start_os_file_drag(
     overlay
         .run_on_main_thread(move || {
             let app = app_for_cleanup;
-            let _ = drag::start_drag(
+            let app_for_err = app.clone();
+            let res = drag::start_drag(
                 &source,
                 drag::DragItem::Files(files),
                 drag::Image::Raw(image_bytes),
@@ -127,6 +128,18 @@ pub fn start_os_file_drag(
                 },
                 drag::Options::default(),
             );
+            // start_drag failing (e.g. the button already released by the
+            // time a slow clip render finished) never invokes the drop
+            // callback — clean the chip up here or it sticks to the cursor
+            // forever.
+            if res.is_err() {
+                let _ = app_for_err.emit("wd-overlay-hide", serde_json::json!({}));
+                let _ = app_for_err.emit("wd-drag-ended", serde_json::json!({}));
+                if let Some(overlay) = app_for_err.get_webview_window("drag-overlay") {
+                    let _ = overlay.hide();
+                }
+                crate::drag_overlay::mark_drag_inactive();
+            }
         })
         .map_err(|e| format!("run_on_main_thread failed: {e}"))
 }

@@ -81,6 +81,10 @@ export const DragChip: React.FC<DragChipProps> = ({
             maxHeight: 140,
             width:     'auto',
             height:    'auto',
+            // Centered over the label strip — a long filename makes the
+            // strip (and thus the card) wider than a 16:9 frame, which
+            // otherwise reads as deadspace to the image's right.
+            margin:    '0 auto',
             background: stripBg,
           }}
         />

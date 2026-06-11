@@ -1989,7 +1989,7 @@ export default function ExtractApp() {
                   {it.status === 'done' && it.output && (
                     <button
                       onClick={(e) => { e.stopPropagation(); onRevealItem(it.output!); }}
-                      className="shrink-0 text-zinc-600 hover:text-zinc-300 opacity-0 group-hover:opacity-100 transition-none"
+                      className="shrink-0 text-zinc-600 hover:text-zinc-300 transition-none"
                       title="Reveal in file manager"
                     >
                       <FolderSearch size={10} />

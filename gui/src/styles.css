@@ -1,9 +1,40 @@
 @import "tailwindcss";
 
-/* Theme tokens the ported components reference. Single dark theme for
-   now — the multi-theme system stays a WAVdesk thing until the shared
-   UI kit gets promoted to a package. */
+/* Every ported component reads font-mono; WAVdesk resolves the user's
+   font choice (localStorage there) onto the html element. Standalone
+   default: System Sans — same stack WAVdesk's font-system-sans uses.
+   A future settings window gets the same picker. */
+@theme {
+  --font-mono: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+/* Theme tokens — the full set the ported Chop/Video components consume,
+   with WAVdesk's dark ("focused") values. The multi-theme system stays
+   a WAVdesk thing until the shared UI kit gets promoted to a package. */
 :root {
+  --theme-bg-app:        #000000;
+  --theme-bg-panel:      #09090b;
+  --theme-bg-surface:    #151517;
+  --theme-bg-elevated:   #27272a;
+  --theme-bg-hover:      #3f3f46;
+
+  --theme-text-heading:   #fafafa;
+  --theme-text-primary:   #d4d4d8;
+  --theme-text-secondary: #9c9c9c;
+  --theme-text-muted:     #71717a;
+  --theme-text-faint:     #52525b;
+
+  --theme-border:         #27272a;
+  --theme-border-strong:  #3f3f46;
+  --theme-accent:         #71717a;
+
+  --theme-scrollbar-track: var(--theme-bg-panel);
+  --theme-scrollbar-thumb: #3f3f46;
+  --theme-scrollbar-thumb-hover: #52525b;
+
+  --theme-radius-sm: 2px;
+  --theme-radius-md: 4px;
+
   --theme-warn-fg:  #fbbf24;
   --theme-warn-dim: #b4884b;
   --wd-select-section-bg: #18181b;
@@ -16,6 +47,17 @@ html, body, #root {
   overflow: hidden;
   background: transparent;
 }
+
+/* Compact themed scrollbars (WAVdesk's 5px convention) — the default
+   Chromium bars read as a glitch against the dark chrome. */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-corner { background: transparent; }
+::-webkit-scrollbar-track { background: var(--theme-scrollbar-track); }
+::-webkit-scrollbar-thumb {
+  background: var(--theme-scrollbar-thumb);
+  border-radius: var(--theme-radius-sm);
+}
+::-webkit-scrollbar-thumb:hover { background: var(--theme-scrollbar-thumb-hover); }
 
 /* WdSelect section header rows (copied from WAVdesk's themed-components). */
 .wd-select-section-row {
