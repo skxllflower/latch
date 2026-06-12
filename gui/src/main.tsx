@@ -3,13 +3,15 @@ import ReactDOM from 'react-dom/client';
 import ExtractApp from './ExtractApp';
 import ChopApp from './ChopApp';
 import DialogApp from './DialogApp';
+import AboutApp from './AboutApp';
 import DragOverlayApp from './DragOverlayApp';
 import { subscribeOpenDialogs, getOpenDialogCount } from './dialogWindows';
 import './styles.css';
 
 // Window routing by query param — the main window is the Extract app,
 // `?wd=chop` is the Chop satellite (chopWindow.ts), `?wd=dialog` is a
-// spawned dialog window (dialogWindows.ts).
+// spawned dialog window (dialogWindows.ts), `?wd=about` is the About
+// window (aboutWindow.ts).
 const wd = new URLSearchParams(window.location.search).get('wd');
 
 // No native browser context menu anywhere except text fields.
@@ -34,6 +36,8 @@ function DialogLock() {
 ReactDOM.createRoot(document.getElementById('root')!).render(
   wd === 'dialog' ? (
     <DialogApp />
+  ) : wd === 'about' ? (
+    <AboutApp />
   ) : wd === 'drag-overlay' ? (
     <DragOverlayApp />
   ) : wd === 'chop' ? (

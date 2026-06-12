@@ -121,3 +121,19 @@ input[type="checkbox"] { accent-color: var(--theme-accent, #71717a); }
   max-width: 18px;
   opacity: 1;
 }
+
+/* About control: an info glyph at the status-bar's center cell whose
+   "ABOUT" label is collapsed until the glyph is hovered, then slides
+   open to the glyph's left (the button is right-anchored, so it grows
+   leftward, away from the edge). */
+.wd-about-label {
+  max-width: 0;
+  opacity: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  transition: max-width 160ms ease, opacity 130ms ease;
+}
+.wd-about:hover .wd-about-label {
+  max-width: 3.5rem;
+  opacity: 1;
+}

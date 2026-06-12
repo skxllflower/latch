@@ -20,12 +20,13 @@ import {
   CheckCircle2, XCircle, Loader2, ChevronRight, ChevronDown, CloudDownload,
   Link2, Link2Off, RefreshCw, Cookie, AlertTriangle, CheckSquare,
   Terminal, LayoutList, Image as ImageIcon, Film, Music, Check, Search, Minus,
-  Scissors,
+  Scissors, Info,
 } from 'lucide-react';
 import { useTheme, THEME_BG } from './theme';
 import { startOverlayDrag, endOverlayDrag } from './internalDragHandoff';
 import { confirmInWindow } from './dialogs';
 import { openChopWindow } from './chopWindow';
+import { openAboutWindow } from './aboutWindow';
 import { WdSelect, type WdSelectOption } from './WdSelect';
 
 interface LatchOptionsPayload {
@@ -1917,11 +1918,11 @@ export default function ExtractApp() {
                 return (
                 <div
                   key={it.id}
-                  className={`group flex items-start gap-1.5 px-1.5 py-1 text-[0.625rem] cursor-pointer ${
+                  className={`group flex items-start gap-1.5 px-1.5 py-1 text-[0.625rem] ${
                     it.selected
                       ? 'bg-zinc-800/70 text-zinc-100'
                       : 'hover:bg-zinc-900/60'
-                  } ${dragOK ? 'cursor-grab active:cursor-grabbing' : ''}`}
+                  } ${dragOK ? 'cursor-grab active:cursor-grabbing' : 'cursor-default'}`}
                   title={it.error ?? it.output ?? it.url}
                   onClick={(e) => {
                     e.stopPropagation();
@@ -2109,6 +2110,16 @@ export default function ExtractApp() {
                 {activeCount} live
               </span>
             )}
+            {/* About — info glyph opposite the latch.exe chip; hover
+                reveals the "ABOUT" label, click opens the About window. */}
+            <button
+              onClick={() => { void openAboutWindow(); }}
+              className="wd-about ml-auto flex items-center gap-1 text-zinc-600 hover:text-zinc-300 shrink-0 cursor-pointer"
+              title="About Latch"
+            >
+              <span className="wd-about-label uppercase tracking-wider text-[0.5rem]">About</span>
+              <Info size={10} className="shrink-0" />
+            </button>
           </div>
 
           {/* DOWNLOADS CELL */}
