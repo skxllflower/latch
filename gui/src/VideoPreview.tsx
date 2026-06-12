@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useState } from 'react';
+import { forwardRef, useEffect, useMemo, useState } from 'react';
 import { VideoView, type VideoViewHandle, type VideoViewProps } from './VideoView';
 import { isVideoPath, isChromiumPlayableVideo } from './formats';
 import { latheStatus } from './latheStatus';
@@ -40,12 +40,19 @@ export const VideoPreview = forwardRef<VideoViewHandle, VideoViewProps>(
 
     const isVideo = !!path && isVideoPath(path);
 
+    // Stable config identity — VideoView keys effects on it, and a fresh
+    // object every render re-fired its media-reset (nulling loop points).
+    const nativeStream = useMemo(
+      () => (isVideo ? { path: path as string, height: NATIVE_PREVIEW_HEIGHT, fps: NATIVE_PREVIEW_FPS } : null),
+      [isVideo, path],
+    );
+
     if (isVideo && latheResolved) {
       return (
         <VideoView
           ref={ref}
           {...props}
-          nativeStream={{ path: path as string, height: NATIVE_PREVIEW_HEIGHT, fps: NATIVE_PREVIEW_FPS }}
+          nativeStream={nativeStream}
         />
       );
     }

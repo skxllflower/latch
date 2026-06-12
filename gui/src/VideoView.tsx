@@ -590,7 +590,13 @@ export const VideoView = forwardRef<VideoViewHandle, VideoViewProps>(function Vi
     // collide with the previous file's locked key and the palette/histogram
     // would show stale colors until the playhead moved.
     sampleKeyRef.current = '';
-  }, [src, nativeStream]);
+    // Dep is the stream PATH, not the config object: callers build the
+    // config inline (fresh identity every render), and keying this reset
+    // on the object nulled the loop points — a silent loop CLEAR — every
+    // time the parent re-rendered. (The engine effect below already
+    // extracts primitives for exactly this reason.)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [src, nativeStream?.path]);
 
   // Idle-deferred audio decode (scrubber waveform + reverse-tape audio). It's a
   // full fetch + decodeAudioData + a main-thread peak scan + a reversed-copy
