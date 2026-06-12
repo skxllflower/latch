@@ -31,8 +31,10 @@ interface WaveformViewProps {
   // follows the engine while OUR file is playing.
   playheadGetter?: () => number;
   overlay?: (vp: { tStart: number; tEnd: number; durationSec: number }) => React.ReactNode;
-  // Vertical tick marks (e.g. chapter starts) drawn behind the peaks.
-  markers?: { sec: number; label?: string }[];
+  // Vertical tick marks (e.g. chapter starts, the armed I point) drawn
+  // behind the peaks. Default tint is the chapter amber; pass `color`
+  // for distinct marks.
+  markers?: { sec: number; label?: string; color?: string }[];
 }
 
 interface WaveData {
@@ -90,10 +92,11 @@ export const WaveformView: React.FC<WaveformViewProps> = ({
     // Chapter/marker ticks behind the peaks.
     const mks = markersRef.current;
     if (mks?.length) {
-      ctx.fillStyle = 'rgba(251,191,36,0.35)';
       for (const m of mks) {
         if (m.sec < cur.tStart || m.sec > cur.tEnd) continue;
-        ctx.fillRect(((m.sec - cur.tStart) / span) * w, 0, 1, h);
+        ctx.fillStyle = m.color ?? 'rgba(251,191,36,0.35)';
+        const wPx = m.color ? 2 : 1;
+        ctx.fillRect(((m.sec - cur.tStart) / span) * w, 0, wPx, h);
       }
     }
     if (!pk || pk.points.length === 0) return;

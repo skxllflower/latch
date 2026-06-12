@@ -137,7 +137,10 @@ export default function ChopApp() {
   const [chapters, setChapters] = useState<ChopChapter[]>([]);
   const [showChapters, setShowChapters] = useState(false);
   // Keyboard I/O region authoring: I arms, O completes (via onLoopPoints).
+  // The armed in-point mirrors into state so the waveform draws a marker
+  // (visual feedback that a region is half-formed).
   const ioKeyInRef = useRef<number | null>(null);
+  const [ioKeyIn, setIoKeyIn] = useState<number | null>(null);
   const onLoopPointsRef = useRef<((i: number | null, o: number | null) => void) | null>(null);
 
   // ---- Undo / redo ---------------------------------------------------------
@@ -766,10 +769,12 @@ export default function ChopApp() {
           : (onOurFileRef.current ? playbackEngine.getPosition() : cursorSec);
         if (e.code === 'KeyI') {
           ioKeyInRef.current = t;
+          setIoKeyIn(t);
           setExportMsg(`In point set: ${fmtTime(t)} — press O to make the region`);
         } else if (ioKeyInRef.current != null) {
           onLoopPointsRef.current?.(ioKeyInRef.current, t);
           ioKeyInRef.current = null;
+          setIoKeyIn(null);
           setExportMsg('');
         } else {
           setExportMsg('Press I first to set the in point');
@@ -1109,7 +1114,10 @@ export default function ChopApp() {
         <div ref={waveContainerRef} className="relative w-full flex-1 min-h-0 border-b border-[color:var(--theme-border)]">
           {phase === 'ready' && audioPath ? (
             <WaveformView
-              markers={chapters.map((c) => ({ sec: c.startSec, label: c.title }))}
+              markers={[
+                ...chapters.map((c) => ({ sec: c.startSec, label: c.title })),
+                ...(ioKeyIn != null ? [{ sec: ioKeyIn, label: 'In point', color: 'rgba(52,211,153,0.9)' }] : []),
+              ]}
               audioFile={waveAudioFile}
               filePath={audioPath}
               clickMode="seek"

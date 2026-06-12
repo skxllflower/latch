@@ -149,6 +149,8 @@ impl VaShared {
         let mut p = self.pos.lock().unwrap();
         while let Some(&(fw, base)) = p.wraps.front() {
             if fp >= fw {
+                #[cfg(debug_assertions)]
+                eprintln!("[vaudio] wrap rebase applied: fp={fp} base={base:.3}");
                 p.base = base;
                 p.base_frames = fw;
                 p.wraps.pop_front();
@@ -464,6 +466,8 @@ fn va_reader_chunked(mut stdout: std::process::ChildStdout, shared: std::sync::A
         let pts = pts_us as f64 / 1e6;
         if len == 0 {
             // Seek marker.
+            #[cfg(debug_assertions)]
+            eprintln!("[vaudio] seek marker pts={pts:.3}");
             shared.flush_and_rebase(pts);
             rebase = true;
             let _ = shared.seek_pending.fetch_update(
@@ -478,6 +482,8 @@ fn va_reader_chunked(mut stdout: std::process::ChildStdout, shared: std::sync::A
             // flushes; rebase applies when playback consumes past here.
             if let Ok(mut p) = shared.pos.lock() {
                 let fw = p.frames_written;
+                #[cfg(debug_assertions)]
+                eprintln!("[vaudio] wrap marker queued at fw={fw} -> base={pts:.3}");
                 p.wraps.push_back((fw, pts));
             }
             continue;
@@ -704,14 +710,15 @@ fn audio_thread(app: AppHandle, rx: Receiver<Cmd>) {
                 Cmd::VSetLoop { in_sec, out_sec } => {
                     // The DECODER owns the loop: it wraps gaplessly and
                     // separates cycles with wrap markers (out <= in
-                    // clears). Drop any queued rebases from the PREVIOUS
-                    // region so a stale wrap can't re-anchor the clock
-                    // after the bounds change.
-                    if let Some(sh) = &vd.shared {
-                        if let Ok(mut p) = sh.pos.lock() {
-                            p.wraps.clear();
-                        }
-                    }
+                    // clears). DO NOT touch the queued wrap rebases here:
+                    // the decoder runs AHEAD of playback, so a pending
+                    // rebase is normal — clearing it on a re-arm (resize
+                    // effect, activation, engine reconnect) orphans the
+                    // already-wrapped PCM and the position sails straight
+                    // past the region. The daemon clears wraps ONLY at
+                    // seek-marker flushes; so do we.
+                    #[cfg(debug_assertions)]
+                    eprintln!("[vaudio] loop op in={in_sec:.3} out={out_sec:.3}");
                     let cmd = format!(
                         "{{\"op\":\"loop\",\"in\":{:.6},\"out\":{:.6}}}\n",
                         in_sec, out_sec,
