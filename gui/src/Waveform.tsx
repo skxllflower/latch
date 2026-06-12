@@ -60,11 +60,22 @@ export const WaveformView: React.FC<WaveformViewProps> = ({
   const vpRef = useRef(vp);
   vpRef.current = vp;
 
+  // WRITE-THROUGH viewport commit: gesture handlers chain deltas off
+  // vpRef, but React renders (which refresh vpRef) lag far behind the
+  // 125Hz HID event rate — without an immediate ref update every event
+  // in a burst rebases on the SAME stale viewport and overwrites its
+  // siblings (the gesture barely moves, just wiggles). The ref is the
+  // live truth; the state render trails it.
+  const commitVp = useCallback((next: { tStart: number; tEnd: number }) => {
+    vpRef.current = next;
+    setVp(next);
+  }, []);
+
   // Reset the viewport to full when the file/duration changes.
   useEffect(() => {
-    if (duration > 0) setVp({ tStart: 0, tEnd: duration });
+    if (duration > 0) commitVp({ tStart: 0, tEnd: duration });
     fetchedSpanRef.current = 0; // force a fresh peak fetch for the new file
-  }, [filePath, duration]);
+  }, [filePath, duration, commitVp]);
 
   const peaksRef = useRef<{ points: number[]; tStart: number; tEnd: number } | null>(null);
 
@@ -186,7 +197,7 @@ export const WaveformView: React.FC<WaveformViewProps> = ({
       let t = cur.tEnd + delta;
       if (s < 0) { t -= s; s = 0; }
       if (t > duration) { s -= t - duration; t = duration; }
-      setVp({ tStart: Math.max(0, s), tEnd: Math.min(duration, t) });
+      commitVp({ tStart: Math.max(0, s), tEnd: Math.min(duration, t) });
       return;
     }
     const factor = Math.pow(1.0015, e.deltaY);
@@ -196,7 +207,7 @@ export const WaveformView: React.FC<WaveformViewProps> = ({
     let t = s + newSpan;
     if (s < 0) { t -= s; s = 0; }
     if (t > duration) { s -= t - duration; t = duration; s = Math.max(0, s); }
-    setVp({ tStart: s, tEnd: t });
+    commitVp({ tStart: s, tEnd: t });
   }, [duration]);
 
   // Precision-touchpad pinch/pan via the raw-HID subsystem
@@ -236,7 +247,7 @@ export const WaveformView: React.FC<WaveformViewProps> = ({
       let t = s + newSpan;
       if (s < 0) { t -= s; s = 0; }
       if (t > duration) { s -= t - duration; t = duration; s = Math.max(0, s); }
-      setVp({ tStart: s, tEnd: t });
+      commitVp({ tStart: s, tEnd: t });
     }).then((fn) => { if (disposed) fn(); else unZoom = fn; });
     listen<[number, number]>('wd-trackpad-pan', (e) => {
       if (!hoverRef.current || duration <= 0) return;
@@ -254,7 +265,7 @@ export const WaveformView: React.FC<WaveformViewProps> = ({
       let t = cur.tEnd + delta;
       if (s < 0) { t -= s; s = 0; }
       if (t > duration) { s -= t - duration; t = duration; }
-      setVp({ tStart: Math.max(0, s), tEnd: Math.min(duration, t) });
+      commitVp({ tStart: Math.max(0, s), tEnd: Math.min(duration, t) });
     }).then((fn) => { if (disposed) fn(); else unPan = fn; });
     return () => { disposed = true; unZoom?.(); unPan?.(); unActive?.(); };
   }, [duration]);
@@ -274,7 +285,7 @@ export const WaveformView: React.FC<WaveformViewProps> = ({
       let t = orig.tEnd + delta;
       if (s < 0) { t -= s; s = 0; }
       if (t > duration) { s -= t - duration; t = duration; }
-      setVp({ tStart: Math.max(0, s), tEnd: Math.min(duration, t) });
+      commitVp({ tStart: Math.max(0, s), tEnd: Math.min(duration, t) });
     };
     const onUp = () => {
       window.removeEventListener('pointermove', onMove);
