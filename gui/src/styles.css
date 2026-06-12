@@ -108,3 +108,16 @@ input, textarea { user-select: text; }
 /* Checkboxes follow the theme accent (WAVdesk convention is accent-zinc;
    the browser-default blue reads alien against the chrome). */
 input[type="checkbox"] { accent-color: var(--theme-accent, #71717a); }
+
+/* Slide-in row actions: zero width until the row (Tailwind .group)
+   hovers, then the glyph slides open at the row end. */
+.wd-slide-action {
+  max-width: 0;
+  opacity: 0;
+  overflow: hidden;
+  transition: max-width 140ms ease, opacity 110ms ease;
+}
+.group:hover .wd-slide-action {
+  max-width: 18px;
+  opacity: 1;
+}

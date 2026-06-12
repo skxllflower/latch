@@ -410,6 +410,12 @@ export default function ExtractApp() {
     try { localStorage.setItem('wd-latch-output-dir', outputDir); } catch {}
   }, [outputDir]);
 
+  // Created hidden (tauri.conf visible:false) — reveal after the first
+  // paint so the user never sees the transparent shell fill in.
+  useEffect(() => {
+    requestAnimationFrame(() => { void getCurrentWindow().show(); });
+  }, []);
+
   // Main-window close owns full app teardown: the satellite windows
   // (chop, the pre-spawned drag overlay) would otherwise keep a headless
   // app alive. Active downloads prompt first — closing cancels them and
@@ -1416,7 +1422,7 @@ export default function ExtractApp() {
                       {q.kind === 'search' && q.probeState !== 'probing' && <Search size={8} className="text-zinc-500" />}
                       {q.probeState === 'probing' && <Loader2 size={8} className="animate-spin text-zinc-500" />}
                       {q.kind !== 'search' && q.probeState === 'ok' && !q.candidateGroup && <CheckCircle2 size={8} className="text-emerald-500" />}
-                      {q.probeState === 'error'   && <AlertTriangle size={8} className="text-[color:var(--theme-warn-fg)]" />}
+                      {q.probeState === 'error'   && <span title={q.probeError ?? 'preview failed'}><AlertTriangle size={8} className="text-[color:var(--theme-warn-fg)]" /></span>}
                     </span>
                     <span className={`flex-1 min-w-0 truncate ${q.candidateGroup ? 'text-sky-300/90' : ''}`}>
                       {q.title ?? q.url}
@@ -1453,15 +1459,15 @@ export default function ExtractApp() {
                     {q.kind !== 'search' && (
                       <button
                         onClick={(e) => { e.stopPropagation(); void openChopWindow({ url: q.url, includeVideo: linkSourceKind(q.url) === 'video', latchPath, title: q.title, durationSec: q.duration, cookiesFromBrowser }); }}
-                        className="text-sky-500/80 hover:text-sky-300 transition-none shrink-0 cursor-pointer"
-                        title="Chop: draw waveform selections and export clips (audio)"
+                        className="wd-slide-action text-sky-500/80 hover:text-sky-300 shrink-0 cursor-pointer"
+                        title="Chop: draw waveform selections and export clips"
                       >
                         <Scissors size={10} />
                       </button>
                     )}
                     <button
                       onClick={(e) => { e.stopPropagation(); removeQueuedUrl(q.id); }}
-                      className="text-zinc-600 hover:text-zinc-300 opacity-0 group-hover:opacity-100 transition-none shrink-0"
+                      className="wd-slide-action text-zinc-600 hover:text-zinc-300 shrink-0"
                       title="Remove"
                     >
                       <X size={9} />
@@ -1540,7 +1546,10 @@ export default function ExtractApp() {
                           )}
                           {q.probeState === 'error' && (
                             <span className="text-[color:var(--theme-warn-dim)] truncate" title={q.probeError}>
-                              preview failed
+                              {q.probeError || 'preview failed'}
+                              {classifyError(q.probeError) === 'bot-wall'
+                                ? ' — set Cookies in Advanced and retry'
+                                : ''}
                             </span>
                           )}
                         </span>
@@ -1548,7 +1557,7 @@ export default function ExtractApp() {
                       <div className="flex flex-col items-center gap-1 shrink-0">
                         <button
                           onClick={() => removeQueuedUrl(q.id)}
-                          className="text-zinc-600 hover:text-zinc-300 opacity-0 group-hover:opacity-100 transition-none"
+                          className="wd-slide-action text-zinc-600 hover:text-zinc-300"
                           title="Remove"
                         >
                           <X size={10} />
@@ -2035,7 +2044,7 @@ export default function ExtractApp() {
                   ) : (
                     <button
                       onClick={(e) => { e.stopPropagation(); removeItem(it.id); }}
-                      className="shrink-0 text-zinc-600 hover:text-zinc-300 opacity-0 group-hover:opacity-100 transition-none"
+                      className="wd-slide-action shrink-0 text-zinc-600 hover:text-zinc-300"
                       title="Remove from list (file on disk untouched)"
                     >
                       <X size={10} />

@@ -1019,13 +1019,20 @@ export default function ChopApp() {
     if (inSec == null || outSec == null || outSec - inSec < MIN_REGION_SEC) return;
     const dur = durationSec;
     if (dur <= 0) return;
-    const existing = ioRegionRef.current
-      ? regionsRef.current.find((x) => x.id === ioRegionRef.current)
-      : null;
+    // Edge case: the playhead sits inside an existing region when the
+    // points land. Adopt THAT region instead of trying to create one on
+    // top of it (which the non-overlap invariant would reject) — hitting
+    // IN/OUT while inside a region reads as "re-bound this one".
+    const host = regionsRef.current.find((x) => inSec >= x.startSec && inSec < x.endSec);
+    const target = host
+      ?? (ioRegionRef.current
+        ? regionsRef.current.find((x) => x.id === ioRegionRef.current)
+        : null);
     pushHistory('io-region', 1200);
-    if (existing) {
-      setRegions(setRegionBounds(regionsRef.current, existing.id, inSec, outSec, dur));
-      select(existing.id);
+    if (target) {
+      ioRegionRef.current = target.id;
+      setRegions(setRegionBounds(regionsRef.current, target.id, inSec, outSec, dur));
+      select(target.id);
     } else {
       const { regions: next, id } = createDragRegion(regionsRef.current, inSec, outSec, dur);
       if (id) {
@@ -1100,6 +1107,7 @@ export default function ChopApp() {
         <div ref={waveContainerRef} className="relative w-full flex-1 min-h-0 border-b border-[color:var(--theme-border)]">
           {phase === 'ready' && audioPath ? (
             <WaveformView
+              markers={chapters.map((c) => ({ sec: c.startSec, label: c.title }))}
               audioFile={waveAudioFile}
               filePath={audioPath}
               clickMode="seek"
@@ -1276,11 +1284,11 @@ export default function ChopApp() {
 
         {/* Bottom bar: video/audio mode toggle · region count · export */}
         <div className="flex items-center gap-1.5 px-2 border-t border-[color:var(--theme-border)] shrink-0" style={{ height: '31px' }}>
-          {phase === 'ready' && chapters.length > 1 && regions.length === 0 && (
+          {phase === 'ready' && chapters.length > 1 && (
             <button
               className={railBtn(false)}
               onClick={seedChapters}
-              title={`This source has ${chapters.length} chapter markers. Create one region per chapter, labeled from the chapter titles.`}
+              title={`This source has ${chapters.length} chapter markers. Create one region per chapter, labeled from the chapter titles.${regions.length ? ' Replaces the current regions (undoable).' : ''}`}
             >
               <ListMusic size={10} className="inline -mt-px mr-1" />
               Chapters · {chapters.length}

@@ -31,6 +31,8 @@ interface WaveformViewProps {
   // follows the engine while OUR file is playing.
   playheadGetter?: () => number;
   overlay?: (vp: { tStart: number; tEnd: number; durationSec: number }) => React.ReactNode;
+  // Vertical tick marks (e.g. chapter starts) drawn behind the peaks.
+  markers?: { sec: number; label?: string }[];
 }
 
 interface WaveData {
@@ -42,9 +44,11 @@ interface WaveData {
 const MIN_SPAN_SEC = 0.02;
 
 export const WaveformView: React.FC<WaveformViewProps> = ({
-  audioFile, filePath, playheadGetter, overlay,
+  audioFile, filePath, playheadGetter, overlay, markers,
 }) => {
   const duration = audioFile?.durationSec ?? 0;
+  const markersRef = useRef(markers);
+  markersRef.current = markers;
   const containerRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const playheadRef = useRef<HTMLDivElement | null>(null);
@@ -83,6 +87,15 @@ export const WaveformView: React.FC<WaveformViewProps> = ({
     // Center line.
     ctx.fillStyle = 'rgba(161,161,170,0.25)';
     ctx.fillRect(0, h / 2 - 0.5, w, 1);
+    // Chapter/marker ticks behind the peaks.
+    const mks = markersRef.current;
+    if (mks?.length) {
+      ctx.fillStyle = 'rgba(251,191,36,0.35)';
+      for (const m of mks) {
+        if (m.sec < cur.tStart || m.sec > cur.tEnd) continue;
+        ctx.fillRect(((m.sec - cur.tStart) / span) * w, 0, 1, h);
+      }
+    }
     if (!pk || pk.points.length === 0) return;
 
     const pkSpan = Math.max(1e-6, pk.tEnd - pk.tStart);
@@ -129,7 +142,7 @@ export const WaveformView: React.FC<WaveformViewProps> = ({
     return () => ro.disconnect();
   }, [draw]);
 
-  useEffect(() => { draw(); }, [vp, draw]);
+  useEffect(() => { draw(); }, [vp, markers, draw]);
 
   // Wheel: zoom around the cursor; Shift (or a sideways wheel) pans.
   const onWheel = useCallback((e: React.WheelEvent) => {
