@@ -251,6 +251,11 @@ fn spawn_poll_thread(app: AppHandle) {
         // ~60Hz. 120Hz showed no perceptible difference in chip
         // latency on test hardware and just burns CPU.
         let interval = Duration::from_millis(16);
+        // Mouse-button watch: the chip VISUALS die the instant the user
+        // releases, even though the drag's logical cleanup still waits
+        // for DoDragDrop (Explorer's Drop can block on a name-collision
+        // dialog for seconds — the chip hanging there reads as stuck).
+        let mut was_down = false;
 
         loop {
             if !DRAG_ACTIVE.load(Ordering::SeqCst) {
@@ -319,6 +324,18 @@ fn spawn_poll_thread(app: AppHandle) {
             ));
             MOD_CTRL.store(ctrl_now, Ordering::SeqCst);
             MOD_SHIFT.store(shift_now, Ordering::SeqCst);
+
+            // Hide the chip on the press→release transition. Logical
+            // drag state is untouched — the drop callback still runs.
+            let down = device_state.get_mouse().button_pressed.get(1).copied().unwrap_or(false);
+            if was_down && !down {
+                if let Some(overlay) = app.get_webview_window(OVERLAY_LABEL) {
+                    let _ = overlay.hide();
+                }
+                #[cfg(target_os = "windows")]
+                crate::native_drag_chip::hide();
+            }
+            was_down = down;
 
             std::thread::sleep(interval);
         }

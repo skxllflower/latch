@@ -7,8 +7,11 @@
 //   • click INSIDE a region        → make it the active loop (swap)
 //   • click OUTSIDE any region     → play the whole file from there, no loop
 //   • drag a region EDGE           → resize that edge
-//   • drag a region's CENTER grip  → drag the clip OUT as a file (export);
-//                                     Alt+drag exports the VIDEO clip
+//   • drag a region's bottom GRIP  → drag the clip OUT as a file (export);
+//                                     video links show TWO grips (audio +
+//                                     video — never an Alt modifier:
+//                                     Windows refuses drops while Alt is
+//                                     held, it forces the link drop-effect)
 //   • drag the region BODY         → move the whole region
 //   • scroll / middle-drag / trackpad → WaveformView's built-in zoom/pan
 //
@@ -25,7 +28,7 @@
 // any preventDefault so middle-drag pan still reaches the container.
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ChevronLeft, ChevronRight, Upload, Music, Film, GripVertical } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Music, Film, GripVertical } from 'lucide-react';
 import {
   ChopRegion, createDragRegion, setRegionBounds, resizeEdge, moveRegion,
 } from './chopRegions';
@@ -42,7 +45,7 @@ interface ChopRegionOverlayProps {
   onActivate: (id: string) => void;        // click inside / new region → loop it
   onCreateDefault: (atSec: number) => void; // double-click → add a region
   onDragOut: (id: string, opts: { video: boolean }) => void; // centre grip → export out
-  canExportVideo?: boolean; // a video file exists → show the Alt-for-video nudge
+  canExportVideo?: boolean; // a video file exists → show the second (video) grip
   // Gesture boundaries for the host's undo snapshots + snap-on-release.
   // Start fires before the first mutation of any mutating gesture; end
   // fires on release ONLY when the gesture actually changed a region.
@@ -56,6 +59,8 @@ const EDGE_HIT_PX = 6;
 // region. Its hit zone is just the handle box itself (so the rest of the
 // body drags-to-move); the visual + hitbox use the same dimensions.
 const HANDLE_W = 34;
+const HANDLE_W2 = 26;     // each pill when the audio+video pair renders
+const HANDLE_GAP = 4;
 const HANDLE_H = 16;
 const HANDLE_BOTTOM = 5;       // gap from the region's bottom edge
 const HANDLE_HIT_PAD = 3;      // small forgiveness around the box
@@ -65,7 +70,7 @@ type Zone =
   | { kind: 'create'; anchorSec: number; startX: number; createdId: string | null }
   | { kind: 'resize'; id: string; edge: 'start' | 'end' }
   | { kind: 'move'; id: string; grabSec: number; origStart: number; startX: number; moved: boolean }
-  | { kind: 'dragout'; id: string; startX: number; startY: number; armed: boolean };
+  | { kind: 'dragout'; id: string; video: boolean; startX: number; startY: number; armed: boolean };
 
 export const ChopRegionOverlay: React.FC<ChopRegionOverlayProps> = ({
   regions, selectedId, viewportStartSec, viewportEndSec, durationSec,
@@ -85,18 +90,18 @@ export const ChopRegionOverlay: React.FC<ChopRegionOverlayProps> = ({
   const hoverIdRef = useRef<string | null>(null);
   // Whether the cursor is over the export handle specifically (vs elsewhere
   // in the region). Drives the handle's dim → bright nudge.
-  const [hoverHandle, setHoverHandle] = useState(false);
-  const hoverHandleRef = useRef(false);
+  // Which export grip is hovered: false | 'audio' | 'video'. Two DISTINCT
+  // grips replace the old Alt+drag modifier — Windows treats Alt held
+  // during DoDragDrop as a drop-effect override (link) and most targets
+  // refuse the drop with the forbidden cursor, so a modifier key can
+  // never gate the video drag.
+  const [hoverHandle, setHoverHandle] = useState<false | 'audio' | 'video'>(false);
+  const hoverHandleRef = useRef<false | 'audio' | 'video'>(false);
   // Alt held while on the handle → the drag exports video; the handle icon
   // flips to a film glyph to telegraph that. Synced from BOTH the pointer
   // move's modifier state (so Alt already held on arrival registers) and
   // key events (so a press/release while stationary registers); the ref
   // mirror dedupes the two and prevents missed/flip-flopped updates.
-  const [altHeld, setAltHeld] = useState(false);
-  const altHeldRef = useRef(false);
-  const setAlt = useCallback((v: boolean) => {
-    if (v !== altHeldRef.current) { altHeldRef.current = v; setAltHeld(v); }
-  }, []);
 
   const vpSpan = Math.max(1e-6, viewportEndSec - viewportStartSec);
   const secToPct = (sec: number) => ((sec - viewportStartSec) / vpSpan) * 100;
@@ -132,13 +137,21 @@ export const ChopRegionOverlay: React.FC<ChopRegionOverlayProps> = ({
       if (sec > r.startSec && sec < r.endSec) {
         const xs = xOf(r.startSec), xe = xOf(r.endSec);
         const center = (xs + xe) / 2;
-        // Export handle hitbox: just the pill at the bottom centre, only
-        // when the region is wide enough to host it clear of the edges.
-        const wideEnough = (xe - xs) >= HANDLE_W + 2 * EDGE_HIT_PX;
-        const inX = Math.abs(xpx - center) <= HANDLE_W / 2 + HANDLE_HIT_PAD;
+        // Export handle hitboxes at the bottom centre, only when the
+        // region is wide enough to host them clear of the edges. Video
+        // links get a PAIR of grips (audio + video) — never a modifier.
         const inY = ypx >= h - HANDLE_BOTTOM - HANDLE_H - HANDLE_HIT_PAD && ypx <= h - HANDLE_BOTTOM + HANDLE_HIT_PAD;
-        if (wideEnough && inX && inY) {
-          return { kind: 'dragout', id: r.id, startX: clientX, startY: clientY, armed: false };
+        if (canExportVideo && (xe - xs) >= 2 * HANDLE_W2 + HANDLE_GAP + 2 * EDGE_HIT_PX) {
+          const off = (HANDLE_W2 + HANDLE_GAP) / 2;
+          if (inY && Math.abs(xpx - (center - off)) <= HANDLE_W2 / 2 + HANDLE_HIT_PAD) {
+            return { kind: 'dragout', id: r.id, video: false, startX: clientX, startY: clientY, armed: false };
+          }
+          if (inY && Math.abs(xpx - (center + off)) <= HANDLE_W2 / 2 + HANDLE_HIT_PAD) {
+            return { kind: 'dragout', id: r.id, video: true, startX: clientX, startY: clientY, armed: false };
+          }
+        } else if ((xe - xs) >= HANDLE_W + 2 * EDGE_HIT_PX
+            && inY && Math.abs(xpx - center) <= HANDLE_W / 2 + HANDLE_HIT_PAD) {
+          return { kind: 'dragout', id: r.id, video: false, startX: clientX, startY: clientY, armed: false };
         }
         return { kind: 'move', id: r.id, grabSec: sec, origStart: r.startSec, startX: clientX, moved: false };
       }
@@ -180,7 +193,8 @@ export const ChopRegionOverlay: React.FC<ChopRegionOverlayProps> = ({
       } else if (cur.kind === 'dragout') {
         // Past the threshold, hand off to the OS file drag and end the
         // pointer gesture (release capture so DoDragDrop's modal loop gets
-        // the button). Alt held at hand-off → export the video clip. A
+        // the button). The grabbed GRIP decides audio vs video — never a
+        // modifier (Alt poisons DoDragDrop with the link drop-effect). A
         // press that never crosses the threshold stays a click.
         if (Math.abs(ev.clientX - cur.startX) < DRAG_THRESH_PX &&
             Math.abs(ev.clientY - cur.startY) < DRAG_THRESH_PX) return;
@@ -189,7 +203,7 @@ export const ChopRegionOverlay: React.FC<ChopRegionOverlayProps> = ({
         captureEl.releasePointerCapture?.(pid);
         window.removeEventListener('pointermove', onMove);
         window.removeEventListener('pointerup', onUp);
-        onDragOut(cur.id, { video: ev.altKey });
+        onDragOut(cur.id, { video: cur.video });
       }
     };
     const onUp = (ev: PointerEvent) => {
@@ -238,30 +252,16 @@ export const ChopRegionOverlay: React.FC<ChopRegionOverlayProps> = ({
     const z = hitTest(e.clientX, e.clientY);
     if (rootRef.current) rootRef.current.style.cursor = cursorFor(z.kind);
     const hid = z.kind === 'create' ? null : z.id;
-    const onHandle = z.kind === 'dragout';
+    const onHandle: false | 'audio' | 'video' =
+      z.kind === 'dragout' ? (z.video ? 'video' : 'audio') : false;
     if (hid !== hoverIdRef.current) { hoverIdRef.current = hid; setHoverId(hid); }
     if (onHandle !== hoverHandleRef.current) { hoverHandleRef.current = onHandle; setHoverHandle(onHandle); }
-    setAlt(onHandle && e.altKey); // picks up Alt already held when arriving
-  }, [hitTest, setAlt]);
+  }, [hitTest]);
 
   const onRootPointerLeave = useCallback(() => {
     if (hoverIdRef.current !== null) { hoverIdRef.current = null; setHoverId(null); }
     if (hoverHandleRef.current) { hoverHandleRef.current = false; setHoverHandle(false); }
-    setAlt(false);
-  }, [setAlt]);
-
-  // While on the handle, also track Alt press/release made WITHOUT moving the
-  // mouse (no pointer event fires then). Pairs with the pointer-move sync.
-  useEffect(() => {
-    if (!hoverHandle) { setAlt(false); return; }
-    const onKey = (e: KeyboardEvent) => setAlt(e.altKey);
-    window.addEventListener('keydown', onKey);
-    window.addEventListener('keyup', onKey);
-    return () => {
-      window.removeEventListener('keydown', onKey);
-      window.removeEventListener('keyup', onKey);
-    };
-  }, [hoverHandle, setAlt]);
+  }, []);
 
   const onRootDoubleClick = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -348,43 +348,51 @@ export const ChopRegionOverlay: React.FC<ChopRegionOverlayProps> = ({
                 <ChevronRight size={12} />
               </div>
             )}
-            {showHandle && (
-              <>
-                {/* Nudge label — fades in only while the cursor is on the
-                    handle, hinting the modifier gesture (video links only). */}
-                {canExportVideo && (
-                  <div style={{
-                    position: 'absolute', left: `${cPct}%`, bottom: HANDLE_BOTTOM + HANDLE_H + 5,
-                    transform: 'translateX(-50%)', padding: '1px 5px', borderRadius: 3,
-                    background: 'rgba(0,0,0,0.8)', color: '#e5e7eb',
-                    fontSize: 8, lineHeight: 1.5, whiteSpace: 'nowrap', letterSpacing: '0.02em',
-                    opacity: hoverHandle ? 1 : 0, transition: 'opacity 120ms ease',
-                  }}>
-                    {altHeld ? 'Drag to export video' : 'Alt+Drag for Video'}
-                  </div>
-                )}
-                {/* Export handle: dim at rest, bright on hover with a grip-dots
-                    cue that it's draggable; the note flips to a film glyph
-                    while Alt is held (the drag will export video). */}
-                <div style={{
-                  position: 'absolute', left: `${cPct}%`, bottom: HANDLE_BOTTOM,
-                  transform: 'translateX(-50%)', width: HANDLE_W, height: HANDLE_H,
+            {showHandle && (() => {
+              // Video links render a PAIR of grips (audio + video) instead
+              // of an Alt modifier — Windows refuses drops while Alt is
+              // held (link drop-effect), so the modifier could never work.
+              const rectW = rootRef.current?.getBoundingClientRect().width ?? 0;
+              const regionPx = (ePct - sPct) / 100 * rectW;
+              const dual = canExportVideo && regionPx >= 2 * HANDLE_W2 + HANDLE_GAP + 2 * EDGE_HIT_PX;
+              const pill = (video: boolean, leftCalc: string) => (
+                <div key={video ? 'v' : 'a'} style={{
+                  position: 'absolute', left: leftCalc, bottom: HANDLE_BOTTOM,
+                  transform: 'translateX(-50%)', width: dual ? HANDLE_W2 : HANDLE_W, height: HANDLE_H,
                   display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 1,
                   background: hover.color, color: '#0a0a0a', borderRadius: 4,
                   boxShadow: '0 1px 3px rgba(0,0,0,0.5)',
-                  opacity: hoverHandle ? 1 : 0.5, transition: 'opacity 120ms ease',
+                  opacity: hoverHandle === (video ? 'video' : 'audio') ? 1 : 0.55,
+                  transition: 'opacity 120ms ease',
                 }}>
-                  {hoverHandle ? (
+                  {video ? <Film size={9} strokeWidth={2.5} /> : <Music size={9} strokeWidth={2.5} />}
+                  <GripVertical size={10} strokeWidth={2.5} />
+                </div>
+              );
+              const off = (HANDLE_W2 + HANDLE_GAP) / 2;
+              return (
+                <>
+                  {hoverHandle && (
+                    <div style={{
+                      position: 'absolute', left: `${cPct}%`, bottom: HANDLE_BOTTOM + HANDLE_H + 5,
+                      transform: 'translateX(-50%)', padding: '1px 5px', borderRadius: 3,
+                      background: 'rgba(0,0,0,0.8)', color: '#e5e7eb',
+                      fontSize: 8, lineHeight: 1.5, whiteSpace: 'nowrap', letterSpacing: '0.02em',
+                    }}>
+                      {hoverHandle === 'video' ? 'Drag out the video clip' : 'Drag out the audio clip'}
+                    </div>
+                  )}
+                  {dual ? (
                     <>
-                      {altHeld && canExportVideo ? <Film size={9} strokeWidth={2.5} /> : <Music size={9} strokeWidth={2.5} />}
-                      <GripVertical size={10} strokeWidth={2.5} />
+                      {pill(false, `calc(${cPct}% - ${off}px)`)}
+                      {pill(true, `calc(${cPct}% + ${off}px)`)}
                     </>
                   ) : (
-                    <Upload size={11} strokeWidth={2.5} />
+                    pill(false, `${cPct}%`)
                   )}
-                </div>
-              </>
-            )}
+                </>
+              );
+            })()}
           </div>
         );
       })()}

@@ -824,8 +824,8 @@ export default function ChopApp() {
 
   // ---- Export / drag-out --------------------------------------------------
   // `forceVideo` overrides the per-region/default toggle: the drag-out path
-  // passes it (false = audio, true = Alt-drag video) so a plain drag is
-  // always the audio clip and Alt+drag is always the video clip.
+  // passes it (false = audio, true = the video grip) so each overlay grip
+  // exports its own variant; a rail drag uses the region's toggle.
   const clipInputFor = useCallback((r: ChopRegion, forceVideo?: boolean): { input: string; video: boolean; ext: string } => {
     const wantVideo = forceVideo ?? r.exportVideo ?? false;
     // Video clip only from the full-res copy — until it lands, fall back to
@@ -1248,7 +1248,7 @@ export default function ChopApp() {
                 <div
                   key={r.id}
                   draggable
-                  onDragStart={(e) => { e.preventDefault(); select(r.id); void beginRegionDragOut(r, e.altKey ? true : undefined); }}
+                  onDragStart={(e) => { e.preventDefault(); select(r.id); void beginRegionDragOut(r); }}
                   onMouseDown={() => select(r.id)}
                   className={`flex items-center gap-1.5 px-2 h-7 border-b border-[color:var(--theme-border)] cursor-grab ${
                     sel ? 'bg-[var(--theme-bg-hover)]' : 'hover:bg-[var(--theme-bg-elevated)]'}`}
@@ -1307,10 +1307,10 @@ export default function ChopApp() {
         <div
           className="flex items-center px-2 border-t border-[color:var(--theme-border)] shrink-0 overflow-hidden"
           style={{ height: '14px' }}
-          title="space: play/pause · J/K/L: shuttle (video) · double-click or drag: add region · arrows: nudge selected region (Shift: coarse, Ctrl: start edge, Alt: end edge) · Delete: remove region · Ctrl+Z / Ctrl+Y: undo / redo · Alt-drag handle: export video"
+          title="space: play/pause · J/K/L: shuttle (video) · double-click or drag: add region · I then O: mark a region · arrows: nudge selected region (Shift: coarse, Ctrl: start edge, Alt: end edge) · Delete: remove region · Ctrl+Z / Ctrl+Y: undo / redo · region grips: drag out the audio / video clip"
         >
           <span className="truncate text-[0.5rem] text-[color:var(--theme-text-muted)] select-none tabular-nums">
-            space play{hasVideo ? ' · J/K/L shuttle' : ''} · dbl-click add · arrows nudge region (shift coarse · ctrl start · alt end) · del remove · ctrl+Z undo · alt-drag handle: video
+            space play{hasVideo ? ' · J/K/L shuttle' : ''} · dbl-click add · I/O mark region · arrows nudge (shift coarse · ctrl start · alt end) · del remove · ctrl+Z undo · grips drag out audio{hasVideo ? '/video' : ''}
           </span>
         </div>
 

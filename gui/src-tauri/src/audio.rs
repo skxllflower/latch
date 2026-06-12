@@ -80,14 +80,6 @@ const VA_OUTPUT_LATENCY_SEC: f64 = 0.0;
 
 const VA_Q_CAP_SEC: usize = 2; // PCM queue depth before reader backpressure
 
-// Seconds since first use — stamps the dev trace so user-action gaps
-// are distinguishable from programmatic back-to-back ops.
-#[cfg(debug_assertions)]
-fn va_ts() -> f64 {
-    static T0: OnceLock<Instant> = OnceLock::new();
-    T0.get_or_init(Instant::now).elapsed().as_secs_f64()
-}
-
 struct VaPos {
     base: f64,
     base_frames: u64,
@@ -166,8 +158,6 @@ impl VaShared {
         let mut p = self.pos.lock().unwrap();
         while let Some(&(fw, base)) = p.wraps.front() {
             if fp >= fw {
-                #[cfg(debug_assertions)]
-                eprintln!("[vaudio {:9.3}] wrap rebase applied: fp={fp} base={base:.3}", va_ts());
                 p.base = base;
                 p.base_frames = fw;
                 p.wraps.pop_front();
@@ -440,8 +430,6 @@ impl VideoDeck {
                     *at = Some(Instant::now());
                 }
             }
-            #[cfg(debug_assertions)]
-            eprintln!("[vaudio {:9.3}] seek op sec={t:.3} dir={d}", va_ts());
             let cmd = format!("{{\"op\":\"seek\",\"sec\":{:.6},\"dir\":{}}}\n", t, d);
             if self.send(&cmd) {
                 return;
@@ -488,8 +476,6 @@ fn va_reader_chunked(mut stdout: std::process::ChildStdout, shared: std::sync::A
         let pts = pts_us as f64 / 1e6;
         if len == 0 {
             // Seek marker.
-            #[cfg(debug_assertions)]
-            eprintln!("[vaudio {:9.3}] seek marker pts={pts:.3}", va_ts());
             shared.flush_and_rebase(pts);
             rebase = true;
             let _ = shared.seek_pending.fetch_update(
@@ -504,8 +490,6 @@ fn va_reader_chunked(mut stdout: std::process::ChildStdout, shared: std::sync::A
             // flushes; rebase applies when playback consumes past here.
             if let Ok(mut p) = shared.pos.lock() {
                 let fw = p.frames_written;
-                #[cfg(debug_assertions)]
-                eprintln!("[vaudio {:9.3}] wrap marker queued at fw={fw} -> base={pts:.3}", va_ts());
                 p.wraps.push_back((fw, pts));
             }
             continue;
@@ -688,8 +672,6 @@ fn audio_thread(app: AppHandle, rx: Receiver<Cmd>) {
                 }
                 Cmd::ClearLoop => { st.looping = None; }
                 Cmd::VStart { path, start_sec, lathe } => {
-                    #[cfg(debug_assertions)]
-                    eprintln!("[vaudio {:9.3}] START start={start_sec:.3}", va_ts());
                     vd.playing = true;
                     // Per-stream volume/rate reset at begin — mirrors the
                     // daemon contract (the engine re-applies its own).
@@ -741,8 +723,6 @@ fn audio_thread(app: AppHandle, rx: Receiver<Cmd>) {
                     // already-wrapped PCM and the position sails straight
                     // past the region. The daemon clears wraps ONLY at
                     // seek-marker flushes; so do we.
-                    #[cfg(debug_assertions)]
-                    eprintln!("[vaudio {:9.3}] loop op in={in_sec:.3} out={out_sec:.3}", va_ts());
                     let cmd = format!(
                         "{{\"op\":\"loop\",\"in\":{:.6},\"out\":{:.6}}}\n",
                         in_sec, out_sec,

@@ -128,13 +128,6 @@ pub async fn latch_clip(
             args.push(format!("--audio-format={}", audio_format.trim()));
         }
     }
-    #[cfg(debug_assertions)]
-    eprintln!(
-        "[chop] latch_clip bin={:?} args={:?} input_exists={}",
-        bin,
-        args,
-        std::path::Path::new(&args[1]).exists(),
-    );
     let (child, stdout) = crate::tools::spawn_tool(bin, args)?;
     let child_arc = Arc::new(Mutex::new(child));
     crate::tools::register_job(job_id.clone(), child_arc.clone());

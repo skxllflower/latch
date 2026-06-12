@@ -39,6 +39,10 @@ pub fn run() {
             use tauri::Manager;
             if matches!(event, tauri::WindowEvent::Destroyed) && window.label() == "chop" {
                 audio::stop_everything(window.app_handle());
+                // The webview's own close handler sweeps too, but it never
+                // runs when the window is destroyed outright — this hook is
+                // the guarantee that no chop temp tree outlives the window.
+                chop::sweep_temp_root();
             }
         })
         .setup(|app| {
