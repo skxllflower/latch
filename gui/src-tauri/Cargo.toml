@@ -50,4 +50,8 @@ windows = { version = "0.61", features = [
   "Win32_System_Variant",
   "Win32_UI_Shell",
   "Win32_UI_Shell_Common",
+  # Raw HID touchpad input (pinch/pan in the chop window) — see
+  # touchpad_raw_input.rs.
+  "Win32_Devices_HumanInterfaceDevice",
+  "Win32_UI_Input",
 ] }

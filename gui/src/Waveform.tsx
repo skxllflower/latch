@@ -15,6 +15,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { playbackEngine } from './playbackEngine';
 
 export interface WaveAudioFile {
@@ -177,6 +178,53 @@ export const WaveformView: React.FC<WaveformViewProps> = ({
     setVp({ tStart: s, tEnd: t });
   }, [duration]);
 
+  // Precision-touchpad pinch/pan via the raw-HID subsystem
+  // (touchpad_raw_input.rs broadcasts wd-pinch-zoom / wd-trackpad-pan;
+  // WebView2 eats the native gestures before any DOM event fires).
+  // Hover-gated so gestures over other surfaces don't zoom the wave.
+  const hoverRef = useRef(false);
+  const lastXRef = useRef<number | null>(null);
+  useEffect(() => {
+    let unZoom: (() => void) | null = null;
+    let unPan: (() => void) | null = null;
+    let disposed = false;
+    listen<number>('wd-pinch-zoom', (e) => {
+      if (!hoverRef.current || duration <= 0) return;
+      const factor = e.payload;
+      if (typeof factor !== 'number' || !isFinite(factor) || factor <= 0) return;
+      const rect = containerRef.current?.getBoundingClientRect();
+      const frac = lastXRef.current != null && rect && rect.width > 0
+        ? Math.max(0, Math.min(1, (lastXRef.current - rect.left) / rect.width))
+        : 0.5;
+      // factor > 1 = fingers apart = zoom IN = the visible span shrinks.
+      const cur = vpRef.current;
+      const span = Math.max(1e-6, cur.tEnd - cur.tStart);
+      const newSpan = Math.max(MIN_SPAN_SEC, Math.min(duration, span / factor));
+      const anchor = cur.tStart + frac * span;
+      let s = anchor - frac * newSpan;
+      let t = s + newSpan;
+      if (s < 0) { t -= s; s = 0; }
+      if (t > duration) { s -= t - duration; t = duration; s = Math.max(0, s); }
+      setVp({ tStart: s, tEnd: t });
+    }).then((fn) => { if (disposed) fn(); else unZoom = fn; });
+    listen<[number, number]>('wd-trackpad-pan', (e) => {
+      if (!hoverRef.current || duration <= 0) return;
+      const [dx] = e.payload ?? [0, 0];
+      if (!isFinite(dx) || dx === 0) return;
+      const cur = vpRef.current;
+      const span = Math.max(1e-6, cur.tEnd - cur.tStart);
+      // HID units → span fraction (touchpads span a few thousand units).
+      // Negative: content follows the fingers (natural touch scrolling).
+      const delta = -(dx / 1500) * span;
+      let s = cur.tStart + delta;
+      let t = cur.tEnd + delta;
+      if (s < 0) { t -= s; s = 0; }
+      if (t > duration) { s -= t - duration; t = duration; }
+      setVp({ tStart: Math.max(0, s), tEnd: Math.min(duration, t) });
+    }).then((fn) => { if (disposed) fn(); else unPan = fn; });
+    return () => { disposed = true; unZoom?.(); unPan?.(); };
+  }, [duration]);
+
   // Middle-drag pan.
   const onPointerDown = useCallback((e: React.PointerEvent) => {
     if (e.button !== 1 || duration <= 0) return;
@@ -241,6 +289,9 @@ export const WaveformView: React.FC<WaveformViewProps> = ({
       style={{ position: 'absolute', inset: 0, overflow: 'hidden' }}
       onWheel={onWheel}
       onPointerDown={onPointerDown}
+      onPointerEnter={() => { hoverRef.current = true; }}
+      onPointerMove={(e) => { hoverRef.current = true; lastXRef.current = e.clientX; }}
+      onPointerLeave={() => { hoverRef.current = false; }}
     >
       <canvas ref={canvasRef} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }} />
       <div

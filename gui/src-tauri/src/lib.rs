@@ -12,6 +12,8 @@ mod cursor;
 mod os_drag;
 mod peaks;
 mod tools;
+#[cfg(target_os = "windows")]
+mod touchpad_raw_input;
 mod video_stream_server;
 
 use tauri::{WebviewUrl, WebviewWindowBuilder};
@@ -69,6 +71,11 @@ pub fn run() {
             }
             #[cfg(target_os = "windows")]
             chip_bitmap_server::start();
+            // Precision-touchpad pinch/pan via raw HID (WebView2 eats the
+            // gestures before any DOM event) — broadcast to the chop
+            // window's waveform + video.
+            #[cfg(target_os = "windows")]
+            touchpad_raw_input::install(app.handle());
             video_stream_server::start();
             Ok(())
         })
