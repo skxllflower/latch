@@ -57,10 +57,13 @@ struct EngineState {
 // audio callback — so it advances at the sink's speed automatically
 // (set_speed pulls source samples faster), which is exactly the
 // daemon's tape-style rate contract.
-// Report positions minus this output-latency estimate so the video
-// lands on the HEARD audio (samples are counted when the mixer pulls
-// them, a bit ahead of the speakers). Ear-tunable.
-const VA_OUTPUT_LATENCY_SEC: f64 = 0.15;
+// Output-latency compensation on emitted positions. ZERO = the daemon's
+// exact contract (it emits raw engine frames-played), and the engine's
+// gapless-loop seam GEOMETRY depends on the cursor wrapping exactly at
+// the out-point — a nonzero comp shifts every wrap and smears short
+// loops. The earlier 0.15 was tuned against the pre-clone deck, whose
+// position counting ran further ahead. Ear-tunable if A/V drifts.
+const VA_OUTPUT_LATENCY_SEC: f64 = 0.0;
 
 // ── Video-audio deck — Rust port of WAVdesk's audio_daemon va_* core ──
 // (user-approved clone of the proven implementation). ONE persistent
@@ -91,6 +94,11 @@ struct VaShared {
     // Samples handed to the mixer since the last flush.
     consumed: std::sync::atomic::AtomicU64,
     seek_pending: std::sync::atomic::AtomicI32,
+    // When the most recent seek was sent — feeds the lost-marker
+    // watchdog (a marker that never returns would otherwise gate
+    // position emission FOREVER: the engine clock free-runs past every
+    // loop boundary and nothing in-app can fix it).
+    seek_sent_at: Mutex<Option<Instant>>,
     done: std::sync::atomic::AtomicBool,
     dir: std::sync::atomic::AtomicI32,
     dir_staged: std::sync::atomic::AtomicI32,
@@ -106,6 +114,7 @@ impl VaShared {
             flush_gen: std::sync::atomic::AtomicU64::new(0),
             consumed: std::sync::atomic::AtomicU64::new(0),
             seek_pending: std::sync::atomic::AtomicI32::new(0),
+            seek_sent_at: Mutex::new(None),
             done: std::sync::atomic::AtomicBool::new(false),
             dir: std::sync::atomic::AtomicI32::new(1),
             dir_staged: std::sync::atomic::AtomicI32::new(1),
@@ -419,6 +428,9 @@ impl VideoDeck {
             if let Some(sh) = &self.shared {
                 sh.dir_staged.store(d, std::sync::atomic::Ordering::SeqCst);
                 sh.seek_pending.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if let Ok(mut at) = sh.seek_sent_at.lock() {
+                    *at = Some(Instant::now());
+                }
             }
             let cmd = format!("{{\"op\":\"seek\",\"sec\":{:.6},\"dir\":{}}}\n", t, d);
             if self.send(&cmd) {
@@ -770,9 +782,27 @@ fn audio_thread(app: AppHandle, rx: Receiver<Cmd>) {
             let done = shared.done.load(std::sync::atomic::Ordering::Relaxed);
             if done && sink.empty() {
                 v_drained = true;
-            } else if shared.seek_pending.load(std::sync::atomic::Ordering::Relaxed) <= 0
-                && last_vemit.elapsed() >= Duration::from_millis(33)
-            {
+            } else if shared.seek_pending.load(std::sync::atomic::Ordering::Relaxed) > 0 {
+                // Lost-marker watchdog: a real seek turns its marker
+                // around in well under a second; past 1.5s assume the
+                // marker is gone and reopen position emission (the next
+                // event re-anchors the engine clock). Without this, one
+                // lost marker mutes positions for the whole session.
+                let stale = shared
+                    .seek_sent_at
+                    .lock()
+                    .ok()
+                    .and_then(|at| *at)
+                    .map(|t| t.elapsed() > Duration::from_millis(1500))
+                    .unwrap_or(false);
+                if stale {
+                    eprintln!("[vaudio] WATCHDOG: seek marker lost — force-clearing the emission gate");
+                    shared.seek_pending.store(0, std::sync::atomic::Ordering::SeqCst);
+                    if let Ok(mut at) = shared.seek_sent_at.lock() {
+                        *at = None;
+                    }
+                }
+            } else if last_vemit.elapsed() >= Duration::from_millis(33) {
                 last_vemit = Instant::now();
                 let _ = app.emit("audio_event", serde_json::json!({
                     "event": "vaudio_pos",
