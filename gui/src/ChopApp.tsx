@@ -992,6 +992,15 @@ export default function ChopApp() {
     try { clipsDir = await ensureClipsDir(); } catch { /* fall back to temp */ }
     const dsep = clipsDir.includes('\\') ? '\\' : '/';
     const out = `${clipsDir}${dsep}${fileName}`;
+    // Track the button through the render: starting DoDragDrop AFTER the
+    // user already released zombie-drops the file at whatever sits under
+    // the cursor (or decays into a stuck forbidden-cursor drag). If the
+    // release beats the render, kill the chip immediately and just leave
+    // the finished clip in Latch Clips.
+    let released = false;
+    const onUp = () => { released = true; };
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
     const chip = await buildDragChip(r, video);
     try {
       await startOverlayDrag({
@@ -1004,13 +1013,23 @@ export default function ChopApp() {
       setClip(r.id, 'rendering');
       const path = await runClip({ input, output: out, startSec: r.startSec, endSec: r.endSec, video, overwrite: false });
       setClip(r.id, 'ready', path);
-      // The clip lives in the persistent clips folder; if this drop lands on
-      // a folder/desktop the OS copies it there and the native side deletes
-      // our now-redundant copy (app drops that reference the path keep it).
-      await invoke('start_os_file_drag', { paths: [path], previewPng: null, transparent: true, cleanupTempOnShellDrop: true });
-    } catch {
+      void emit('wd-latch-clip-exported', { path, title: fileName });
+      if (released) {
+        void endOverlayDrag();
+        setExportMsg(`Saved to Latch Clips: ${path.split(/[\\/]/).pop()}`);
+      } else {
+        // The clip lives in the persistent clips folder; if this drop lands on
+        // a folder/desktop the OS copies it there and the native side deletes
+        // our now-redundant copy (app drops that reference the path keep it).
+        await invoke('start_os_file_drag', { paths: [path], previewPng: null, transparent: true, cleanupTempOnShellDrop: true });
+      }
+    } catch (err) {
       setClip(r.id, 'error');
+      setExportMsg(`Clip failed: ${String((err as Error)?.message ?? err)}`);
       void endOverlayDrag();
+    } finally {
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
     }
   }, [audioPath, clipInputFor, runClip, setClip, buildDragChip, sourceStem, ensureClipsDir]);
 
