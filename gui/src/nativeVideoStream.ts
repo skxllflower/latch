@@ -273,7 +273,14 @@ export class NativeVideoEngine {
     const r = this.loopRegion;
     const params = { in: r ? r.inSec : 0, out: r ? r.outSec : 0 };
     if (this.persistent) {
-      this.decoderLoop = !!r && (await this.control('loop', undefined, params));
+      // ALWAYS send — out <= in is the decoder-side CLEAR. The old
+      // `!!r && control(...)` short-circuit skipped the video decoder's
+      // clear entirely, leaving a STALE loop wrapping inside it (video
+      // visibly loops a region the engine no longer knows about) while
+      // the audio deck below received its clear — permanent A/V loop
+      // asymmetry.
+      const ok = await this.control('loop', undefined, params);
+      this.decoderLoop = !!r && ok;
     } else {
       this.decoderLoop = false;
     }
