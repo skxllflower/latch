@@ -223,6 +223,10 @@ pub struct LatchOptions {
     pub write_thumbnail: bool,
     pub crop_thumbnail: bool,
     pub cookies_from_browser: String,
+    // yt-dlp --cookies <file>: a Netscape cookies.txt exported from a
+    // browser. The escape hatch when --cookies-from-browser can't read a
+    // locked/encrypted store. yt-dlp accepts both flags together.
+    pub cookies_file: String,
     pub section: String,
     pub video: bool,
     pub video_format: String,
@@ -275,6 +279,9 @@ pub async fn latch_extract(
             "--cookies-from-browser={}",
             options.cookies_from_browser.trim()
         ));
+    }
+    if !options.cookies_file.trim().is_empty() {
+        args.push(format!("--cookies={}", options.cookies_file.trim()));
     }
     if !options.section.trim().is_empty() {
         args.push(format!("--section={}", options.section.trim()));
@@ -330,11 +337,17 @@ pub async fn latch_probe(
     binary_path: String,
     url:         String,
     cookies_from_browser: String,
+    // Optional so older invoke sites that don't pass it still deserialize.
+    cookies_file: Option<String>,
 ) -> Result<LatchProbeResult, String> {
     let bin = find_tool_binary("latch", &binary_path)?;
     let mut args = vec!["probe".to_string(), url];
     if !cookies_from_browser.trim().is_empty() {
         args.push(format!("--cookies-from-browser={}", cookies_from_browser.trim()));
+    }
+    if let Some(cf) = cookies_file.as_deref() {
+        let cf = cf.trim();
+        if !cf.is_empty() { args.push(format!("--cookies={}", cf)); }
     }
 
     let mut cmd = Command::new(&bin);
@@ -395,11 +408,16 @@ pub async fn latch_expand_url(
     binary_path: String,
     url:         String,
     cookies_from_browser: String,
+    cookies_file: Option<String>,
 ) -> Result<LatchExpandResult, String> {
     let bin = find_tool_binary("latch", &binary_path)?;
     let mut args = vec!["expand".to_string(), url];
     if !cookies_from_browser.trim().is_empty() {
         args.push(format!("--cookies-from-browser={}", cookies_from_browser.trim()));
+    }
+    if let Some(cf) = cookies_file.as_deref() {
+        let cf = cf.trim();
+        if !cf.is_empty() { args.push(format!("--cookies={}", cf)); }
     }
 
     let mut cmd = Command::new(&bin);

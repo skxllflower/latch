@@ -2,6 +2,7 @@ mod audio;
 #[cfg(target_os = "windows")]
 mod chip_bitmap_server;
 mod chop;
+mod cookie_prefs;
 mod drag_overlay;
 #[cfg(target_os = "windows")]
 mod explorer_folder;
@@ -95,6 +96,9 @@ pub fn run() {
             tools::os_open_path,
             tools::os_open_url,
             tools::app_exit,
+            cookie_prefs::cookie_prefs_get,
+            cookie_prefs::cookie_prefs_set,
+            cookie_prefs::detect_cookie_browsers,
             chop::latch_chop_alloc_dir,
             chop::latch_chop_cleanup_dir,
             chop::latch_clips_dir,

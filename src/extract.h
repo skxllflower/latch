@@ -45,6 +45,10 @@ struct ExtractOptions {
   // cookie. Common values: chrome, firefox, edge, brave, safari, opera,
   // chromium, vivaldi.
   std::string cookies_from_browser;
+  // yt-dlp --cookies <file>: a Netscape cookies.txt exported from a browser.
+  // The escape hatch when --cookies-from-browser can't read a locked or
+  // encrypted store. Empty = don't pass. yt-dlp accepts both together.
+  std::string cookies_file;
   // Time-range trim — passed straight to yt-dlp's --download-sections
   // as "*<section>". Format is yt-dlp's own (HH:MM:SS-HH:MM:SS, or
   // MM:SS-MM:SS, or seconds). Empty = full media. Useful for ripping a

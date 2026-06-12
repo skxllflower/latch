@@ -207,6 +207,10 @@ ExtractResult extract(const std::string& url,
     argv.push_back("--cookies-from-browser");
     argv.push_back(opts.cookies_from_browser);
   }
+  if (!opts.cookies_file.empty()) {
+    argv.push_back("--cookies");
+    argv.push_back(opts.cookies_file);
+  }
   if (!opts.section.empty()) {
     // yt-dlp expects "*START-END" syntax for time-based sections.
     // Re-encoding our own section string lets the GUI stay format-

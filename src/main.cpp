@@ -111,10 +111,13 @@ int run_probe(const std::vector<std::string>& args) {
   }
   std::string url = args[2];
   std::string cookies;
+  std::string cookies_file;
   for (size_t i = 3; i < args.size(); ++i) {
     const std::string& a = args[i];
     if (a.rfind("--cookies-from-browser=", 0) == 0) cookies = a.substr(23);
     else if (a == "--cookies-from-browser" && i + 1 < args.size()) cookies = args[++i];
+    else if (a.rfind("--cookies=", 0) == 0) cookies_file = a.substr(10);
+    else if (a == "--cookies" && i + 1 < args.size()) cookies_file = args[++i];
   }
 
   namespace fs = std::filesystem;
@@ -158,6 +161,10 @@ int run_probe(const std::vector<std::string>& args) {
   if (!cookies.empty()) {
     argv.push_back("--cookies-from-browser");
     argv.push_back(cookies);
+  }
+  if (!cookies_file.empty()) {
+    argv.push_back("--cookies");
+    argv.push_back(cookies_file);
   }
   argv.push_back(url);
 
@@ -256,10 +263,13 @@ int run_expand(const std::vector<std::string>& args) {
   }
   std::string url = args[2];
   std::string cookies;
+  std::string cookies_file;
   for (size_t i = 3; i < args.size(); ++i) {
     const std::string& a = args[i];
     if (a.rfind("--cookies-from-browser=", 0) == 0) cookies = a.substr(23);
     else if (a == "--cookies-from-browser" && i + 1 < args.size()) cookies = args[++i];
+    else if (a.rfind("--cookies=", 0) == 0) cookies_file = a.substr(10);
+    else if (a == "--cookies" && i + 1 < args.size()) cookies_file = args[++i];
   }
 
   namespace fs = std::filesystem;
@@ -315,6 +325,10 @@ int run_expand(const std::vector<std::string>& args) {
   if (!cookies.empty()) {
     argv.push_back("--cookies-from-browser");
     argv.push_back(cookies);
+  }
+  if (!cookies_file.empty()) {
+    argv.push_back("--cookies");
+    argv.push_back(cookies_file);
   }
   argv.push_back(url);
 
@@ -522,6 +536,7 @@ int run_cli(const std::vector<std::string>& args) {
       else if (parse_kv(a, "audio-quality",         &opts.audio_quality))        continue;
       else if (parse_kv(a, "video-max-height",      &vmh_str))                   { try { opts.video_max_height = std::stoi(vmh_str); } catch (...) {} continue; }
       else if (parse_kv(a, "cookies-from-browser",  &opts.cookies_from_browser)) continue;
+      else if (parse_kv(a, "cookies",               &opts.cookies_file))         continue;
       else if (parse_kv(a, "section",               &opts.section))              continue;
       else if (a == "--video")           { opts.video = true; continue; }
       else if (a == "--restrict-filenames") { opts.restrict_filenames = true; continue; }
@@ -535,6 +550,7 @@ int run_cli(const std::vector<std::string>& args) {
       else if (a == "--format"                && i + 1 < args.size()) { opts.audio_format         = args[++i]; continue; }
       else if (a == "--video-format"          && i + 1 < args.size()) { opts.video_format         = args[++i]; continue; }
       else if (a == "--cookies-from-browser"  && i + 1 < args.size()) { opts.cookies_from_browser = args[++i]; continue; }
+      else if (a == "--cookies"               && i + 1 < args.size()) { opts.cookies_file         = args[++i]; continue; }
       else if (a == "--section"               && i + 1 < args.size()) { opts.section              = args[++i]; continue; }
       std::fprintf(stderr, "error: unknown argument '%s'\n", a.c_str());
       return 2;

@@ -20,11 +20,12 @@ import {
   CheckCircle2, XCircle, Loader2, ChevronRight, ChevronDown, CloudDownload,
   Link2, Link2Off, RefreshCw, Cookie, AlertTriangle, CheckSquare,
   Terminal, LayoutList, Image as ImageIcon, Film, Music, Check, Search, Minus,
-  Scissors, Info,
+  Scissors, Info, FileText, ShieldAlert,
 } from 'lucide-react';
 import { useTheme, THEME_BG } from './theme';
 import { startOverlayDrag, endOverlayDrag } from './internalDragHandoff';
-import { confirmInWindow } from './dialogs';
+import { confirmInWindow, infoInWindow } from './dialogs';
+import { open as openFileDialog } from '@tauri-apps/plugin-dialog';
 import { openChopWindow } from './chopWindow';
 import { openAboutWindow } from './aboutWindow';
 import { WdSelect, type WdSelectOption } from './WdSelect';
@@ -42,6 +43,8 @@ interface LatchOptionsPayload {
   // Centre-crop the cover art to a square before saving / embedding.
   cropThumbnail:   boolean;
   cookiesFromBrowser: string;
+  // Optional cookies.txt (Netscape) path; passed to yt-dlp's --cookies.
+  cookiesFile: string;
   section: string;
   // Video mode toggle — flips off yt-dlp's -x audio-extract and merges
   // bestvideo+bestaudio. Audio remains the default; video is opt-in.
@@ -334,16 +337,45 @@ export default function ExtractApp() {
   useEffect(() => {
     try { localStorage.setItem('wd-latch-embed-thumbnail', embedThumbnail ? '1' : '0'); } catch {}
   }, [embedThumbnail]);
-  // Cookies persistence — the browser-cookies setting changes per
-  // machine (which browser the user has signed into for YouTube etc.),
-  // so it's worth surviving restarts. Stored locally rather than in
-  // settings.json since it's a per-window preference.
-  const [cookiesFromBrowser, setCookiesFromBrowser] = useState<string>(() => {
-    try { return localStorage.getItem('wd-latch-cookies-browser') ?? ''; } catch { return ''; }
-  });
+  // Cookie source — the browser whose login cookies yt-dlp borrows for gated
+  // sites (YouTube etc.), plus an optional cookies.txt escape hatch. Stored in
+  // a SHARED file (…\Vacant Systems\Shared\cookies.json) via cookie_prefs_*,
+  // so setting it here also configures the in-WAVdesk Latch tool and vice
+  // versa. On first read it migrates the old per-window localStorage value;
+  // on a never-configured machine it silently defaults to Firefox when a
+  // Firefox cookie store is present (the only reliably readable one on Win).
+  const [cookiesFromBrowser, setCookiesFromBrowser] = useState<string>('');
+  const [cookiesFile, setCookiesFile] = useState<string>('');
+  const [firefoxAutoNotice, setFirefoxAutoNotice] = useState(false);
+  const cookiePrefsLoaded = useRef(false);
   useEffect(() => {
-    try { localStorage.setItem('wd-latch-cookies-browser', cookiesFromBrowser); } catch {}
-  }, [cookiesFromBrowser]);
+    void (async () => {
+      try {
+        let prefs = await invoke<{ configured: boolean; cookiesFromBrowser: string; cookiesFile: string }>('cookie_prefs_get');
+        if (!prefs.configured) {
+          let seed = '';
+          try { seed = localStorage.getItem('wd-latch-cookies-browser') ?? ''; } catch {}
+          if (!seed) {
+            try { seed = (await invoke<{ recommended: string }>('detect_cookie_browsers')).recommended; } catch {}
+          }
+          prefs = { configured: true, cookiesFromBrowser: seed, cookiesFile: prefs.cookiesFile || '' };
+          try { await invoke('cookie_prefs_set', { prefs }); } catch {}
+          if (seed === 'firefox') setFirefoxAutoNotice(true);
+        }
+        setCookiesFromBrowser(prefs.cookiesFromBrowser);
+        setCookiesFile(prefs.cookiesFile);
+      } catch { /* shared store unreachable — fall back to empty */ }
+      cookiePrefsLoaded.current = true;
+    })();
+  }, []);
+  // Persist changes back to the shared file (after the initial load, so the
+  // load itself doesn't echo a write).
+  useEffect(() => {
+    if (!cookiePrefsLoaded.current) return;
+    void invoke('cookie_prefs_set', {
+      prefs: { configured: true, cookiesFromBrowser, cookiesFile },
+    }).catch(() => {});
+  }, [cookiesFromBrowser, cookiesFile]);
 
   // yt-dlp self-update state. Triggered via the title-bar refresh
   // button; the wrapper streams `update` events that flow through the
@@ -766,6 +798,7 @@ export default function ExtractApp() {
           binaryPath: latchPath,
           url: next.url,
           cookiesFromBrowser,
+          cookiesFile,
         });
 
         const isSearch = next.kind === 'search';
@@ -792,6 +825,7 @@ export default function ExtractApp() {
               binaryPath: latchPath,
               url: next.url,
               cookiesFromBrowser,
+              cookiesFile,
             });
             if (!settle()) return;
             finishWithSingleResult(
@@ -897,6 +931,7 @@ export default function ExtractApp() {
           writeThumbnail,
           cropThumbnail,
           cookiesFromBrowser: cookiesUsed,
+          cookiesFile,
           section,
           // Audio/Video force every link; Native downloads each link in its
           // own type (a video host as video, an audio host as audio).
@@ -1035,8 +1070,8 @@ export default function ExtractApp() {
   // axis but the cookie copy itself succeeded, we surface that as
   // "cookies usable, but URL has issues" rather than a flat fail.
   const onTestCookies = useCallback(async () => {
-    if (!cookiesFromBrowser) {
-      setCookieTest({ state: 'fail', message: 'pick a browser first' });
+    if (!cookiesFromBrowser && !cookiesFile) {
+      setCookieTest({ state: 'fail', message: 'pick a browser or load a cookies.txt first' });
       return;
     }
     // Fallback target for the cookie probe (no download): Blender's
@@ -1049,6 +1084,7 @@ export default function ExtractApp() {
         binaryPath: latchPath,
         url: target,
         cookiesFromBrowser,
+        cookiesFile,
       });
       if (!res.error) {
         setCookieTest({ state: 'ok', message: `cookies ok · ${res.title || 'reachable'}` });
@@ -1076,7 +1112,7 @@ export default function ExtractApp() {
     } catch (err: any) {
       setCookieTest({ state: 'fail', message: String(err?.message ?? err) });
     }
-  }, [latchPath, cookiesFromBrowser, parsedUrls]);
+  }, [latchPath, cookiesFromBrowser, cookiesFile, parsedUrls]);
 
   // Self-update yt-dlp via the wrapper. Output streams into
   // updateState.log; the small overlay shows the last few lines.
@@ -1102,6 +1138,88 @@ export default function ExtractApp() {
     const candidates = ['firefox', 'chrome', 'edge', 'brave'].filter(b => b !== failed);
     return candidates[0] ?? 'firefox';
   }, [cookiesFromBrowser]);
+
+  // Load a cookies.txt (Netscape) file — the escape hatch when no browser
+  // cookie store is readable. Persists into the shared cookie prefs.
+  const onPickCookiesFile = useCallback(async () => {
+    try {
+      const picked = await openFileDialog({
+        multiple: false,
+        directory: false,
+        title: 'Select a cookies.txt file',
+        filters: [{ name: 'cookies', extensions: ['txt'] }],
+      });
+      if (typeof picked === 'string') {
+        setCookiesFile(picked);
+        setCookieTest({ state: 'idle' });
+      }
+    } catch { /* dialog cancelled / unavailable */ }
+  }, []);
+
+  const hasCookieSource = !!cookiesFromBrowser || !!cookiesFile;
+
+  // Domains known to wall downloads behind a sign-in. Drives the pre-flight
+  // hint so a first-timer sees the fix before hitting the first failure.
+  const isGatedUrl = useCallback((u: string) => {
+    const GATED = ['youtube.com', 'youtu.be'];
+    try {
+      const host = new URL(u).hostname.replace(/^www\./, '');
+      return GATED.some(h => host === h || host.endsWith('.' + h));
+    } catch { return /youtu\.?be/i.test(u); }
+  }, []);
+  const gatedPending = useMemo(
+    () => !hasCookieSource && parsedUrls.some(isGatedUrl),
+    [hasCookieSource, parsedUrls, isGatedUrl],
+  );
+
+  // Guided recovery from a bot-wall failure. With a readable cookie source
+  // (current pick or a detected Firefox) we offer a one-click "use it & retry";
+  // otherwise we explain the two real fixes (Firefox sign-in, or cookies.txt).
+  const onFixBotWall = useCallback(async (url: string, failedBrowser: string | undefined) => {
+    let recommended = '';
+    try { recommended = (await invoke<{ recommended: string }>('detect_cookie_browsers')).recommended; } catch {}
+    const usable = (cookiesFromBrowser && cookiesFromBrowser !== failedBrowser) ? cookiesFromBrowser : recommended;
+    let host = url;
+    try { host = new URL(url).hostname.replace(/^www\./, ''); } catch {}
+    if (usable) {
+      const cap = usable.charAt(0).toUpperCase() + usable.slice(1);
+      const ok = await confirmInWindow({
+        title: 'This site blocked the download',
+        message: `${host} blocks downloads until it sees you're signed in. Latch can use your ${cap} sign-in to get past it.\n\nMake sure you're signed into the site in ${cap}, then retry.`,
+        confirmLabel: `Use ${cap} & retry`,
+        cancelLabel: 'Not now',
+      });
+      if (ok) { setCookiesFromBrowser(usable); enqueueExtract([url], usable); }
+    } else {
+      await infoInWindow({
+        title: 'This site blocked the download',
+        message: `${host} blocks downloads until it sees you're signed in, and Latch couldn't find a browser to borrow that sign-in from.\n\nTwo ways to fix it:\n  1. Install Firefox, sign into the site there, then pick Firefox under Cookies.\n  2. Export a cookies.txt from your browser and load it with "Use cookies.txt".`,
+        okLabel: 'Got it',
+      });
+    }
+  }, [cookiesFromBrowser, enqueueExtract]);
+
+  // Pre-flight cookie setup (from the gated-URL hint) — like onFixBotWall but
+  // it doesn't extract anything; the user hasn't pressed Extract yet.
+  const onSetupCookies = useCallback(async () => {
+    let recommended = '';
+    try { recommended = (await invoke<{ recommended: string }>('detect_cookie_browsers')).recommended; } catch {}
+    if (recommended === 'firefox') {
+      const ok = await confirmInWindow({
+        title: 'Set up cookies for gated sites',
+        message: "YouTube and similar sites block downloads unless they see you're signed in. Latch can use your Firefox sign-in.\n\nMake sure you're signed into the site in Firefox.",
+        confirmLabel: 'Use Firefox',
+        cancelLabel: 'Not now',
+      });
+      if (ok) setCookiesFromBrowser('firefox');
+    } else {
+      await infoInWindow({
+        title: 'Set up cookies for gated sites',
+        message: "YouTube and similar sites block downloads unless they see you're signed in, and Latch couldn't find a browser to borrow a sign-in from.\n\nFix it by either:\n  1. Install Firefox, sign into the site, then pick Firefox under Cookies.\n  2. Export a cookies.txt and load it with \"Use cookies.txt\".",
+        okLabel: 'Got it',
+      });
+    }
+  }, []);
 
   // Optimistic cancel — flip the row to 'cancelled' and decrement the
   // in-flight counter on the JS side immediately, then fire the IPC.
@@ -1322,6 +1440,17 @@ export default function ExtractApp() {
               </button>
             </div>
           </div>
+
+          {gatedPending && (
+            <button
+              onClick={() => void onSetupCookies()}
+              className="shrink-0 flex items-center gap-1.5 px-2 py-1 border-b border-zinc-800 text-[0.5rem] leading-snug text-[color:var(--theme-warn-fg)] hover:bg-zinc-900/60 transition-none text-left cursor-pointer"
+              title="YouTube blocks downloads without a browser sign-in. Click to set one up."
+            >
+              <ShieldAlert size={9} className="shrink-0" />
+              <span className="flex-1">YouTube usually blocks downloads without a browser sign-in — set a cookie source ▸</span>
+            </button>
+          )}
 
           {urlViewMode === 'terminal' ? (
             /* ─── TERMINAL VIEW ───────────────────────────────────────
@@ -1804,7 +1933,7 @@ export default function ExtractApp() {
                     </div>
                     <button
                       onClick={onTestCookies}
-                      disabled={!cookiesFromBrowser || cookieTest.state === 'testing'}
+                      disabled={(!cookiesFromBrowser && !cookiesFile) || cookieTest.state === 'testing'}
                       className="text-[0.5rem] uppercase tracking-wider px-1.5 h-5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 hover:border-zinc-500 text-zinc-300 disabled:opacity-30 transition-none shrink-0"
                       title="Run a dry-run probe against the current URL (or a YouTube reference) using these cookies. Confirms the gate is unlocked without doing a real extraction."
                     >
@@ -1827,6 +1956,50 @@ export default function ExtractApp() {
                         {cookieTest.message}
                       </span>
                     </div>
+                  )}
+                  {/* cookies.txt escape hatch — for when no browser store is
+                      readable (Chrome locked/encrypted, no Firefox). */}
+                  <div className="flex items-center gap-1 mt-0.5">
+                    <button
+                      onClick={onPickCookiesFile}
+                      className="flex items-center gap-1 text-[0.5rem] uppercase tracking-wider px-1.5 h-5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 hover:border-zinc-500 text-zinc-300 transition-none shrink-0 cursor-pointer"
+                      title="Load a Netscape cookies.txt exported from your browser (yt-dlp --cookies). Use this when browser cookie reads fail."
+                    >
+                      <FileText size={8} /> {cookiesFile ? 'Change cookies.txt' : 'Use cookies.txt'}
+                    </button>
+                    {cookiesFile && (
+                      <>
+                        <span className="flex-1 min-w-0 truncate text-[0.5rem] text-emerald-400/80" title={cookiesFile}>
+                          {cookiesFile.split(/[\\/]/).pop()}
+                        </span>
+                        <button
+                          onClick={() => { setCookiesFile(''); setCookieTest({ state: 'idle' }); }}
+                          className="text-zinc-600 hover:text-zinc-300 transition-none shrink-0 cursor-pointer"
+                          title="Stop using the cookies.txt file"
+                        >
+                          <X size={9} />
+                        </button>
+                      </>
+                    )}
+                  </div>
+                  {!hasCookieSource && (
+                    <span className="flex items-start gap-1 text-[0.5rem] leading-snug text-[color:var(--theme-warn-fg)] mt-0.5">
+                      <ShieldAlert size={8} className="shrink-0 mt-0.5" />
+                      No cookie source set: YouTube and similar sites will likely block downloads.
+                    </span>
+                  )}
+                  {firefoxAutoNotice && (
+                    <span className="flex items-start gap-1 text-[0.5rem] leading-snug text-zinc-500 mt-0.5">
+                      <Info size={8} className="shrink-0 mt-0.5 text-emerald-400/70" />
+                      <span className="flex-1">Using Firefox cookies for sites that need a sign-in. Change it anytime here.</span>
+                      <button
+                        onClick={() => setFirefoxAutoNotice(false)}
+                        className="text-zinc-600 hover:text-zinc-300 shrink-0 cursor-pointer"
+                        title="Dismiss"
+                      >
+                        <X size={8} />
+                      </button>
+                    </span>
                   )}
                   <span className="text-[0.5rem] text-zinc-600 leading-snug pl-0.5 mt-0.5">
                     Required for YouTube. Chrome must be closed when extracting.
@@ -1989,13 +2162,23 @@ export default function ExtractApp() {
                           return (
                             <div className="flex items-center gap-1 mt-1 flex-wrap">
                               {kind === 'bot-wall' && (
-                                <button
-                                  onClick={() => enqueueExtract([it.url], retryBrowser)}
-                                  className="flex items-center gap-1 text-[0.5rem] uppercase tracking-wider px-1.5 h-4 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 hover:border-[color:var(--theme-warn-border)] text-[color:var(--theme-warn-fg)] transition-none"
-                                  title="Retry with browser cookies. yt-dlp will copy your session cookies to bypass the bot wall."
-                                >
-                                  <Cookie size={8} /> Retry with {retryBrowser}
-                                </button>
+                                hasCookieSource ? (
+                                  <button
+                                    onClick={() => enqueueExtract([it.url], retryBrowser)}
+                                    className="flex items-center gap-1 text-[0.5rem] uppercase tracking-wider px-1.5 h-4 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 hover:border-[color:var(--theme-warn-border)] text-[color:var(--theme-warn-fg)] transition-none"
+                                    title="Retry with browser cookies. yt-dlp will copy your session cookies to bypass the bot wall."
+                                  >
+                                    <Cookie size={8} /> Retry with {retryBrowser}
+                                  </button>
+                                ) : (
+                                  <button
+                                    onClick={() => void onFixBotWall(it.url, it.lastCookies)}
+                                    className="flex items-center gap-1 text-[0.5rem] uppercase tracking-wider px-1.5 h-4 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 hover:border-[color:var(--theme-warn-border)] text-[color:var(--theme-warn-fg)] transition-none"
+                                    title="This site blocked the download to check you're not a bot. Click for the one-step fix."
+                                  >
+                                    <ShieldAlert size={8} /> Fix bot block
+                                  </button>
+                                )
                               )}
                               {kind === 'cookie-locked' && (
                                 <span className="flex items-center gap-1 text-[0.5rem] text-[color:var(--theme-warn-dim)] leading-snug">
