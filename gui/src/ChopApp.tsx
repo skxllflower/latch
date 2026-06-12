@@ -990,20 +990,45 @@ export default function ChopApp() {
       }
       return;
     }
-    if (r.clipState === 'rendering') {
-      setExportMsg('Clip still rendering… drag again when the spinner clears');
+    if (wantVideo && !hdVideoPath) {
+      setExportMsg('Full-res video still downloading… try the video drag shortly');
       return;
     }
-    setExportMsg(wantVideo
-      ? 'Rendering video clip… drag again when the spinner clears'
-      : 'Rendering clip… drag again in a moment');
-    const path = await renderRegionClip(r.id, forceVideo);
-    if (path) {
-      const name = path.split(/[\\/]/).pop() ?? 'clip';
-      setExportMsg(`Ready: ${name} (drag again, or find it in Latch Clips)`);
-      void emit('wd-latch-clip-exported', { path, title: name });
+    if (r.clipState === 'rendering') {
+      setExportMsg('Clip still rendering… drag again in a second');
+      return;
     }
-  }, [audioPath, buildDragChip, renderRegionClip]);
+    // No fresh cache: WAVdesk-verbatim flow — chip up, render DURING the
+    // held gesture, then hand the file to the OS drag. If a slow render
+    // outlives the gesture the OS drag no-ops and the chip clears (the
+    // os_drag error path), and the render is stamped so the next drag is
+    // instant either way.
+    const { ext } = clipInputFor(r, forceVideo);
+    const idx = regionsRef.current.findIndex((x) => x.id === r.id);
+    const fileName = `${regionFileStem(r, idx < 0 ? 0 : idx, sourceStem)}.${ext}`;
+    const chip = await buildDragChip(r, wantVideo).catch(() => null);
+    try {
+      await startOverlayDrag({
+        paths: [], fileName, isDirectory: false, count: 1,
+        waveformDataUrl: chip?.url ?? null, bgColor: chip?.bg ?? null,
+      });
+    } catch { /* chip is cosmetic — keep going */ }
+    const path = await renderRegionClip(r.id, forceVideo);
+    if (!path) {
+      void endOverlayDrag();
+      return;
+    }
+    void emit('wd-latch-clip-exported', { path, title: fileName });
+    try {
+      await invoke('start_os_file_drag', {
+        paths: [path], previewPng: null, transparent: true,
+        cleanupTempOnShellDrop: false,
+      });
+    } catch (err) {
+      setExportMsg(`Drag failed: ${String((err as Error)?.message ?? err)}`);
+      void endOverlayDrag();
+    }
+  }, [audioPath, hdVideoPath, buildDragChip, renderRegionClip, clipInputFor, sourceStem]);
 
   const handleRegionDragOut = useCallback((id: string, opts: { video: boolean }) => {
     const r = regionsRef.current.find((x) => x.id === id);
