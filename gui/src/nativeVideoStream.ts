@@ -264,9 +264,22 @@ export class NativeVideoEngine {
   // dialect BOTH decoders arm the region and wrap themselves GAPLESSLY (the
   // audio is sample-exact; position rebases ride the in-band wrap markers);
   // the raw fallback keeps the old seek-at-out behavior in present().
+  // Loop ops are CHAINED: armDecoderLoop awaits the decoder roundtrip,
+  // so two quick calls (the clear+re-arm pair every region activation
+  // produces, or the arm burst while resizing) can resolve OUT OF ORDER
+  // — the slower CLEAR lands after the newer ARM and the decoders end
+  // up disarmed (the trace showed arm→clear pairs 1ms apart). Each link
+  // re-reads loopRegion at run time, so bursts collapse to the newest
+  // state and ops reach both decoders strictly in order.
+  private loopChain: Promise<void> = Promise.resolve();
+
   setLoopRegion(region: { inSec: number; outSec: number } | null): void {
     this.loopRegion = region && region.outSec > region.inSec ? region : null;
-    void this.armDecoderLoop();
+    this.queueArmLoop();
+  }
+
+  private queueArmLoop(): void {
+    this.loopChain = this.loopChain.then(() => this.armDecoderLoop()).catch(() => {});
   }
 
   private async armDecoderLoop(): Promise<void> {
@@ -504,7 +517,7 @@ export class NativeVideoEngine {
       this.connectedAt = performance.now();
       // A fresh decoder knows nothing of the loop region — re-arm it. Same
       // for a tone-map the user toggled OFF (the decoder defaults ON for HDR).
-      if (this.loopRegion) void this.armDecoderLoop();
+      if (this.loopRegion) this.queueArmLoop();
       if (!this.tonemapOn && geom.hdr) void this.control('tonemap', undefined, undefined, false);
 
       const reader = resp.body.getReader();
