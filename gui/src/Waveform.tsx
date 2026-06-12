@@ -63,6 +63,7 @@ export const WaveformView: React.FC<WaveformViewProps> = ({
   // Reset the viewport to full when the file/duration changes.
   useEffect(() => {
     if (duration > 0) setVp({ tStart: 0, tEnd: duration });
+    fetchedSpanRef.current = 0; // force a fresh peak fetch for the new file
   }, [filePath, duration]);
 
   const peaksRef = useRef<{ points: number[]; tStart: number; tEnd: number } | null>(null);
@@ -117,23 +118,40 @@ export const WaveformView: React.FC<WaveformViewProps> = ({
     }
   }, []);
 
-  // Debounced range-fetch of peaks for the visible window.
+  // Margin-buffered peak fetching: fetch THREE viewport-spans (one span
+  // of margin each side) at matching density, then skip refetching while
+  // the view stays inside the buffer and the zoom stays within ~2x of
+  // the fetched resolution. Pans glide over the buffer with zero churn;
+  // only escaping it or a real zoom level change refetches — the old
+  // fetch-every-tick approach redrew and resolution-popped constantly.
+  const fetchedSpanRef = useRef(0);
   useEffect(() => {
     if (!filePath || duration <= 0 || vp.tEnd <= vp.tStart) return;
+    const span = vp.tEnd - vp.tStart;
+    const pk = peaksRef.current;
+    if (pk && pk.points.length > 0 && fetchedSpanRef.current > 0) {
+      const covered = vp.tStart >= pk.tStart - 1e-6 && vp.tEnd <= pk.tEnd + 1e-6;
+      const ratio = fetchedSpanRef.current / span;
+      if (covered && ratio > 0.45 && ratio < 2.2) return; // buffer still good
+    }
     let stale = false;
+    const fs = Math.max(0, vp.tStart - span);
+    const fe = Math.min(duration, vp.tEnd + span);
     const id = window.setTimeout(() => {
       const w = containerRef.current?.clientWidth ?? 800;
+      const density = Math.round(w * 2 * ((fe - fs) / span));
       void invoke<WaveData>('generate_waveform', {
         path: filePath,
-        points: Math.min(8000, Math.max(256, Math.round(w * 2))),
-        startSec: vp.tStart,
-        endSec: vp.tEnd,
+        points: Math.min(16000, Math.max(768, density)),
+        startSec: fs,
+        endSec: fe,
       }).then((data) => {
         if (stale || !data?.success) return;
-        peaksRef.current = { points: data.points ?? [], tStart: vp.tStart, tEnd: vp.tEnd };
+        peaksRef.current = { points: data.points ?? [], tStart: fs, tEnd: fe };
+        fetchedSpanRef.current = span;
         draw();
       }).catch(() => { /* peaks are cosmetic; the overlay still works */ });
-    }, 80);
+    }, 120);
     return () => { stale = true; window.clearTimeout(id); };
   }, [filePath, duration, vp.tStart, vp.tEnd, draw]);
 
@@ -152,6 +170,9 @@ export const WaveformView: React.FC<WaveformViewProps> = ({
   const onWheel = useCallback((e: React.WheelEvent) => {
     if (duration <= 0) return;
     e.preventDefault();
+    // A live trackpad gesture is already handled via raw HID — these
+    // wheel events are DirectManipulation echoing the same motion.
+    if (performance.now() < trackpadActiveUntilRef.current) return;
     const rect = containerRef.current?.getBoundingClientRect();
     if (!rect || rect.width <= 0) return;
     const cur = vpRef.current;
@@ -182,12 +203,22 @@ export const WaveformView: React.FC<WaveformViewProps> = ({
   // (touchpad_raw_input.rs broadcasts wd-pinch-zoom / wd-trackpad-pan;
   // WebView2 eats the native gestures before any DOM event fires).
   // Hover-gated so gestures over other surfaces don't zoom the wave.
+  // While a trackpad gesture is live, DirectManipulation STILL forwards
+  // the same motion as wheel events — onWheel suppresses itself for the
+  // gesture + a 250ms grace, or the two handlers fight (the
+  // barely-moves/glitchy wave).
   const hoverRef = useRef(false);
   const lastXRef = useRef<number | null>(null);
+  const trackpadActiveUntilRef = useRef(0);
   useEffect(() => {
     let unZoom: (() => void) | null = null;
     let unPan: (() => void) | null = null;
+    let unActive: (() => void) | null = null;
     let disposed = false;
+    listen<boolean>('wd-trackpad-active', (e) => {
+      if (e.payload) trackpadActiveUntilRef.current = Number.MAX_SAFE_INTEGER;
+      else trackpadActiveUntilRef.current = performance.now() + 250;
+    }).then((fn) => { if (disposed) fn(); else unActive = fn; });
     listen<number>('wd-pinch-zoom', (e) => {
       if (!hoverRef.current || duration <= 0) return;
       const factor = e.payload;
@@ -209,20 +240,23 @@ export const WaveformView: React.FC<WaveformViewProps> = ({
     }).then((fn) => { if (disposed) fn(); else unZoom = fn; });
     listen<[number, number]>('wd-trackpad-pan', (e) => {
       if (!hoverRef.current || duration <= 0) return;
+      trackpadActiveUntilRef.current = Math.max(trackpadActiveUntilRef.current, performance.now() + 150);
       const [dx] = e.payload ?? [0, 0];
       if (!isFinite(dx) || dx === 0) return;
       const cur = vpRef.current;
       const span = Math.max(1e-6, cur.tEnd - cur.tStart);
       // HID units → span fraction (touchpads span a few thousand units).
-      // Negative: content follows the fingers (natural touch scrolling).
-      const delta = -(dx / 1500) * span;
+      // Positive = the natural content-follows-fingers direction (matches
+      // WAVdesk's trackpad feel; the mouse-only inversion lives in the
+      // middle-drag handler, never here).
+      const delta = (dx / 1500) * span;
       let s = cur.tStart + delta;
       let t = cur.tEnd + delta;
       if (s < 0) { t -= s; s = 0; }
       if (t > duration) { s -= t - duration; t = duration; }
       setVp({ tStart: Math.max(0, s), tEnd: Math.min(duration, t) });
     }).then((fn) => { if (disposed) fn(); else unPan = fn; });
-    return () => { disposed = true; unZoom?.(); unPan?.(); };
+    return () => { disposed = true; unZoom?.(); unPan?.(); unActive?.(); };
   }, [duration]);
 
   // Middle-drag pan.
