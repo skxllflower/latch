@@ -27,22 +27,24 @@ function DialogLock() {
     : null;
 }
 
+// NO StrictMode — WAVdesk parity. StrictMode's dev double-mount spawns
+// TWO native video engines per chop open; the dying one's cleanup
+// (stop / loop-clear ops) lands inside the live one's decoder session
+// and the loops/clock fall apart in ways no app code can defend against.
 ReactDOM.createRoot(document.getElementById('root')!).render(
-  <React.StrictMode>
-    {wd === 'dialog' ? (
-      <DialogApp />
-    ) : wd === 'drag-overlay' ? (
-      <DragOverlayApp />
-    ) : wd === 'chop' ? (
-      <>
-        <ChopApp />
-        <DialogLock />
-      </>
-    ) : (
-      <>
-        <ExtractApp />
-        <DialogLock />
-      </>
-    )}
-  </React.StrictMode>,
+  wd === 'dialog' ? (
+    <DialogApp />
+  ) : wd === 'drag-overlay' ? (
+    <DragOverlayApp />
+  ) : wd === 'chop' ? (
+    <>
+      <ChopApp />
+      <DialogLock />
+    </>
+  ) : (
+    <>
+      <ExtractApp />
+      <DialogLock />
+    </>
+  ),
 );

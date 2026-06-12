@@ -810,11 +810,14 @@ export default function ChopApp() {
 
   // Re-apply the video loop whenever the auditioned region's bounds change
   // (e.g. you resize the region while it's looping) so the <video> never
-  // keeps looping the stale, pre-resize in/out points.
+  // keeps looping the stale, pre-resize in/out points. videoPath is a dep
+  // too: the low-res → HD swap REMOUNTS VideoView (fresh engine, no loop
+  // armed) — without the re-fire the audio sails out of the region right
+  // after the swap.
   useEffect(() => {
     if (!hasVideo || !auditionRegion) return;
     videoRef.current?.setLoop(auditionRegion.startSec, auditionRegion.endSec);
-  }, [hasVideo, auditionRegion?.startSec, auditionRegion?.endSec]);
+  }, [hasVideo, videoPath, auditionRegion?.startSec, auditionRegion?.endSec]);
 
   // The VideoView (and its play state) only exists while the preview is shown.
   useEffect(() => { if (!(hasVideo && showVideo)) setVideoPlaying(false); }, [hasVideo, showVideo]);
