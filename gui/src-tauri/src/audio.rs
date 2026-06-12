@@ -704,7 +704,14 @@ fn audio_thread(app: AppHandle, rx: Receiver<Cmd>) {
                 Cmd::VSetLoop { in_sec, out_sec } => {
                     // The DECODER owns the loop: it wraps gaplessly and
                     // separates cycles with wrap markers (out <= in
-                    // clears). Nothing to track deck-side.
+                    // clears). Drop any queued rebases from the PREVIOUS
+                    // region so a stale wrap can't re-anchor the clock
+                    // after the bounds change.
+                    if let Some(sh) = &vd.shared {
+                        if let Ok(mut p) = sh.pos.lock() {
+                            p.wraps.clear();
+                        }
+                    }
                     let cmd = format!(
                         "{{\"op\":\"loop\",\"in\":{:.6},\"out\":{:.6}}}\n",
                         in_sec, out_sec,

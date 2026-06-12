@@ -43,8 +43,10 @@ pub fn sweep_temp_root() {
     let _ = std::fs::remove_dir_all(chop_root());
 }
 
-/// Persistent clips folder (Documents\Latch Clips) — exported + rendered
-/// clips land here so DAW references survive the temp-dir sweep. Resolved
+/// Persistent clips folder (Documents\Vacant Systems\Latch Clips) —
+/// exported + rendered clips land here so DAW references survive the
+/// temp-dir sweep. One vendor folder for the whole ecosystem (a
+/// Latch-only user shouldn't get a WAVdesk-branded folder). Resolved
 /// through the OS known-folder API (NOT %USERPROFILE%\Documents string
 /// math) so OneDrive-redirected Documents folders land correctly.
 #[tauri::command]
@@ -54,7 +56,7 @@ pub fn latch_clips_dir(app: AppHandle) -> Result<String, String> {
         .path()
         .document_dir()
         .map_err(|e| format!("no Documents dir: {e}"))?;
-    let dir = docs.join("Latch Clips");
+    let dir = docs.join("Vacant Systems").join("Latch Clips");
     std::fs::create_dir_all(&dir).map_err(|e| format!("clips dir: {e}"))?;
     Ok(dir.to_string_lossy().into_owned())
 }

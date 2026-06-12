@@ -135,6 +135,10 @@ export default function ChopApp() {
   // Chapter list from the source (yt-dlp via latch probe) — offered as a
   // one-click region seed when the user hasn't drawn anything yet.
   const [chapters, setChapters] = useState<ChopChapter[]>([]);
+  const [showChapters, setShowChapters] = useState(false);
+  // Keyboard I/O region authoring: I arms, O completes (via onLoopPoints).
+  const ioKeyInRef = useRef<number | null>(null);
+  const onLoopPointsRef = useRef<((i: number | null, o: number | null) => void) | null>(null);
 
   // ---- Undo / redo ---------------------------------------------------------
   // Snapshots of (regions, selection) taken BEFORE each discrete mutation:
@@ -687,27 +691,9 @@ export default function ChopApp() {
     }
   }, [durationSec, setRegions, zeroCross]);
 
-  // Seed one region per chapter (labels from chapter titles), clamped
-  // sequentially so the non-overlap invariant holds even on sloppy
-  // chapter data. One-click affordance in the bottom bar; undoable.
-  const seedChapters = useCallback(() => {
-    if (!chapters.length || durationSec <= 0) return;
-    pushHistory();
-    const out: ChopRegion[] = [];
-    let prevEnd = 0;
-    for (const c of chapters) {
-      const start = Math.max(prevEnd, Math.max(0, c.startSec));
-      const end = Math.min(durationSec, c.endSec);
-      if (end - start < MIN_REGION_SEC) continue;
-      out.push({
-        id: nextRegionId(), startSec: start, endSec: end,
-        label: c.title.slice(0, 60), color: nextRegionColor(),
-        staged: true, clipState: 'none',
-      });
-      prevEnd = end;
-    }
-    if (out.length) setRegions(out);
-  }, [chapters, durationSec, pushHistory, setRegions]);
+  // Chapters are a NAVIGATION index (list popover + waveform ticks), not
+  // region authors — seeding 25 regions on click buried the user's own
+  // cuts and blew the rail out of the window.
 
   // Arrow-key seek for audio links (no daemon reverse, so just nudge ±1s).
   const nudge = useCallback((delta: number) => {
@@ -769,6 +755,27 @@ export default function ChopApp() {
       // and re-activate itself. preventDefault below suppresses the button's own
       // Space-click; Enter isn't a transport key, so it still activates buttons.
       if (tag === 'SELECT') return;
+      // I/O: mark in/out points that author a region — parity with the
+      // video player's IN/OUT buttons (whose keys are disabled here via
+      // disableKeyboard). I arms the in point; O completes through the
+      // same adoption-aware path the buttons use.
+      if (e.code === 'KeyI' || e.code === 'KeyO') {
+        e.preventDefault();
+        const t = hasVideo
+          ? (videoRef.current?.getCurrentTime() ?? 0)
+          : (onOurFileRef.current ? playbackEngine.getPosition() : cursorSec);
+        if (e.code === 'KeyI') {
+          ioKeyInRef.current = t;
+          setExportMsg(`In point set: ${fmtTime(t)} — press O to make the region`);
+        } else if (ioKeyInRef.current != null) {
+          onLoopPointsRef.current?.(ioKeyInRef.current, t);
+          ioKeyInRef.current = null;
+          setExportMsg('');
+        } else {
+          setExportMsg('Press I first to set the in point');
+        }
+        return;
+      }
       // Window-level transport so space/J/K/L work anywhere in the window,
       // not just over the video (no dead zones). Video links drive VideoView
       // (which has true J/K/L shuttle); audio links drive playbackEngine.
@@ -792,7 +799,7 @@ export default function ChopApp() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [selectedId, phase, hasVideo, playPause, nudge, removeAndAdvance,
-      undo, redo, pushHistory, setRegions, durationSec]);
+      undo, redo, pushHistory, setRegions, durationSec, cursorSec]);
 
   const auditionRegion = auditionId ? regions.find((r) => r.id === auditionId) ?? null : null;
 
@@ -961,74 +968,43 @@ export default function ChopApp() {
     if (next) scheduleClipRender(next.id);
   }, [phase, regions, scheduleClipRender]);
 
-  // Drag a region out as a file. With a fresh pre-render the OS drag
-  // starts immediately (inside the gesture); without one, kick the
-  // render and tell the user to drag again — starting DoDragDrop after
-  // the button is already up is the no-op-drag failure mode.
+  // Drag a region out as a file: render the clip to temp (if not already)
+  // and hand it to the OS drag. VERBATIM port of the working WAVdesk flow
+  // (the standalone's cache-gated rework answered every video drag with
+  // "drag again" and is gone).
   const beginRegionDragOut = useCallback(async (r: ChopRegion, forceVideo?: boolean) => {
-    if (!audioPath) return;
-    const wantVideo = forceVideo ?? r.exportVideo ?? false;
-    const cachedVariantMatches = wantVideo === (r.exportVideo ?? false);
-    if (r.clipPath && r.clipState === 'ready' && cachedVariantMatches) {
-      const fileName = r.clipPath.split(/[\\/]/).pop() ?? 'clip';
-      const chip = await buildDragChip(r, wantVideo).catch(() => null);
-      try {
-        await startOverlayDrag({
-          paths: [r.clipPath], fileName, isDirectory: false, count: 1,
-          waveformDataUrl: chip?.url ?? null, bgColor: chip?.bg ?? null,
-        });
-        // The clips folder is the persistence story (DAW references) —
-        // never delete the cache after a shell drop.
-        await invoke('start_os_file_drag', {
-          paths: [r.clipPath], previewPng: null, transparent: true,
-          cleanupTempOnShellDrop: false,
-        });
-      } catch (err) {
-        // Surface it — a silent failure here reads as "drag is broken".
-        setExportMsg(`Drag failed: ${String((err as Error)?.message ?? err)}`);
-        void endOverlayDrag();
-      }
-      return;
-    }
-    if (wantVideo && !hdVideoPath) {
-      setExportMsg('Full-res video still downloading… try the video drag shortly');
-      return;
-    }
-    if (r.clipState === 'rendering') {
-      setExportMsg('Clip still rendering… drag again in a second');
-      return;
-    }
-    // No fresh cache: WAVdesk-verbatim flow — chip up, render DURING the
-    // held gesture, then hand the file to the OS drag. If a slow render
-    // outlives the gesture the OS drag no-ops and the chip clears (the
-    // os_drag error path), and the render is stamped so the next drag is
-    // instant either way.
-    const { ext } = clipInputFor(r, forceVideo);
+    if (!audioPath || !tempDirRef.current) return;
+    const { input, video, ext } = clipInputFor(r, forceVideo);
     const idx = regionsRef.current.findIndex((x) => x.id === r.id);
-    const fileName = `${regionFileStem(r, idx < 0 ? 0 : idx, sourceStem)}.${ext}`;
-    const chip = await buildDragChip(r, wantVideo).catch(() => null);
+    const stem = regionFileStem(r, idx < 0 ? 0 : idx, sourceStem);
+    const fileName = `${stem}.${ext}`;
+    // Render to the persistent clips folder (not the temp dir, which is
+    // wiped on close) so a clip dropped into a DAW keeps resolving.
+    let clipsDir = tempDirRef.current;
+    try { clipsDir = await ensureClipsDir(); } catch { /* fall back to temp */ }
+    const dsep = clipsDir.includes('\\') ? '\\' : '/';
+    const out = `${clipsDir}${dsep}${fileName}`;
+    const chip = await buildDragChip(r, video);
     try {
       await startOverlayDrag({
-        paths: [], fileName, isDirectory: false, count: 1,
+        paths: [out], fileName, isDirectory: false, count: 1,
         waveformDataUrl: chip?.url ?? null, bgColor: chip?.bg ?? null,
       });
-    } catch { /* chip is cosmetic — keep going */ }
-    const path = await renderRegionClip(r.id, forceVideo);
-    if (!path) {
-      void endOverlayDrag();
-      return;
-    }
-    void emit('wd-latch-clip-exported', { path, title: fileName });
-    try {
-      await invoke('start_os_file_drag', {
-        paths: [path], previewPng: null, transparent: true,
-        cleanupTempOnShellDrop: false,
-      });
-    } catch (err) {
-      setExportMsg(`Drag failed: ${String((err as Error)?.message ?? err)}`);
+      // Render fresh each drag: a prior render may have been cleaned up
+      // after a folder drop, so a cached path can't be trusted. No-clobber
+      // keeps any path an app has already linked byte-stable.
+      setClip(r.id, 'rendering');
+      const path = await runClip({ input, output: out, startSec: r.startSec, endSec: r.endSec, video, overwrite: false });
+      setClip(r.id, 'ready', path);
+      // The clip lives in the persistent clips folder; if this drop lands on
+      // a folder/desktop the OS copies it there and the native side deletes
+      // our now-redundant copy (app drops that reference the path keep it).
+      await invoke('start_os_file_drag', { paths: [path], previewPng: null, transparent: true, cleanupTempOnShellDrop: true });
+    } catch {
+      setClip(r.id, 'error');
       void endOverlayDrag();
     }
-  }, [audioPath, hdVideoPath, buildDragChip, renderRegionClip, clipInputFor, sourceStem]);
+  }, [audioPath, clipInputFor, runClip, setClip, buildDragChip, sourceStem, ensureClipsDir]);
 
   const handleRegionDragOut = useCallback((id: string, opts: { video: boolean }) => {
     const r = regionsRef.current.find((x) => x.id === id);
@@ -1067,6 +1043,7 @@ export default function ChopApp() {
       }
     }
   }, [durationSec, pushHistory, setRegions, select]);
+  onLoopPointsRef.current = onLoopPoints;
 
   // ---- Render -------------------------------------------------------------
   const railBtn = (active: boolean) =>
@@ -1310,14 +1287,31 @@ export default function ChopApp() {
         {/* Bottom bar: video/audio mode toggle · region count · export */}
         <div className="flex items-center gap-1.5 px-2 border-t border-[color:var(--theme-border)] shrink-0" style={{ height: '31px' }}>
           {phase === 'ready' && chapters.length > 1 && (
-            <button
-              className={railBtn(false)}
-              onClick={seedChapters}
-              title={`This source has ${chapters.length} chapter markers. Create one region per chapter, labeled from the chapter titles.${regions.length ? ' Replaces the current regions (undoable).' : ''}`}
-            >
-              <ListMusic size={10} className="inline -mt-px mr-1" />
-              Chapters · {chapters.length}
-            </button>
+            <div className="relative">
+              {showChapters && (
+                <div className="absolute bottom-full left-0 mb-1 z-30 max-h-48 w-72 overflow-y-auto border border-[color:var(--theme-border-strong)] bg-[var(--theme-bg-panel)] shadow-lg">
+                  {chapters.map((c, i) => (
+                    <button
+                      key={i}
+                      onClick={() => onSeek(c.startSec)}
+                      className="w-full text-left px-2 py-1 text-[0.6rem] text-[color:var(--theme-text-secondary)] hover:bg-[var(--theme-bg-elevated)] hover:text-[color:var(--theme-text-heading)] flex items-center gap-2 transition-none"
+                      title="Jump the playhead to this chapter"
+                    >
+                      <span className="text-[color:var(--theme-text-faint)] tabular-nums shrink-0">{fmtTime(c.startSec)}</span>
+                      <span className="truncate">{c.title || `Chapter ${i + 1}`}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+              <button
+                className={railBtn(showChapters)}
+                onClick={() => setShowChapters((v) => !v)}
+                title={`${chapters.length} chapter markers: a navigation index (click a chapter to jump there). Markers show as ticks on the waveform.`}
+              >
+                <ListMusic size={10} className="inline -mt-px mr-1" />
+                Chapters · {chapters.length}
+              </button>
+            </div>
           )}
           {phase === 'ready' && (
             <button className={railBtn(hasVideo ? showVideo : false)} onClick={onToggleVideo} disabled={videoFetching && !videoPath}
