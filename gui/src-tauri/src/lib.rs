@@ -29,6 +29,16 @@ pub fn run() {
             }
         }))
         .plugin(tauri_plugin_dialog::init())
+        // The audio engine lives on a main-process thread — closing the
+        // chop WINDOW doesn't touch it (and the webview's JS teardown is
+        // not guaranteed to run its unmount cleanup). Kill both decks +
+        // their decoder children whenever the chop window goes away.
+        .on_window_event(|window, event| {
+            use tauri::Manager;
+            if matches!(event, tauri::WindowEvent::Destroyed) && window.label() == "chop" {
+                audio::stop_everything(window.app_handle());
+            }
+        })
         .setup(|app| {
             // Pre-spawn the drag-overlay window hidden — it's both the OS
             // drag SOURCE (see os_drag.rs) and the chip's render surface.

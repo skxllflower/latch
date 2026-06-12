@@ -465,6 +465,14 @@ export class NativeVideoEngine {
 
   private bufferedAhead(): number {
     if (this.frames.length === 0) return 0;
+    // With a decoder loop armed the buffer holds wrapped cycles whose
+    // times RESTART at the in-point — `last.t - clock` goes NEGATIVE
+    // right after the decoder wraps, the reader thinks it's starving,
+    // and the decoder free-runs whole cycles into the buffer (the
+    // burst-play-then-freeze wrap). Frame COUNT is wrap-immune.
+    if (this.decoderLoop && this.dir > 0) {
+      return this.frames.length / Math.max(1, this.fps);
+    }
     // "Ahead" is in PLAYBACK order: above the clock going forward, below it in
     // reverse (the stream's times descend there).
     const last = this.frames[this.frames.length - 1].t;
@@ -694,6 +702,12 @@ export class NativeVideoEngine {
     }
     let idx = -1;
     for (let i = 0; i < this.frames.length; i++) {
+      // Never scan ACROSS a wrap boundary (a t decrease): post-wrap
+      // frames sit at the in-point, which is always <= a clock near the
+      // out-point — walking into them burst-plays the next cycle early
+      // and strands the tail. The head-shed above exposes the next
+      // cycle once the clock itself wraps.
+      if (this.decoderLoop && this.dir > 0 && i > 0 && this.frames[i].t < this.frames[i - 1].t) break;
       const ahead = this.dir > 0
         ? this.frames[i].t <= this.clock + lead
         : this.frames[i].t >= this.clock - lead;

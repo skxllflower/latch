@@ -835,6 +835,15 @@ fn audio_thread(app: AppHandle, rx: Receiver<Cmd>) {
 // decode-server resolution (the daemon used it the same way; this
 // deck decodes the file's own audio track via symphonia).
 
+/// Stop BOTH decks (audition WAV + video audio with its decode-server
+/// child). Called from the chop window's Destroyed hook so closing the
+/// window can never leave audio playing.
+pub fn stop_everything(app: &AppHandle) {
+    let tx = ensure_thread(app);
+    let _ = tx.send(Cmd::Stop);
+    let _ = tx.send(Cmd::VStop);
+}
+
 #[tauri::command]
 pub fn start_video_audio(
     app: AppHandle,
