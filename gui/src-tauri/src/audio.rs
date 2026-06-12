@@ -73,8 +73,55 @@ const VA_RING_CAP: usize = (VA_SR as usize) * (VA_CH as usize) * 4;
 // raise if audio still trails the picture, lower if it leads.
 const VA_OUTPUT_LATENCY_SEC: f64 = 0.15;
 
+// Lock-free SPSC ring: the reader thread pushes decoded PCM, the audio
+// callback pops it. Samples travel as f32 bits in AtomicU32 so both
+// sides stay safe Rust; per-sample atomics are nanoseconds against a
+// 96k-samples/sec stream. The previous Mutex<VecDeque> design
+// try_locked PER SAMPLE in the device callback — under contention
+// (a second reader filling the loop prewarm) misses played uncounted
+// silence: audible slow-mo, stalled positions, and L/R interleave
+// slips.
+struct SpscRing {
+    buf: Vec<std::sync::atomic::AtomicU32>,
+    head: std::sync::atomic::AtomicUsize, // next write (reader thread)
+    tail: std::sync::atomic::AtomicUsize, // next read (audio callback)
+}
+
+impl SpscRing {
+    fn new(cap: usize) -> Self {
+        SpscRing {
+            buf: (0..cap.max(2)).map(|_| std::sync::atomic::AtomicU32::new(0)).collect(),
+            head: std::sync::atomic::AtomicUsize::new(0),
+            tail: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+    fn is_empty(&self) -> bool {
+        self.tail.load(std::sync::atomic::Ordering::Acquire)
+            == self.head.load(std::sync::atomic::Ordering::Acquire)
+    }
+    fn push(&self, v: f32) -> bool {
+        let h = self.head.load(std::sync::atomic::Ordering::Relaxed);
+        let n = (h + 1) % self.buf.len();
+        if n == self.tail.load(std::sync::atomic::Ordering::Acquire) {
+            return false; // full — caller sleeps (backpressure)
+        }
+        self.buf[h].store(v.to_bits(), std::sync::atomic::Ordering::Relaxed);
+        self.head.store(n, std::sync::atomic::Ordering::Release);
+        true
+    }
+    fn pop(&self) -> Option<f32> {
+        let t = self.tail.load(std::sync::atomic::Ordering::Relaxed);
+        if t == self.head.load(std::sync::atomic::Ordering::Acquire) {
+            return None;
+        }
+        let v = f32::from_bits(self.buf[t].load(std::sync::atomic::Ordering::Relaxed));
+        self.tail.store((t + 1) % self.buf.len(), std::sync::atomic::Ordering::Release);
+        Some(v)
+    }
+}
+
 struct VaShared {
-    ring: std::sync::Mutex<std::collections::VecDeque<f32>>,
+    ring: SpscRing,
     done: std::sync::atomic::AtomicBool,
     consumed: std::sync::atomic::AtomicU64, // samples handed to the audio callback
 }
@@ -90,12 +137,9 @@ struct PcmSource {
 impl Iterator for PcmSource {
     type Item = f32;
     fn next(&mut self) -> Option<f32> {
-        // try_lock: never stall the device callback on the reader thread.
-        if let Ok(mut ring) = self.shared.ring.try_lock() {
-            if let Some(s) = ring.pop_front() {
-                self.shared.consumed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                return Some(s);
-            }
+        if let Some(s) = self.shared.ring.pop() {
+            self.shared.consumed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return Some(s);
         }
         if self.shared.done.load(std::sync::atomic::Ordering::Relaxed) {
             return None;
@@ -154,6 +198,13 @@ struct VideoDeck {
     volume: f32,
     looping: Option<(f64, f64)>,
     dir: i32,
+    // Last tick's raw position — the loop wraps only on a CROSSING of
+    // the out-point (prev < out <= now). A bare `pos >= out` check
+    // yanked playback back into the region the instant a loop was
+    // armed behind the playhead, and fought every seek past the
+    // out-point (the daemon decodes linearly, so its loop also only
+    // fires when playback actually reaches the out-point).
+    last_raw: f64,
 }
 
 impl VideoDeck {
@@ -168,6 +219,7 @@ impl VideoDeck {
             volume: 1.0,
             looping: None,
             dir: 1,
+            last_raw: 0.0,
         }
     }
 
@@ -188,6 +240,7 @@ impl VideoDeck {
         match self.spawn_stream(handle, at_sec, self.playing) {
             Some(s) => {
                 self.stream = Some(s);
+                self.last_raw = at_sec.max(0.0);
                 true
             }
             None => false,
@@ -228,7 +281,7 @@ impl VideoDeck {
         };
 
         let shared = std::sync::Arc::new(VaShared {
-            ring: std::sync::Mutex::new(std::collections::VecDeque::with_capacity(VA_RING_CAP)),
+            ring: SpscRing::new(VA_RING_CAP),
             done: std::sync::atomic::AtomicBool::new(false),
             consumed: std::sync::atomic::AtomicU64::new(0),
         });
@@ -242,18 +295,6 @@ impl VideoDeck {
                 if reader_shared.done.load(std::sync::atomic::Ordering::Relaxed) {
                     return;
                 }
-                // Backpressure: nap while the ring is full (paused deck).
-                {
-                    let full = reader_shared
-                        .ring
-                        .lock()
-                        .map(|r| r.len() >= VA_RING_CAP)
-                        .unwrap_or(false);
-                    if full {
-                        std::thread::sleep(Duration::from_millis(10));
-                        continue;
-                    }
-                }
                 let n = match stdout.read(&mut buf) {
                     Ok(0) | Err(_) => {
                         reader_shared.done.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -263,17 +304,21 @@ impl VideoDeck {
                 };
                 carry.extend_from_slice(&buf[..n]);
                 let floats = carry.len() / 4;
-                if floats > 0 {
-                    if let Ok(mut ring) = reader_shared.ring.lock() {
-                        for i in 0..floats {
-                            let o = i * 4;
-                            ring.push_back(f32::from_le_bytes([
-                                carry[o], carry[o + 1], carry[o + 2], carry[o + 3],
-                            ]));
+                for i in 0..floats {
+                    let o = i * 4;
+                    let v = f32::from_le_bytes([
+                        carry[o], carry[o + 1], carry[o + 2], carry[o + 3],
+                    ]);
+                    // Backpressure: a full ring (paused deck / parked
+                    // prewarm) naps until the callback drains some.
+                    while !reader_shared.ring.push(v) {
+                        if reader_shared.done.load(std::sync::atomic::Ordering::Relaxed) {
+                            return;
                         }
+                        std::thread::sleep(Duration::from_millis(10));
                     }
-                    carry.drain(..floats * 4);
                 }
+                carry.drain(..floats * 4);
             }
         });
 
@@ -480,26 +525,25 @@ fn audio_thread(app: AppHandle, rx: Receiver<Cmd>) {
         let mut v_wrap_to: Option<f64> = None;
         if let Some(stream) = &vd.stream {
             let done = stream.shared.done.load(std::sync::atomic::Ordering::Relaxed);
-            let empty = stream
-                .shared
-                .ring
-                .lock()
-                .map(|r| r.is_empty())
-                .unwrap_or(false);
+            let empty = stream.shared.ring.is_empty();
             if done && empty {
                 v_drained = true;
             } else {
                 let raw = stream.position();
                 let vpos = (raw - VA_OUTPUT_LATENCY_SEC).max(stream.start_sec);
-                // Loop wraps on the RAW (pulled) position — the compensated
-                // one would let 150ms past the out-point reach the speakers.
+                // Loop wraps on a CROSSING of the out-point, on the RAW
+                // (pulled) position — the compensated one would let 150ms
+                // past the out-point reach the speakers, and a bare >=
+                // check yanks seeks/playback from beyond the region back
+                // into it.
                 if vd.playing {
                     if let Some((lo, hi)) = vd.looping {
-                        if raw >= hi {
+                        if vd.last_raw < hi && raw >= hi {
                             v_wrap_to = Some(lo);
                         }
                     }
                 }
+                vd.last_raw = raw;
                 if v_wrap_to.is_none() && last_vemit.elapsed() >= Duration::from_millis(33) {
                     last_vemit = Instant::now();
                     let _ = app.emit("audio_event", serde_json::json!({
@@ -526,6 +570,7 @@ fn audio_thread(app: AppHandle, rx: Receiver<Cmd>) {
                     p.sink.play();
                 }
                 vd.stream = Some(p);
+                vd.last_raw = lo;
             } else if !vd.rebuild(&handle, lo) {
                 emit_vstate(&app, false);
             }
