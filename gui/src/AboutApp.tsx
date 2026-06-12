@@ -5,6 +5,7 @@
 // plugin wired up, and copy-to-clipboard is enough for a notices panel.
 
 import React, { useEffect } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { X } from 'lucide-react';
 
@@ -22,7 +23,14 @@ function Notice({ title, children }: { title: string; children: React.ReactNode 
 }
 
 function Url({ href }: { href: string }) {
-  return <span className="text-emerald-500/80 select-text cursor-text break-all">{href}</span>;
+  return (
+    <span
+      onClick={() => { void invoke('os_open_url', { url: href }); }}
+      className="text-emerald-500/80 hover:text-emerald-300 hover:underline cursor-pointer break-all"
+    >
+      {href}
+    </span>
+  );
 }
 
 export default function AboutApp() {
@@ -95,8 +103,7 @@ export default function AboutApp() {
         <div className="border-t border-zinc-900 pt-3 mt-1">
           <p className="text-[0.5625rem] leading-relaxed text-zinc-600">
             © 2026 Vacant Systems. All rights reserved. Latch is proprietary
-            software. "Latch" and "Vacant Systems" are trademarks of Vacant
-            Systems. Latch is a download tool; users are responsible for
+            software. Latch is a download tool; users are responsible for
             complying with the terms of service of any site they access and
             with applicable copyright law.
           </p>

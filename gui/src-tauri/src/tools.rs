@@ -680,3 +680,37 @@ pub fn os_reveal_path(path: String) -> Result<(), String> {
             .map_err(|e| format!("xdg-open spawn: {}", e))
     }
 }
+
+/// Open an http/https URL in the user's default browser. Used by the About
+/// window's license links. Scheme-gated so a stray value can't launch an
+/// arbitrary protocol handler.
+#[tauri::command]
+pub fn os_open_url(url: String) -> Result<(), String> {
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return Err("os_open_url: only http/https URLs are allowed".to_string());
+    }
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("explorer")
+            .arg(&url)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("explorer url spawn: {}", e))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .arg(&url)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("open url spawn: {}", e))
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        Command::new("xdg-open")
+            .arg(&url)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("xdg-open url spawn: {}", e))
+    }
+}
