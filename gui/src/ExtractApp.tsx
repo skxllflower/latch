@@ -189,6 +189,40 @@ function linkSourceKind(url: string): 'audio' | 'video' {
   return 'video';
 }
 
+// Reduce a YouTube *watch* URL to just its video, dropping the playlist
+// context (list / start_radio / index). YouTube auto-appends these when you
+// copy a URL while a mix is playing — `&list=RD…&start_radio=1` is a generated
+// radio with HUNDREDS of entries. Resolving that URL with `expand` enumerates
+// the whole mix (635 tracks ≈ 13s for the preview), even when "Single video
+// only" is on and we then slice to 1 — the toggle trimmed the result, not the
+// work. With the toggle on we strip to the bare video so the resolve is a
+// single fast metadata fetch. Only watch URLs that carry a video id reduce;
+// a bare /playlist?list=… (no v) is left untouched. Non-YouTube / unparseable
+// URLs pass through unchanged.
+function youtubeVideoOnlyUrl(raw: string): string {
+  try {
+    const u = new URL(raw);
+    const host = u.hostname.replace(/^www\./, '').toLowerCase();
+    const isYt = host === 'youtube.com' || host.endsWith('.youtube.com');
+    const isShort = host === 'youtu.be';
+    if (isShort) {
+      // youtu.be/<id>?list=… — id is the path; keep only an optional timestamp.
+      const keep = new URLSearchParams();
+      const t = u.searchParams.get('t'); if (t) keep.set('t', t);
+      u.search = keep.toString();
+      return u.toString();
+    }
+    if (!isYt) return raw;
+    const v = u.searchParams.get('v');
+    if (!v) return raw; // bare playlist / channel / etc. — nothing to reduce to
+    const keep = new URLSearchParams();
+    keep.set('v', v);
+    const t = u.searchParams.get('t'); if (t) keep.set('t', t);
+    u.search = keep.toString();
+    return u.toString();
+  } catch { return raw; }
+}
+
 const formatBytes = (n: number) => {
   if (!Number.isFinite(n) || n <= 0) return '';
   if (n < 1024)            return `${n} B`;
@@ -728,10 +762,14 @@ export default function ExtractApp() {
   // the extract, which would be annoying. Upgrade the wrapper to the
   // `expand` command and the bug goes away.
   //
-  // Timeout: hard 12s cap so a slow site (SoundCloud playlist with
-  // 200+ tracks) doesn't hang the spinner forever. After timeout the
-  // item flips to 'error' but stays extractable.
-  const PROBE_TIMEOUT_MS = 12000;
+  // Timeout: cap so a slow site (SoundCloud playlist with 200+ tracks)
+  // doesn't hang the spinner forever. After timeout the item flips to
+  // 'error' but stays extractable. 25s (was 12s): YouTube now requires a
+  // JS-runtime challenge (nsig/PO token) during format selection, which
+  // pushes the probe over 12s in the app's process context — and because
+  // settle() is first-wins, the timeout was firing BEFORE the (successful)
+  // probe returned, so its result got discarded and the title never showed.
+  const PROBE_TIMEOUT_MS = 25000;
   // Serialize probing through a ref instead of an effect-cleanup cancel.
   // Setting an item to 'probing' mutates inputQueue, which re-runs this
   // effect — and a cleanup that flipped a `cancelled` flag there would
@@ -791,17 +829,25 @@ export default function ExtractApp() {
 
     void (async () => {
       try {
+        const isSearch = next.kind === 'search';
+        // "Single video only" should skip the playlist enumeration ENTIRELY,
+        // not just slice its result — otherwise pasting a watch URL with an
+        // auto-appended radio mix (&list=RD…) enumerates hundreds of entries
+        // (~13s) just to preview one video. Strip to the bare video up front.
+        // (Searches keep their ytsearch URL; the download path still gets the
+        // original url + noPlaylist flag, so extract-time behavior is unchanged.)
+        const resolveUrl = (!isSearch && noPlaylist)
+          ? youtubeVideoOnlyUrl(next.url)
+          : next.url;
         const expandRes = await invoke<{
           tracks: { url: string; title: string; duration_s: number; uploader: string; thumbnail: string }[];
           error:  string;
         }>('latch_expand_url', {
           binaryPath: latchPath,
-          url: next.url,
+          url: resolveUrl,
           cookiesFromBrowser,
           cookiesFile,
         });
-
-        const isSearch = next.kind === 'search';
 
         if (expandRes.tracks.length === 0 && isSearch) {
           // A search that found nothing is just an empty result — the
@@ -1552,7 +1598,7 @@ export default function ExtractApp() {
                       {q.kind === 'search' && q.probeState !== 'probing' && <Search size={8} className="text-zinc-500" />}
                       {q.probeState === 'probing' && <Loader2 size={8} className="animate-spin text-zinc-500" />}
                       {q.kind !== 'search' && q.probeState === 'ok' && !q.candidateGroup && <CheckCircle2 size={8} className="text-emerald-500" />}
-                      {q.probeState === 'error'   && <span title={q.probeError ?? 'preview failed'}><AlertTriangle size={8} className="text-[color:var(--theme-warn-fg)]" /></span>}
+                      {q.probeState === 'error'   && <span title={q.probeError ?? 'preview failed'} className="inline-flex items-center justify-center p-1 -m-1 cursor-help"><AlertTriangle size={11} className="text-[color:var(--theme-warn-fg)]" /></span>}
                     </span>
                     <span className={`flex-1 min-w-0 truncate ${q.candidateGroup ? 'text-sky-300/90' : ''}`}>
                       {q.title ?? q.url}

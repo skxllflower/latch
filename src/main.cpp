@@ -136,9 +136,17 @@ int run_probe(const std::vector<std::string>& args) {
   // We pull title / duration / uploader from yt-dlp's --print pipe.
   // Tab-separated keeps parsing trivial — none of the three fields can
   // legitimately contain a tab (yt-dlp strips them during extraction).
-  // Same -f bestaudio + --js-runtimes plumbing as extract — without it
-  // YouTube probes fail on signed-in accounts (the print pipe relies
-  // on a successfully-selected format being in the info dict).
+  //
+  // METADATA ONLY — deliberately NO `-f bestaudio` and NO `--js-runtimes`.
+  // Title/duration/uploader/chapters all come from the player response and
+  // need zero format selection. Selecting a format (the old `-f bestaudio`)
+  // forced YouTube's nsig JS challenge, which (a) is slow and (b) needs a JS
+  // runtime on PATH — absent when the GUI is launched from Explorer, so the
+  // probe stalled for many seconds (the "preview timed out" the user saw).
+  // `--ignore-no-formats-error` is the piece that lets us drop `-f`: it stops
+  // yt-dlp aborting before it prints when no playable format is resolved (the
+  // abort the old `-f bestaudio` was added to avoid). The expensive format /
+  // nsig work now happens ONLY at real download time, not on every paste.
   // --ignore-config / --cache-dir mirror extract: a user's global yt-dlp
   // config could alter the --print protocol, and the cache belongs in
   // the vendor folder.
@@ -150,9 +158,7 @@ int run_probe(const std::vector<std::string>& args) {
     "--no-colors",
     "--skip-download",
     "--no-playlist",
-    "-f", "bestaudio",
-    "--js-runtimes", "deno",
-    "--js-runtimes", "node",
+    "--ignore-no-formats-error",
     // %(chapters)j renders the chapter list as JSON (a j-converted field
     // never contains a raw tab — control chars are escaped), so it can ride
     // the same tab-separated line. Missing chapters print as "NA".
@@ -302,13 +308,15 @@ int run_expand(const std::vector<std::string>& args) {
   // sites (YouTube, SoundCloud, Bandcamp); when missing it's NA and
   // we emit empty string. The GUI uses this for the card-view preview.
   //
-  // Robustness flags (mirror probe):
-  //   -f bestaudio                 — pick an audio-only format track;
-  //                                  required for cookies-from-browser
-  //                                  on YouTube to negotiate cleanly
-  //   --js-runtimes deno/node      — yt-dlp's signed-in YouTube path
-  //                                  needs a JS runtime to decrypt
-  //                                  signature ciphers
+  // METADATA ONLY (mirrors probe). --flat-playlist lists entries without
+  // per-entry format extraction, so every printed field (url/title/duration/
+  // uploader/thumbnail) is available with NO format selection. The old
+  // `-f bestaudio` + `--js-runtimes` forced YouTube's nsig JS challenge, which
+  // needs a JS runtime on PATH — absent when the GUI is launched from Explorer,
+  // so the Inputs-side resolve (this command) stalled and tripped the
+  // "preview timed out" warning. --ignore-no-formats-error keeps yt-dlp from
+  // aborting before it prints when no playable format is resolved. The heavy
+  // format/nsig work now happens ONLY at real download time.
   std::vector<std::string> argv = {
     ytdlp_utf8,
     "--ignore-config",
@@ -317,9 +325,7 @@ int run_expand(const std::vector<std::string>& args) {
     "--no-colors",
     "--skip-download",
     "--flat-playlist",
-    "-f", "bestaudio",
-    "--js-runtimes", "deno",
-    "--js-runtimes", "node",
+    "--ignore-no-formats-error",
     "--print", "LATCH_TRACK\t%(webpage_url,url,original_url)s\t%(title)s\t%(duration)s\t%(uploader,uploader_id,channel)s\t%(thumbnail)s",
   };
   if (!cookies.empty()) {

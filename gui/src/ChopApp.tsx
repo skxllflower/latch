@@ -47,7 +47,7 @@ import type { ChopSeed } from './chopWindow';
 interface IpcWaveformData {
   success: boolean;
   duration_sec: number;
-  points: number[];
+  points: [number, number, number][]; // [min, max, rms] per bin (signed)
 }
 
 let _seq = 0;
@@ -72,9 +72,13 @@ const fmtTime = (s: number): string => {
 const cleanError = (m: string): string =>
   /\blatch(\.exe)?\b[\s\S]*?(not found|does not exist)/i.test(m) ? 'latch.exe not found' : m;
 
-// Height cap for the fast low-res preview download. Audio is still
-// bestaudio, so audio quality is unaffected — only the picture is smaller.
-const PREVIEW_MAX_HEIGHT = 480;
+// Height cap for the preview download. Audio is still bestaudio, so audio
+// quality is unaffected — only the picture res is capped. This file is what the
+// chop window previews/plays, and it STAYS the preview source (we no longer swap
+// to the full-res HD file — that stuttered, since real-time full-res decode
+// can't sustain 1x). 720p is crisp enough for the pane and still cheap to
+// decode; the full-res HD download is used only for video clip export.
+const PREVIEW_MAX_HEIGHT = 720;
 
 type Phase = 'idle' | 'downloading' | 'extracting-audio' | 'ready' | 'error';
 
@@ -337,11 +341,11 @@ export default function ChopApp() {
       const hdDir = `${dir}${dir.includes('\\') ? '\\' : '/'}hd`;
       const hd = await runExtract(url, hdDir, true, 0); // best video, no cap
       setHdVideoPath(hd);
-      // Swap the preview to the full-res file. Carry the playhead + play
-      // state so the reload resumes seamlessly (VideoView onReady re-seeks).
-      pendingSeekRef.current = videoRef.current?.getCurrentTime() ?? null;
-      pendingPlayRef.current = videoPlayingRef.current;
-      setVideoPath(hd);
+      // Deliberately do NOT swap the preview to the full-res file. Decoding a
+      // full-res (often 4K VP9/AV1) source in real time just to downscale it
+      // into the small preview pane can't sustain 1x and stutters, for ~no
+      // visible gain at this size. The preview stays the cheap 720p low-res
+      // file; the HD file is used only for full-quality video clip export.
     } catch { /* leave video export gated; audio is unaffected */ }
     finally { setHdLoading(false); }
   }, [runExtract]);
@@ -891,10 +895,9 @@ export default function ChopApp() {
           path: audioPath, points: 240, startSec: r.startSec, endSec: r.endSec,
         });
         if (data?.success && data.points?.length) {
-          // The standalone peaks IPC returns max-abs scalars; the chip
-          // renderer (ported verbatim) wants [min, max, rms] triplets.
-          const triplets = data.points.map((p) => [-p, p, p] as [number, number, number]);
-          return peaksToChipDataUrl(triplets, r.color);
+          // generate_waveform now returns [min, max, rms] triplets directly —
+          // the exact shape peaksToChipDataUrl wants.
+          return peaksToChipDataUrl(data.points, r.color);
         }
       } catch { /* fall back to a canvas crop */ }
     }

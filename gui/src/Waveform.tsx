@@ -41,10 +41,55 @@ interface WaveformViewProps {
 interface WaveData {
   success: boolean;
   duration_sec: number;
-  points: number[];
+  // [min, max, rms] per bin (signed) — matches WAVdesk's peak-bin shape.
+  points: [number, number, number][];
 }
 
 const MIN_SPAN_SEC = 0.02;
+// Exponential lerp factor per frame for the zoom/pan tween (WAVdesk's value).
+// 0.18 lands between snappy and floaty — notches read direct, but pan/zoom
+// pick up the "drag through molasses" glide that feels buttery.
+const ZOOM_LERP_K = 0.18;
+
+// Waveform paint, ported from WAVdesk's WaveformView so the two render
+// identically: a filled min/max envelope (the asymmetric DAW look), quad-
+// smoothed, fattened by a round-cap stroke (1.55px) so it reads as a clean
+// line where top≈bottom (low frequencies) and a solid body where it's busy.
+// The standalone defines no --theme-waveform CSS vars, so these match
+// WAVdesk's exact fallbacks.
+const WAVE_COLOR = '#a1a1aa';
+const WAVE_STROKE_PX = 1.55;
+
+// Quad-smoothed edge (matches WAVdesk's appendCurveSegment 'quad'): the curve
+// passes through the midpoints between consecutive bins, each bin a control.
+function appendQuadEdge(
+  ctx: CanvasRenderingContext2D, n: number,
+  xs: Float32Array, ys: Float32Array, reverse: boolean,
+): void {
+  if (n < 2) return;
+  const start = reverse ? n - 1 : 0;
+  const dir = reverse ? -1 : 1;
+  const last = reverse ? 0 : n - 1;
+  for (let j = start; j !== last; j += dir) {
+    const next = j + dir;
+    ctx.quadraticCurveTo(xs[j], ys[j], (xs[j] + xs[next]) / 2, (ys[j] + ys[next]) / 2);
+  }
+  ctx.lineTo(xs[last], ys[last]);
+}
+
+// Closed envelope polygon: top edge L→R, step down the right, bottom edge
+// R→L, closePath links back. Mirrors WAVdesk's drawWaveformPolygon.
+function drawWaveEnvelope(
+  ctx: CanvasRenderingContext2D, n: number,
+  xs: Float32Array, tops: Float32Array, bots: Float32Array,
+): void {
+  if (n < 2) return;
+  ctx.moveTo(xs[0], tops[0]);
+  appendQuadEdge(ctx, n, xs, tops, false);
+  ctx.lineTo(xs[n - 1], bots[n - 1]);
+  appendQuadEdge(ctx, n, xs, bots, true);
+  ctx.closePath();
+}
 
 export const WaveformView: React.FC<WaveformViewProps> = ({
   audioFile, filePath, playheadGetter, overlay, markers,
@@ -60,24 +105,59 @@ export const WaveformView: React.FC<WaveformViewProps> = ({
   const vpRef = useRef(vp);
   vpRef.current = vp;
 
-  // WRITE-THROUGH viewport commit: gesture handlers chain deltas off
-  // vpRef, but React renders (which refresh vpRef) lag far behind the
-  // 125Hz HID event rate — without an immediate ref update every event
-  // in a burst rebases on the SAME stale viewport and overwrites its
-  // siblings (the gesture barely moves, just wiggles). The ref is the
-  // live truth; the state render trails it.
+  // Eased viewport tween — WAVdesk's gesture model, which is what makes its
+  // pan/zoom feel buttery instead of stepped. Gestures push a TARGET viewport;
+  // a rAF loop LERPs the DISPLAYED viewport toward it at ZOOM_LERP_K/frame.
+  //   vpRef        = displayed (eased) viewport — draw + playhead + overlay read it
+  //   vpTargetRef  = where gestures push (null when settled)
+  // Each gesture reads `vpTargetRef ?? vpRef` as its base so a fast burst
+  // compounds on the in-flight target and stays continuous, rather than
+  // fighting the lagging displayed value. The tween also coalesces the 125Hz
+  // HID stream into one setVp (= one render/redraw) per frame.
+  const vpTargetRef = useRef<{ tStart: number; tEnd: number } | null>(null);
+  const tweenRafRef = useRef(0);
+  const baseVp = useCallback(() => vpTargetRef.current ?? vpRef.current, []);
+  const tweenTick = useCallback(() => {
+    const target = vpTargetRef.current;
+    if (!target) { tweenRafRef.current = 0; return; }
+    const cur = vpRef.current;
+    const next = {
+      tStart: cur.tStart + (target.tStart - cur.tStart) * ZOOM_LERP_K,
+      tEnd:   cur.tEnd   + (target.tEnd   - cur.tEnd)   * ZOOM_LERP_K,
+    };
+    const dur = Math.max(1e-9, duration);
+    const gap = Math.abs(next.tStart - target.tStart) + Math.abs(next.tEnd - target.tEnd);
+    if (gap / dur < 0.0005) {        // close enough — land on the target and stop
+      vpRef.current = target;
+      setVp(target);
+      vpTargetRef.current = null;
+      tweenRafRef.current = 0;
+      return;
+    }
+    vpRef.current = next;
+    setVp(next);
+    tweenRafRef.current = requestAnimationFrame(tweenTick);
+  }, [duration]);
+  // Gesture commit: push a target and ensure the tween is running.
+  const commitTarget = useCallback((next: { tStart: number; tEnd: number }) => {
+    vpTargetRef.current = next;
+    if (!tweenRafRef.current) tweenRafRef.current = requestAnimationFrame(tweenTick);
+  }, [tweenTick]);
+  // Immediate commit (file reset) — snap with no tween.
   const commitVp = useCallback((next: { tStart: number; tEnd: number }) => {
+    if (tweenRafRef.current) { cancelAnimationFrame(tweenRafRef.current); tweenRafRef.current = 0; }
+    vpTargetRef.current = null;
     vpRef.current = next;
     setVp(next);
   }, []);
+  useEffect(() => () => { if (tweenRafRef.current) cancelAnimationFrame(tweenRafRef.current); }, []);
 
   // Reset the viewport to full when the file/duration changes.
   useEffect(() => {
     if (duration > 0) commitVp({ tStart: 0, tEnd: duration });
-    fetchedSpanRef.current = 0; // force a fresh peak fetch for the new file
   }, [filePath, duration, commitVp]);
 
-  const peaksRef = useRef<{ points: number[]; tStart: number; tEnd: number } | null>(null);
+  const peaksRef = useRef<{ points: [number, number, number][]; tStart: number; tEnd: number } | null>(null);
 
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
@@ -114,57 +194,78 @@ export const WaveformView: React.FC<WaveformViewProps> = ({
     }
     if (!pk || pk.points.length === 0) return;
 
-    const pkSpan = Math.max(1e-6, pk.tEnd - pk.tStart);
-    ctx.fillStyle = '#a1a1aa';
-    const mid = h / 2;
-    const usable = (h / 2) * 0.92;
-    for (let x = 0; x < w; x++) {
-      const t = cur.tStart + (x / w) * span;
-      const fi = ((t - pk.tStart) / pkSpan) * pk.points.length;
-      const i = Math.floor(fi);
-      if (i < 0 || i >= pk.points.length) continue;
-      const amp = Math.min(1, pk.points[i]);
-      const half = Math.max(0.5, amp * usable);
-      ctx.fillRect(x, mid - half, 1, half * 2);
+    const pts = pk.points;
+    const n = pts.length;
+    const pkSpan = Math.max(1e-9, pk.tEnd - pk.tStart);
+    const cx = h / 2;
+    const scale = (h / 2) * 0.95;   // small headroom so full-scale doesn't clip the edge
+
+    // Bins covering the visible viewport (+/-1 so the quad curve endpoints
+    // fall outside the visible area and don't snap at the edges).
+    const iStart = Math.max(0, Math.floor(((cur.tStart - pk.tStart) / pkSpan) * n) - 1);
+    const iEnd = Math.min(n - 1, Math.ceil(((cur.tEnd - pk.tStart) / pkSpan) * n) + 1);
+    if (iStart >= iEnd) return;
+    const vis = iEnd - iStart + 1;
+
+    // Bound the control-point count to ~2 per CSS pixel. The whole-file peak
+    // set can be 200k bins; zoomed out, that's far more than the canvas can
+    // show, so fold each output point over its bin group via min-of-mins /
+    // max-of-maxes (preserves the outer envelope exactly). Zoomed in, vis is
+    // small and each output maps to one bin (group size 1 = no fold).
+    const out = Math.max(2, Math.min(vis, Math.ceil(w * 2)));
+    const xs = new Float32Array(out);
+    const tops = new Float32Array(out);
+    const bots = new Float32Array(out);
+    for (let j = 0; j < out; j++) {
+      const g0 = iStart + Math.floor((j / out) * vis);
+      let g1 = iStart + Math.floor(((j + 1) / out) * vis);
+      if (g1 <= g0) g1 = g0 + 1;
+      let mn = Infinity, mx = -Infinity;
+      for (let i = g0; i < g1 && i <= iEnd; i++) {
+        if (pts[i][0] < mn) mn = pts[i][0];
+        if (pts[i][1] > mx) mx = pts[i][1];
+      }
+      if (!isFinite(mn)) { mn = 0; mx = 0; }
+      const bc = (g0 + g1 - 1) / 2;                      // group center bin
+      const tBin = pk.tStart + ((bc + 0.5) / n) * pkSpan;
+      xs[j] = ((tBin - cur.tStart) / span) * w;
+      tops[j] = cx - mx * scale; // max (positive) → above center
+      bots[j] = cx - mn * scale; // min (negative) → below center
     }
+    const visN = out;
+
+    // Filled min/max envelope: quad-smoothed closed polygon + round-cap stroke.
+    ctx.fillStyle = WAVE_COLOR;
+    ctx.strokeStyle = WAVE_COLOR;
+    ctx.lineWidth = WAVE_STROKE_PX;
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    drawWaveEnvelope(ctx, visN, xs, tops, bots);
+    ctx.fill();
+    ctx.stroke();
   }, []);
 
-  // Margin-buffered peak fetching: fetch THREE viewport-spans (one span
-  // of margin each side) at matching density, then skip refetching while
-  // the view stays inside the buffer and the zoom stays within ~2x of
-  // the fetched resolution. Pans glide over the buffer with zero churn;
-  // only escaping it or a real zoom level change refetches — the old
-  // fetch-every-tick approach redrew and resolution-popped constantly.
-  const fetchedSpanRef = useRef(0);
+  // Whole-file peaks, fetched ONCE per file at high density. Drawing any
+  // zoom/pan is then a bounded subset-walk over this cached set (see draw's
+  // fold) — NO per-zoom refetch, which is what caused the standalone's
+  // zoom-out gaps (old peaks didn't cover the wider range) and resolution
+  // pops. This is WAVdesk's load-once model. ~1000 bins/sec (capped 200k)
+  // keeps deep zoom sharp; the cost is a single IPC on file load.
   useEffect(() => {
-    if (!filePath || duration <= 0 || vp.tEnd <= vp.tStart) return;
-    const span = vp.tEnd - vp.tStart;
-    const pk = peaksRef.current;
-    if (pk && pk.points.length > 0 && fetchedSpanRef.current > 0) {
-      const covered = vp.tStart >= pk.tStart - 1e-6 && vp.tEnd <= pk.tEnd + 1e-6;
-      const ratio = fetchedSpanRef.current / span;
-      if (covered && ratio > 0.45 && ratio < 2.2) return; // buffer still good
-    }
+    if (!filePath || duration <= 0) return;
     let stale = false;
-    const fs = Math.max(0, vp.tStart - span);
-    const fe = Math.min(duration, vp.tEnd + span);
-    const id = window.setTimeout(() => {
-      const w = containerRef.current?.clientWidth ?? 800;
-      const density = Math.round(w * 2 * ((fe - fs) / span));
-      void invoke<WaveData>('generate_waveform', {
-        path: filePath,
-        points: Math.min(16000, Math.max(768, density)),
-        startSec: fs,
-        endSec: fe,
-      }).then((data) => {
-        if (stale || !data?.success) return;
-        peaksRef.current = { points: data.points ?? [], tStart: fs, tEnd: fe };
-        fetchedSpanRef.current = span;
-        draw();
-      }).catch(() => { /* peaks are cosmetic; the overlay still works */ });
-    }, 120);
-    return () => { stale = true; window.clearTimeout(id); };
-  }, [filePath, duration, vp.tStart, vp.tEnd, draw]);
+    peaksRef.current = null; // drop the previous file's peaks (no stale flash)
+    const bins = Math.min(200_000, Math.max(4000, Math.round(duration * 1000)));
+    void invoke<WaveData>('generate_waveform', {
+      path: filePath, points: bins, startSec: 0, endSec: duration,
+    }).then((data) => {
+      if (stale || !data?.success) return;
+      peaksRef.current = { points: data.points ?? [], tStart: 0, tEnd: duration };
+      draw();
+    }).catch(() => { /* peaks are cosmetic; the overlay still works */ });
+    return () => { stale = true; };
+  }, [filePath, duration, draw]);
 
   // Redraw on resize (peaks refetch piggybacks on the next zoom/pan).
   useEffect(() => {
@@ -186,7 +287,7 @@ export const WaveformView: React.FC<WaveformViewProps> = ({
     if (performance.now() < trackpadActiveUntilRef.current) return;
     const rect = containerRef.current?.getBoundingClientRect();
     if (!rect || rect.width <= 0) return;
-    const cur = vpRef.current;
+    const cur = baseVp();
     const span = Math.max(1e-6, cur.tEnd - cur.tStart);
     const frac = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
     const pan = e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY);
@@ -197,7 +298,7 @@ export const WaveformView: React.FC<WaveformViewProps> = ({
       let t = cur.tEnd + delta;
       if (s < 0) { t -= s; s = 0; }
       if (t > duration) { s -= t - duration; t = duration; }
-      commitVp({ tStart: Math.max(0, s), tEnd: Math.min(duration, t) });
+      commitTarget({ tStart: Math.max(0, s), tEnd: Math.min(duration, t) });
       return;
     }
     const factor = Math.pow(1.0015, e.deltaY);
@@ -207,7 +308,7 @@ export const WaveformView: React.FC<WaveformViewProps> = ({
     let t = s + newSpan;
     if (s < 0) { t -= s; s = 0; }
     if (t > duration) { s -= t - duration; t = duration; s = Math.max(0, s); }
-    commitVp({ tStart: s, tEnd: t });
+    commitTarget({ tStart: s, tEnd: t });
   }, [duration]);
 
   // Precision-touchpad pinch/pan via the raw-HID subsystem
@@ -239,7 +340,7 @@ export const WaveformView: React.FC<WaveformViewProps> = ({
         ? Math.max(0, Math.min(1, (lastXRef.current - rect.left) / rect.width))
         : 0.5;
       // factor > 1 = fingers apart = zoom IN = the visible span shrinks.
-      const cur = vpRef.current;
+      const cur = baseVp();
       const span = Math.max(1e-6, cur.tEnd - cur.tStart);
       const newSpan = Math.max(MIN_SPAN_SEC, Math.min(duration, span / factor));
       const anchor = cur.tStart + frac * span;
@@ -247,25 +348,43 @@ export const WaveformView: React.FC<WaveformViewProps> = ({
       let t = s + newSpan;
       if (s < 0) { t -= s; s = 0; }
       if (t > duration) { s -= t - duration; t = duration; s = Math.max(0, s); }
-      commitVp({ tStart: s, tEnd: t });
+      commitTarget({ tStart: s, tEnd: t });
     }).then((fn) => { if (disposed) fn(); else unZoom = fn; });
     listen<[number, number]>('wd-trackpad-pan', (e) => {
       if (!hoverRef.current || duration <= 0) return;
       trackpadActiveUntilRef.current = Math.max(trackpadActiveUntilRef.current, performance.now() + 150);
-      const [dx] = e.payload ?? [0, 0];
-      if (!isFinite(dx) || dx === 0) return;
-      const cur = vpRef.current;
-      const span = Math.max(1e-6, cur.tEnd - cur.tStart);
-      // HID units → span fraction (touchpads span a few thousand units).
-      // Positive = the natural content-follows-fingers direction (matches
-      // WAVdesk's trackpad feel; the mouse-only inversion lives in the
-      // middle-drag handler, never here).
-      const delta = (dx / 1500) * span;
-      let s = cur.tStart + delta;
-      let t = cur.tEnd + delta;
+      const [dx, dy] = e.payload ?? [0, 0];
+      const cur = baseVp();
+      let span = Math.max(1e-6, cur.tEnd - cur.tStart);
+      let s = cur.tStart;
+      let t = cur.tEnd;
+      // Horizontal two-finger drag = pan. HID units → span fraction
+      // (touchpads span a few thousand units). Positive = the natural
+      // content-follows-fingers direction (matches WAVdesk's trackpad feel;
+      // the mouse-only inversion lives in the middle-drag handler, never here).
+      if (isFinite(dx) && dx !== 0) {
+        const delta = (dx / 1500) * span;
+        s += delta; t += delta;
+      }
+      // Vertical two-finger drag = zoom around the cursor. Mirrors WAVdesk's
+      // raw-HID handler exactly: newSpan = span * exp(dy * 0.003), so the
+      // zoom direction matches it (one drives the visible span larger, the
+      // other smaller). Without this, vertical swipe was dropped and did
+      // nothing — the reported bug.
+      if (isFinite(dy) && dy !== 0) {
+        const rect = containerRef.current?.getBoundingClientRect();
+        const frac = lastXRef.current != null && rect && rect.width > 0
+          ? Math.max(0, Math.min(1, (lastXRef.current - rect.left) / rect.width))
+          : 0.5;
+        const newSpan = Math.max(MIN_SPAN_SEC, Math.min(duration, span * Math.exp(dy * 0.003)));
+        const anchor = s + frac * span;   // anchor in the (possibly panned) view
+        s = anchor - frac * newSpan;
+        t = s + newSpan;
+        span = newSpan;
+      }
       if (s < 0) { t -= s; s = 0; }
-      if (t > duration) { s -= t - duration; t = duration; }
-      commitVp({ tStart: Math.max(0, s), tEnd: Math.min(duration, t) });
+      if (t > duration) { s -= t - duration; t = duration; s = Math.max(0, s); }
+      commitTarget({ tStart: Math.max(0, s), tEnd: Math.min(duration, t) });
     }).then((fn) => { if (disposed) fn(); else unPan = fn; });
     return () => { disposed = true; unZoom?.(); unPan?.(); unActive?.(); };
   }, [duration]);
@@ -277,7 +396,7 @@ export const WaveformView: React.FC<WaveformViewProps> = ({
     const rect = containerRef.current?.getBoundingClientRect();
     if (!rect || rect.width <= 0) return;
     const startX = e.clientX;
-    const orig = { ...vpRef.current };
+    const orig = { ...baseVp() };
     const span = Math.max(1e-6, orig.tEnd - orig.tStart);
     const onMove = (ev: PointerEvent) => {
       const delta = ((startX - ev.clientX) / rect.width) * span;
@@ -285,7 +404,7 @@ export const WaveformView: React.FC<WaveformViewProps> = ({
       let t = orig.tEnd + delta;
       if (s < 0) { t -= s; s = 0; }
       if (t > duration) { s -= t - duration; t = duration; }
-      commitVp({ tStart: Math.max(0, s), tEnd: Math.min(duration, t) });
+      commitTarget({ tStart: Math.max(0, s), tEnd: Math.min(duration, t) });
     };
     const onUp = () => {
       window.removeEventListener('pointermove', onMove);

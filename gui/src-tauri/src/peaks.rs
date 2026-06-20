@@ -73,7 +73,11 @@ fn open_wav(path: &str) -> Result<(std::fs::File, WavInfo), String> {
 pub struct WaveformData {
     pub success: bool,
     pub duration_sec: f64,
-    pub points: Vec<f32>, // max-abs per bin, 0..1, channel-max
+    // [min, max, rms] per bin (signed, -1..1; rms 0..1). min/max are the
+    // channel-extreme signed samples in the bin, so the GUI can paint the
+    // asymmetric min/max envelope (the DAW look) instead of a symmetric bar;
+    // rms backs an optional crest line. Matches WAVdesk's peak-bin shape.
+    pub points: Vec<[f32; 3]>,
 }
 
 /// Max-abs peak bins over [start_sec, end_sec) (whole file when absent).
@@ -90,7 +94,10 @@ pub async fn generate_waveform(
         let (mut f, info) = open_wav(&path)?;
         let sr = info.sample_rate as f64;
         let duration_sec = info.total_frames as f64 / sr;
-        let bins = points.clamp(1, 20_000) as usize;
+        // Up to 200k bins: the GUI fetches the WHOLE file once at high density
+        // and draws subsets (no per-zoom refetch = no gaps), so the bin budget
+        // has to cover deep zoom on a long clip. One-time cost per file.
+        let bins = points.clamp(1, 200_000) as usize;
 
         let lo_frame = ((start_sec.unwrap_or(0.0).max(0.0) * sr) as u64).min(info.total_frames);
         let hi_frame = match end_sec {
@@ -98,10 +105,17 @@ pub async fn generate_waveform(
             _ => info.total_frames,
         };
         let span = hi_frame.saturating_sub(lo_frame);
-        let mut peaks = vec![0f32; bins];
         if span == 0 {
-            return Ok(WaveformData { success: true, duration_sec, points: peaks });
+            return Ok(WaveformData { success: true, duration_sec, points: vec![[0.0, 0.0, 0.0]; bins] });
         }
+
+        // Per-bin signed min / max + running sum-of-squares for RMS. min/max
+        // start at the neutral extremes so an untouched bin (more bins than
+        // frames, at deep zoom) reports flat zero rather than a spurious spike.
+        let mut mins = vec![f32::INFINITY; bins];
+        let mut maxs = vec![f32::NEG_INFINITY; bins];
+        let mut sumsq = vec![0f64; bins];
+        let mut counts = vec![0u64; bins];
 
         f.seek(SeekFrom::Start(info.data_off + lo_frame * info.frame_bytes))
             .map_err(|e| e.to_string())?;
@@ -122,26 +136,34 @@ pub async fn generate_waveform(
                 let bin = (((frame_idx + i as u64) * bins as u64) / span) as usize;
                 let bin = bin.min(bins - 1);
                 let off = i * frame_bytes;
-                let mut amp = 0f32;
                 for c in 0..chans {
+                    // Signed sample (no abs) — min/max carry the polarity that
+                    // makes the envelope asymmetric.
                     let s = if info.is_float {
                         let o = off + c * 4;
-                        f32::from_le_bytes([buf[o], buf[o + 1], buf[o + 2], buf[o + 3]]).abs()
+                        f32::from_le_bytes([buf[o], buf[o + 1], buf[o + 2], buf[o + 3]])
                     } else {
                         let o = off + c * 2;
-                        (i16::from_le_bytes([buf[o], buf[o + 1]]) as f32 / 32768.0).abs()
+                        i16::from_le_bytes([buf[o], buf[o + 1]]) as f32 / 32768.0
                     };
-                    if s > amp {
-                        amp = s;
-                    }
-                }
-                if amp > peaks[bin] {
-                    peaks[bin] = amp;
+                    if s < mins[bin] { mins[bin] = s; }
+                    if s > maxs[bin] { maxs[bin] = s; }
+                    sumsq[bin] += (s as f64) * (s as f64);
+                    counts[bin] += 1;
                 }
             }
             frame_idx += frames as u64;
         }
-        Ok(WaveformData { success: true, duration_sec, points: peaks })
+        let points: Vec<[f32; 3]> = (0..bins)
+            .map(|b| {
+                if counts[b] == 0 {
+                    [0.0, 0.0, 0.0]
+                } else {
+                    [mins[b], maxs[b], (sumsq[b] / counts[b] as f64).sqrt() as f32]
+                }
+            })
+            .collect();
+        Ok(WaveformData { success: true, duration_sec, points })
     })
     .await
     .map_err(|e| format!("waveform join: {e}"))?

@@ -67,10 +67,14 @@ const BUFFER_AHEAD_SEC = 0.6;
 const BUFFER_AHEAD_REVERSE_SEC = 3.0;
 
 // Present frames this far AHEAD of the (audio-driven) clock to compensate for
-// the video pipeline's latency (decode → transport → ImageBitmap → canvas),
-// which otherwise leaves the picture a touch behind the sound. Tune to taste:
-// raise if video still lags audio, lower if it starts to lead.
-const VIDEO_AV_LEAD_SEC = 0.18;
+// the video pipeline's latency. Decode + transport are already absorbed by the
+// frame buffer (frames sit in `frames` ahead of the clock before display), so
+// the only UN-absorbed latency is the last hop — onFrame → canvas draw →
+// compositor → display ≈ 1-2 frames. 0.18 over-compensated: the picture ran
+// AHEAD of the sound/waveform by (lead - real latency), which the loop's
+// freeze used to mask and the seam fix exposed. Tune to taste: raise if video
+// lags audio, lower if it leads.
+const VIDEO_AV_LEAD_SEC = 0.05;
 
 // Seek debounce. Persistent commands are cheap (no re-spawn) but each still
 // costs the decoder a keyframe + decode-forward, so a held scrub coalesces;
@@ -715,11 +719,40 @@ export class NativeVideoEngine {
       else break;
     }
     if (idx < 0 && this.frames.length > 0) idx = 0; // nothing at the clock yet (just seeked) — show the earliest
+
+    // Gapless seam: within `lead` of the out-point the picture should already
+    // be showing the NEXT cycle's frames (the A/V lead carries across the wrap,
+    // exactly as it leads mid-cycle) — otherwise it FREEZES on the out-frame
+    // for ~`lead` seconds (the visible "last 5% stalls before it loops" bug),
+    // because the scan above stops at the wrap boundary and there's nothing
+    // past the out-point to advance to. Pick the post-wrap frame the WRAPPED
+    // lead points at and DISPLAY that. Buffer management (the idx splice +
+    // head-shed) is deliberately left on `idx`, so the pre-wrap tail is still
+    // released the normal way once the clock itself wraps — this only changes
+    // which already-buffered frame we paint.
+    let showIdx = idx;
+    if (this.decoderLoop && this.dir > 0 && this.loopRegion && this.clock + lead > this.loopRegion.outSec) {
+      const wrapped = this.loopRegion.inSec + (this.clock + lead - this.loopRegion.outSec);
+      let seam = -1;
+      for (let i = 1; i < this.frames.length; i++) {
+        if (this.frames[i].t < this.frames[i - 1].t) { seam = i; break; } // first post-wrap frame
+      }
+      if (seam >= 0) {
+        let j = seam;
+        for (let i = seam; i < this.frames.length; i++) {
+          if (i > seam && this.frames[i].t < this.frames[i - 1].t) break; // stop before a 2nd cycle's seam
+          if (this.frames[i].t <= wrapped) j = i; else break;
+        }
+        showIdx = j;
+      }
+    }
+
     if (idx > 0) {
       for (let i = 0; i < idx; i++) this.frames[i].bmp.close();
       this.frames.splice(0, idx);
+      showIdx = Math.max(0, showIdx - idx); // reindex after the splice
     }
-    const cur = this.frames[0];
+    const cur = this.frames[showIdx] ?? this.frames[0];
     if (cur && cur.t !== this.presentedT) {
       this.presentedT = cur.t;
       this.cb.onFrame(cur.bmp);
