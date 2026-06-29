@@ -53,6 +53,40 @@ fn tool_dir_name(name: &str) -> String {
     }
 }
 
+// yt-dlp's managed home, matching the C++ core's resolver
+// (paths.cpp latch_bin_path): %ProgramData%\Vacant Systems\Latch\bin. The
+// installer ACL-grants Users write here so the unelevated GUI can populate it.
+#[cfg(target_os = "windows")]
+fn latch_bin_dir() -> Option<PathBuf> {
+    std::env::var_os("ProgramData")
+        .map(|p| PathBuf::from(p).join("Vacant Systems").join("Latch").join("bin"))
+        .or_else(|| Some(PathBuf::from(r"C:\ProgramData\Vacant Systems\Latch\bin")))
+}
+
+/// Copy the bundled yt-dlp.exe into the core's managed bin dir on launch so a
+/// fresh install works fully offline. The C++ core only downloads yt-dlp from
+/// GitHub when it's absent, so seeding a non-zero copy here makes that a no-op.
+/// Idempotent (never overwrites an existing copy) and best-effort.
+#[cfg(target_os = "windows")]
+pub fn provision_ytdlp(resource_dir: &std::path::Path) {
+    let Some(dest_dir) = latch_bin_dir() else { return };
+    let dest = dest_dir.join("yt-dlp.exe");
+    if dest.exists() {
+        return; // already provisioned / downloaded — don't clobber a newer copy
+    }
+    let src = resource_dir.join("resources").join("ytdlp").join("yt-dlp.exe");
+    if !src.exists() {
+        return; // dev run / -SkipYtdlp: no bundle, core downloads at runtime
+    }
+    if std::fs::create_dir_all(&dest_dir).is_err() {
+        return;
+    }
+    let _ = std::fs::copy(&src, &dest);
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn provision_ytdlp(_resource_dir: &std::path::Path) {}
+
 fn installed_tool_fallbacks(name: &str) -> Vec<PathBuf> {
     let exe_name = if cfg!(windows) {
         format!("{}.exe", name)
@@ -63,6 +97,9 @@ fn installed_tool_fallbacks(name: &str) -> Vec<PathBuf> {
     let mut out = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
+            // Bundled core: tauri resources install into <install>/coredist/
+            // next to the GUI exe (NSIS resource_dir == install root).
+            out.push(dir.join("coredist").join(&exe_name));
             // Installed layout: the CLI ships right next to this GUI exe.
             out.push(dir.join(&exe_name));
             if let Some(vendor) = dir.parent() {
@@ -131,6 +168,12 @@ pub(crate) fn find_tool_binary(name: &str, configured: &str) -> Result<PathBuf, 
         tool_dir_name(name),
         format!(r"%USERPROFILE%\Dev\{}\build", name),
     ))
+}
+
+/// Resolve this app's own CLI core (latch.exe) for self-registration into the
+/// shared discovery manifest. Returns None if it can't be found.
+pub(crate) fn resolve_self_core() -> Option<PathBuf> {
+    find_tool_binary("latch", "").ok()
 }
 
 pub(crate) fn spawn_tool(

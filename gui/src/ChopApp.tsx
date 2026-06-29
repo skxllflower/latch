@@ -537,6 +537,7 @@ export default function ChopApp() {
   const onOurFileRef = useRef(false); onOurFileRef.current = onOurFile;
   const playStateRef = useRef(playState); playStateRef.current = playState;
   const videoPlayingRef = useRef(false); videoPlayingRef.current = videoPlaying;
+  const auditionIdRef = useRef(auditionId); auditionIdRef.current = auditionId;
 
   const playWhole = useCallback(() => {
     if (!audioPath) return;
@@ -695,8 +696,41 @@ export default function ChopApp() {
       // (and therefore the end's relation to the start) is preserved.
       const s = await zeroCross(r.startSec);
       if (s != null) setRegions(moveRegion(regionsRef.current, r.id, s, dur));
+      // Re-anchor the playhead to the moved region's new start. r is the
+      // post-drag (pre-snap) region, so newStart = s ?? r.startSec and the
+      // width is unchanged.
+      const newStart = s != null ? s : r.startSec;
+      const newEnd = newStart + (r.endSec - r.startSec);
+      const armedMoved = auditionIdRef.current === info.id;
+      const wasPlaying = hasVideo
+        ? videoPlayingRef.current
+        : (isPlayingRef.current && onOurFileRef.current);
+      setCursorSec(newStart);
+      if (hasVideo) {
+        if (armedMoved) {
+          // The looping region moved: pause → snap → re-arm the loop →
+          // resume (if it was playing) so the next pass starts cleanly at
+          // the new spot instead of finishing the stale loop.
+          videoRef.current?.pause();
+          videoRef.current?.seek(newStart);
+          videoRef.current?.setLoop(newStart, newEnd);
+          if (wasPlaying) videoRef.current?.play();
+        } else if (!wasPlaying) {
+          videoRef.current?.seek(newStart); // not playing → park the frame + playhead
+        }
+        // playing + moved a different region → leave playback undisturbed
+      } else if (onOurFileRef.current && (playStateRef.current === 'playing' || playStateRef.current === 'paused')) {
+        if (armedMoved && wasPlaying) {
+          playbackEngine.pause();
+          playbackEngine.seek(newStart);
+          void playbackEngine.resume();
+        } else if (!wasPlaying) {
+          playbackEngine.seek(newStart); // paused → move the play position + playhead
+        }
+        // playing + moved a different region → leave playback undisturbed
+      }
     }
-  }, [durationSec, setRegions, zeroCross]);
+  }, [durationSec, setRegions, zeroCross, hasVideo]);
 
   // Chapters are a NAVIGATION index (list popover + waveform ticks), not
   // region authors — seeding 25 regions on click buried the user's own
@@ -1001,7 +1035,15 @@ export default function ChopApp() {
     // release beats the render, kill the chip immediately and just leave
     // the finished clip in Latch Clips.
     let released = false;
-    const onUp = () => { released = true; };
+    let handedOff = false;
+    const onUp = () => {
+      released = true;
+      // Kill the chip the INSTANT the button comes up — while still
+      // rendering, behind a native confirm dialog, anything. The only
+      // exception is once the OS drag has taken over (handedOff): there the
+      // chip is that drag's own transparent visual and DoDragDrop owns its end.
+      if (!handedOff) void endOverlayDrag();
+    };
     window.addEventListener('pointerup', onUp);
     window.addEventListener('pointercancel', onUp);
     const chip = await buildDragChip(r, video);
@@ -1024,7 +1066,9 @@ export default function ChopApp() {
         // The clip lives in the persistent clips folder; if this drop lands on
         // a folder/desktop the OS copies it there and the native side deletes
         // our now-redundant copy (app drops that reference the path keep it).
+        handedOff = true;
         await invoke('start_os_file_drag', { paths: [path], previewPng: null, transparent: true, cleanupTempOnShellDrop: true });
+        void endOverlayDrag(); // DoDragDrop finished — ensure the chip is gone
       }
     } catch (err) {
       setClip(r.id, 'error');

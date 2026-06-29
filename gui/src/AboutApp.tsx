@@ -8,6 +8,7 @@ import React, { useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { X } from 'lucide-react';
+import appIcon from './assets/app-icon.svg';
 
 const VERSION = '1.0';
 
@@ -66,6 +67,7 @@ export default function AboutApp() {
 
       {/* Identity */}
       <div className="flex flex-col items-center gap-0.5 pt-5 pb-4 shrink-0 border-b border-zinc-900">
+        <img src={appIcon} alt="" draggable={false} className="w-14 h-14 mb-2" />
         <span className="text-[1.125rem] font-bold tracking-[0.3em] text-zinc-100 pl-[0.3em]">LATCH</span>
         <span className="text-[0.5625rem] uppercase tracking-wider text-zinc-500">by Vacant Systems</span>
         <span className="text-[0.5625rem] tabular-nums text-zinc-600">Version {VERSION}</span>

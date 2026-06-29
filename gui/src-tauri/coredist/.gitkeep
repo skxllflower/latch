@@ -1,0 +1,5 @@
+# Keeps coredist/ present so tauri.conf's `resources` glob always matches (dev +
+# cargo builds work with no staged core). tools/build-release.ps1 stages
+# latch.exe here for release bundles; it installs into <install>/coredist/ next
+# to the GUI exe, where tools.rs resolves it. (ffmpeg/yt-dlp are self-provisioned
+# at runtime, not bundled.)

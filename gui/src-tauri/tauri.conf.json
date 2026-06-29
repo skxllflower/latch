@@ -33,6 +33,15 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
+    "windows": {
+      "nsis": {
+        "installMode": "perMachine",
+        "installerIcon": "icons/icon.ico",
+        "startMenuFolder": "Vacant Systems",
+        "installerHooks": "nsis-hooks.nsh"
+      }
+    },
+    "resources": ["coredist/**/*", "resources/ytdlp/**/*"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

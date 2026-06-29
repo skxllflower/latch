@@ -13,6 +13,7 @@ mod cursor;
 mod os_drag;
 mod peaks;
 mod tools;
+mod registry;
 #[cfg(target_os = "windows")]
 mod touchpad_raw_input;
 mod video_stream_server;
@@ -47,6 +48,14 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            use tauri::Manager;
+            // Self-register our CLI core so WAVdesk can discover this install.
+            registry::register_self();
+            // Provision the bundled yt-dlp into the core's managed bin dir so a
+            // fresh install works offline (no first-run GitHub download).
+            if let Ok(rd) = app.path().resource_dir() {
+                tools::provision_ytdlp(&rd);
+            }
             // Pre-spawn the drag-overlay window hidden — it's both the OS
             // drag SOURCE (see os_drag.rs) and the chip's render surface.
             let overlay_url = WebviewUrl::App("/?wd=drag-overlay".into());

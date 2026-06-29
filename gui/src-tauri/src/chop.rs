@@ -61,10 +61,19 @@ pub fn latch_clips_dir(app: AppHandle) -> Result<String, String> {
     Ok(dir.to_string_lossy().into_owned())
 }
 
-// Pick a non-colliding output path: "<stem> (2).<ext>", … on collision.
+// Pick a non-colliding output path: "<stem> (2).<ext>", … on collision, and
+// ATOMICALLY reserve it. create_new succeeds only if the file doesn't already
+// exist, so two processes racing the same name (e.g. standalone Latch + the
+// in-WAVdesk chop, both writing to Documents/Latch Clips) can't both pick it —
+// the loser's create_new fails and it moves to the next candidate. The clip
+// render (ffmpeg -y) overwrites this empty reservation. Plain existence checks
+// raced: both apps saw "doesn't exist" before either wrote, then clobbered.
 fn unique_output(output: &str) -> String {
+    let reserve = |path: &std::path::Path| -> bool {
+        std::fs::OpenOptions::new().write(true).create_new(true).open(path).is_ok()
+    };
     let p = std::path::Path::new(output);
-    if !p.exists() {
+    if reserve(p) {
         return output.to_string();
     }
     let dir = p.parent().unwrap_or_else(|| std::path::Path::new("."));
@@ -76,7 +85,7 @@ fn unique_output(output: &str) -> String {
         .unwrap_or_default();
     for n in 2..=9999u32 {
         let cand = dir.join(format!("{stem} ({n}){ext}"));
-        if !cand.exists() {
+        if reserve(&cand) {
             return cand.to_string_lossy().into_owned();
         }
     }

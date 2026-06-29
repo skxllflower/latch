@@ -10,6 +10,7 @@
 // same way it does in Lathe.
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import appIcon from './assets/app-icon.svg';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
@@ -1396,7 +1397,7 @@ export default function ExtractApp() {
         data-tauri-drag-region
         className="h-7 bg-zinc-950 border-b border-zinc-800 flex items-center px-2 shrink-0"
       >
-        <Download size={11} className="text-zinc-400 mr-1.5" />
+        <img src={appIcon} alt="" draggable={false} className="w-3.5 h-3.5 mr-1.5" />
         <span
           data-tauri-drag-region
           className="text-[0.625rem] font-bold uppercase tracking-tight text-zinc-300"
