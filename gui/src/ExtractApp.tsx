@@ -419,6 +419,7 @@ export default function ExtractApp() {
     running: boolean;
     log:     string[];
     failed?: boolean;
+    jobId?:  string;   // so the overlay can cancel a hung `yt-dlp -U`
   }>({ running: false, log: [] });
 
   // Time-range trim — "00:30-02:15" style. Persisted across restarts
@@ -1166,7 +1167,7 @@ export default function ExtractApp() {
   const onUpdateYtDlp = useCallback(async () => {
     if (updateState.running) return;
     const jobId = uid();
-    setUpdateState({ running: true, log: [] });
+    setUpdateState({ running: true, log: [], jobId });
     try {
       await invoke('latch_update_ytdlp', {
         windowLabel: 'main',
@@ -2418,6 +2419,17 @@ export default function ExtractApp() {
                 </div>
               ))}
             </div>
+          )}
+          {updateState.running && (
+            <button
+              onClick={() => {
+                if (updateState.jobId) void invoke('latch_cancel', { jobId: updateState.jobId });
+                setUpdateState({ running: false, log: [] });
+              }}
+              className="mt-1 px-3 h-5 text-[0.5rem] uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border border-zinc-700"
+            >
+              Cancel
+            </button>
           )}
           {!updateState.running && (
             <button

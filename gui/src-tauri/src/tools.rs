@@ -407,6 +407,19 @@ pub async fn latch_probe(
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let line = stdout.lines().last().unwrap_or("").trim();
+    if line.is_empty() {
+        // The core produced no JSON line — surface yt-dlp / core stderr + the
+        // exit code instead of the opaque "EOF" parse error, so the real cause
+        // (a yt-dlp extraction failure on a stale binary, a SmartScreen/AV
+        // kill, a missing/blocked exe) is visible and actionable.
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let msg = stderr.trim();
+        return Err(if msg.is_empty() {
+            format!("probe failed (core exit {:?}) with no output — the link may be unsupported, or yt-dlp may need updating.", output.status.code())
+        } else {
+            format!("probe failed: {}", msg.lines().last().unwrap_or(msg))
+        });
+    }
     let v: serde_json::Value = serde_json::from_str(line)
         .map_err(|e| format!("probe parse: {e} (raw: {line})"))?;
 
