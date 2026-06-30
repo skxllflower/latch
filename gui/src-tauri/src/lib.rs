@@ -55,6 +55,9 @@ pub fn run() {
             // fresh install works offline (no first-run GitHub download).
             if let Ok(rd) = app.path().resource_dir() {
                 tools::provision_ytdlp(&rd);
+                // Seed the bundled ffmpeg into the SHARED bin so the chop/clip
+                // video features work standalone (no WAVdesk install required).
+                tools::provision_ffmpeg(&rd);
             }
             // Pre-spawn the drag-overlay window hidden — it's both the OS
             // drag SOURCE (see os_drag.rs) and the chip's render surface.

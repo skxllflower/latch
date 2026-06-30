@@ -11,13 +11,16 @@
 #   pwsh tools/build-release.ps1 -Clean          # wipe build/ first
 #   pwsh tools/build-release.ps1 -SkipCpp        # reuse existing C++ build
 #   pwsh tools/build-release.ps1 -SkipBundle     # stop after staging the core
+#   pwsh tools/build-release.ps1 -SkipYtdlp      # ship without bundled yt-dlp
+#   pwsh tools/build-release.ps1 -SkipFfmpeg     # ship without bundled ffmpeg
 
 param(
     [string]$Configuration = 'Release',
     [switch]$Clean,
     [switch]$SkipCpp,
     [switch]$SkipBundle,
-    [switch]$SkipYtdlp
+    [switch]$SkipYtdlp,
+    [switch]$SkipFfmpeg
 )
 
 $ErrorActionPreference = 'Stop'
@@ -132,6 +135,30 @@ if (Test-Path $ytdlpExe) {
         New-Item -ItemType Directory -Force -Path $ytdlpDir | Out-Null
         if (-not (Test-Path (Join-Path $ytdlpDir '.gitkeep'))) { Set-Content -Path (Join-Path $ytdlpDir '.gitkeep') -Value '' }
         Write-Host "  shipping without bundled yt-dlp (runtime download fallback)" -ForegroundColor Yellow
+    }
+}
+
+# Vendor ffmpeg into resources the same way. tools.rs provision_ffmpeg seeds the
+# SHARED bin (%ProgramData%\Vacant Systems\Shared\bin) from it on launch so the
+# chop/clip video features work standalone without WAVdesk. Same flaky-fetch
+# fallback: a .keep placeholder keeps the resources glob valid and the core's
+# runtime download takes over.
+$ffmpegDir = Join-Path $tauriDir 'resources\ffmpeg'
+$ffmpegExe = Join-Path $ffmpegDir 'ffmpeg.exe'
+if (Test-Path $ffmpegExe) {
+    Write-Host "  ffmpeg already vendored -> reusing"
+} elseif ($SkipFfmpeg) {
+    New-Item -ItemType Directory -Force -Path $ffmpegDir | Out-Null
+    if (-not (Test-Path (Join-Path $ffmpegDir '.gitkeep'))) { Set-Content -Path (Join-Path $ffmpegDir '.gitkeep') -Value '' }
+    Write-Host "  -SkipFfmpeg: shipping without bundled ffmpeg (runtime download fallback)" -ForegroundColor Yellow
+} else {
+    try {
+        & (Join-Path $PSScriptRoot 'fetch-ffmpeg.ps1') -Dest $ffmpegDir
+    } catch {
+        Write-Host "  ffmpeg fetch failed: $($_.Exception.Message.Split([char]10)[0])" -ForegroundColor Yellow
+        New-Item -ItemType Directory -Force -Path $ffmpegDir | Out-Null
+        if (-not (Test-Path (Join-Path $ffmpegDir '.gitkeep'))) { Set-Content -Path (Join-Path $ffmpegDir '.gitkeep') -Value '' }
+        Write-Host "  shipping without bundled ffmpeg (runtime download fallback)" -ForegroundColor Yellow
     }
 }
 

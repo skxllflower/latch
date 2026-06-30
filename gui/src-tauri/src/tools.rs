@@ -87,6 +87,43 @@ pub fn provision_ytdlp(resource_dir: &std::path::Path) {
 #[cfg(not(target_os = "windows"))]
 pub fn provision_ytdlp(_resource_dir: &std::path::Path) {}
 
+// ffmpeg's managed home, matching the C++ core's resolver
+// (paths.cpp shared_bin_path -> shared_root()/Shared/bin):
+// %ProgramData%\Vacant Systems\Shared\bin. This is the SHARED bin (not Latch's
+// own bin where yt-dlp lives) — all three Vacant Systems apps resolve ffmpeg
+// here. The installer ACL-grants Users write so the unelevated GUI can seed it.
+#[cfg(target_os = "windows")]
+fn shared_bin_dir() -> Option<PathBuf> {
+    std::env::var_os("ProgramData")
+        .map(|p| PathBuf::from(p).join("Vacant Systems").join("Shared").join("bin"))
+        .or_else(|| Some(PathBuf::from(r"C:\ProgramData\Vacant Systems\Shared\bin")))
+}
+
+/// Copy the bundled ffmpeg.exe into the shared managed bin dir on launch so a
+/// fresh, standalone install (no WAVdesk) has ffmpeg for the chop/clip video
+/// features. The C++ core only downloads ffmpeg from GitHub when it's absent, so
+/// seeding a non-zero copy here makes that a no-op. Idempotent (never overwrites
+/// an existing copy) and best-effort.
+#[cfg(target_os = "windows")]
+pub fn provision_ffmpeg(resource_dir: &std::path::Path) {
+    let Some(dest_dir) = shared_bin_dir() else { return };
+    let dest = dest_dir.join("ffmpeg.exe");
+    if dest.exists() {
+        return; // already provisioned / downloaded — don't clobber a newer copy
+    }
+    let src = resource_dir.join("resources").join("ffmpeg").join("ffmpeg.exe");
+    if !src.exists() {
+        return; // dev run / -SkipFfmpeg: no bundle, core downloads at runtime
+    }
+    if std::fs::create_dir_all(&dest_dir).is_err() {
+        return;
+    }
+    let _ = std::fs::copy(&src, &dest);
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn provision_ffmpeg(_resource_dir: &std::path::Path) {}
+
 fn installed_tool_fallbacks(name: &str) -> Vec<PathBuf> {
     let exe_name = if cfg!(windows) {
         format!("{}.exe", name)
