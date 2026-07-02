@@ -40,6 +40,26 @@ fn registry_path() -> Option<PathBuf> {
     Some(vendor_root()?.join(shared).join("registry.json"))
 }
 
+/// Resolve a sibling app's executable via the shared discovery manifest. The
+/// OTHER Vacant Systems apps (WAVdesk, Lathe) write their own entry here on
+/// install/launch; we READ it to locate their CLI core (e.g. lathe.exe) without
+/// having to guess the install layout. The recorded path must still exist on
+/// disk — an uninstall may leave a stale entry — so a present-but-dangling entry
+/// resolves to None and the caller falls through to its other tiers. Best-effort:
+/// a missing / corrupt / entry-less file yields None.
+pub fn resolved_binary(name: &str) -> Option<PathBuf> {
+    let p = registry_path()?;
+    let root: Value = std::fs::read_to_string(&p)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())?;
+    let path = root.get(name)?.get("path")?.as_str()?;
+    if path.is_empty() {
+        return None;
+    }
+    let pb = PathBuf::from(path);
+    pb.exists().then_some(pb)
+}
+
 /// Resolve our CLI core and record it under "latch" so WAVdesk can drive it.
 /// No-op if the core can't be found or the shared dir can't be resolved.
 pub fn register_self() {

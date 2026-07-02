@@ -96,26 +96,32 @@ fn shared_bin_dir() -> Option<PathBuf> {
         .or_else(|| Some(PathBuf::from(r"C:\ProgramData\Vacant Systems\Shared\bin")))
 }
 
-/// Copy the bundled ffmpeg.exe into the shared managed bin dir on launch so a
-/// fresh, standalone install (no WAVdesk) has ffmpeg for the chop/clip video
-/// features. The C++ core only downloads ffmpeg from GitHub when it's absent, so
-/// seeding a non-zero copy here makes that a no-op. Idempotent (never overwrites
-/// an existing copy) and best-effort.
+/// Copy the bundled ffmpeg.exe AND ffprobe.exe into the shared managed bin dir on
+/// launch so a fresh, standalone install (no WAVdesk) has both for the chop/clip
+/// video features and yt-dlp post-processing. yt-dlp discovers ffprobe next to
+/// ffmpeg (--ffmpeg-location), so both must land in the same shared bin. The C++
+/// core only downloads from GitHub when they're absent, so seeding non-zero
+/// copies here makes that a no-op. Best-effort; each binary is checked/copied
+/// INDEPENDENTLY so a pre-existing ffmpeg (from an older bundle that shipped no
+/// ffprobe) doesn't short-circuit ffprobe delivery.
 #[cfg(target_os = "windows")]
 pub fn provision_ffmpeg(resource_dir: &std::path::Path) {
     let Some(dest_dir) = shared_bin_dir() else { return };
-    let dest = dest_dir.join("ffmpeg.exe");
-    if dest.exists() {
-        return; // already provisioned / downloaded — don't clobber a newer copy
-    }
-    let src = resource_dir.join("resources").join("ffmpeg").join("ffmpeg.exe");
-    if !src.exists() {
-        return; // dev run / -SkipFfmpeg: no bundle, core downloads at runtime
-    }
     if std::fs::create_dir_all(&dest_dir).is_err() {
         return;
     }
-    let _ = std::fs::copy(&src, &dest);
+    let src_dir = resource_dir.join("resources").join("ffmpeg");
+    for bin in ["ffmpeg.exe", "ffprobe.exe"] {
+        let dest = dest_dir.join(bin);
+        if dest.exists() {
+            continue; // already provisioned / downloaded — don't clobber
+        }
+        let src = src_dir.join(bin);
+        if src.exists() {
+            let _ = std::fs::copy(&src, &dest);
+        }
+        // else: dev run / -SkipFfmpeg — no bundle, core downloads at runtime
+    }
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -132,11 +138,17 @@ fn installed_tool_fallbacks(name: &str) -> Vec<PathBuf> {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             // Bundled core: tauri resources install into <install>/coredist/
-            // next to the GUI exe (NSIS resource_dir == install root).
+            // next to the GUI exe (NSIS resource_dir == install root). This is
+            // THIS app's own coredist — the self-resolution path for latch.exe.
             out.push(dir.join("coredist").join(&exe_name));
             // Installed layout: the CLI ships right next to this GUI exe.
             out.push(dir.join(&exe_name));
             if let Some(vendor) = dir.parent() {
+                // Sibling app under one vendor root. The CLI core lives under
+                // its OWN coredist\ (e.g. Lathe\coredist\lathe.exe), so check
+                // that before the legacy flat sibling — otherwise a standalone
+                // Latch never finds an installed Lathe (the laptop bug).
+                out.push(vendor.join(&app_dir).join("coredist").join(&exe_name));
                 out.push(vendor.join(&app_dir).join(&exe_name));
             }
         }
@@ -147,6 +159,12 @@ fn installed_tool_fallbacks(name: &str) -> Vec<PathBuf> {
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(r"C:\Program Files"));
         let vendor = pf.join("Vacant Systems");
+        // The Tauri NSIS perMachine layout puts each GUI at
+        // <Program Files>\Vacant Systems\<App>\ and its CLI core one level
+        // deeper under coredist\ (bundled resource). Check that first, then the
+        // legacy flat layouts. This is what resolves a sibling Lathe install at
+        // …\Vacant Systems\Lathe\coredist\lathe.exe.
+        out.push(vendor.join(&app_dir).join("coredist").join(&exe_name));
         out.push(vendor.join(&app_dir).join(&exe_name));
         out.push(vendor.join(&exe_name));
     }
@@ -286,10 +304,13 @@ struct Tier {
 
 // Ordered resolution tiers for `name` — SINGLE source of ordering truth shared
 // by find_tool_binary and tool_binary_probe. Release order: configured → env →
-// installed (Latch has no shared-registry tier). The dev-checkout tier is
-// DEBUG-ONLY so an ancient dev core never shadows the installed binary in a
-// shipped build. A stale/missing (or, for lathe, incapable) candidate is
-// skipped and resolution falls through.
+// registry → installed. The registry tier reads the shared discovery manifest
+// (…\Vacant Systems\Shared\registry.json) that WAVdesk / Lathe write on
+// install, so a sibling Lathe is found at its recorded path even if it lives
+// outside the default install layout. The dev-checkout tier is DEBUG-ONLY so an
+// ancient dev core never shadows the installed binary in a shipped build. A
+// stale/missing (or, for lathe, incapable) candidate is skipped and resolution
+// falls through.
 fn build_tiers(name: &str, configured: &str) -> Vec<Tier> {
     let mut tiers = Vec::new();
     let configured = configured.trim();
@@ -317,6 +338,12 @@ fn build_tiers(name: &str, configured: &str) -> Vec<Tier> {
         enabled: cfg!(debug_assertions),
     });
     tiers.push(Tier {
+        source: "registry",
+        message: "shared registry".into(),
+        cands: crate::registry::resolved_binary(name).into_iter().collect(),
+        enabled: true,
+    });
+    tiers.push(Tier {
         source: "installed",
         message: "default install location".into(),
         cands: installed_tool_fallbacks(name),
@@ -342,8 +369,21 @@ fn resolve_tiers<'a>(
     None
 }
 
+// The effective `configured` override: an explicit caller value wins; otherwise
+// the persisted Settings override for tools that expose one (lathe here — the
+// core's own yt-dlp/ffmpeg overrides reach the C++ resolver via env instead, see
+// settings::apply_tool_env). Unknown names (our own latch core) pass through.
+fn effective_configured(name: &str, configured: &str) -> String {
+    let c = configured.trim();
+    if !c.is_empty() {
+        return c.to_string();
+    }
+    crate::settings::tool_override(name)
+}
+
 pub(crate) fn find_tool_binary(name: &str, configured: &str) -> Result<PathBuf, String> {
-    let tiers = build_tiers(name, configured);
+    let configured = effective_configured(name, configured);
+    let tiers = build_tiers(name, &configured);
     if let Some((_, p)) = resolve_tiers(&tiers, &|c| candidate_ok(name, c)) {
         return Ok(p);
     }
@@ -369,6 +409,9 @@ pub(crate) fn spawn_tool(
 ) -> Result<(Child, std::process::ChildStdout), String> {
     let mut cmd = Command::new(&binary);
     cmd.args(&args).stdout(Stdio::piped()).stderr(Stdio::piped());
+    // Thread the user's yt-dlp / ffmpeg overrides down to the C++ core (no-op
+    // for a lathe child, which reads its own env).
+    crate::settings::apply_tool_env(&mut cmd);
 
     #[cfg(target_os = "windows")]
     {
@@ -582,6 +625,7 @@ pub async fn latch_probe(
 
     let mut cmd = Command::new(&bin);
     cmd.args(&args).stdout(Stdio::piped()).stderr(Stdio::piped());
+    crate::settings::apply_tool_env(&mut cmd);
     #[cfg(target_os = "windows")]
     {
         cmd.creation_flags(CREATE_NO_WINDOW);
@@ -665,6 +709,7 @@ pub async fn latch_expand_url(
 
     let mut cmd = Command::new(&bin);
     cmd.args(&args).stdout(Stdio::piped()).stderr(Stdio::piped());
+    crate::settings::apply_tool_env(&mut cmd);
     #[cfg(target_os = "windows")]
     {
         cmd.creation_flags(CREATE_NO_WINDOW);
@@ -755,18 +800,17 @@ pub async fn latch_bootstrap(
 pub struct ToolBinaryStatus {
     pub resolved: bool,
     pub path:     String,
-    pub source:   String, // "configured" | "env" | "dev" | "installed" | "missing"
+    pub source:   String, // "configured" | "env" | "dev" | "registry" | "installed" | "missing"
     pub message:  String,
 }
 
-#[tauri::command]
-pub fn tool_binary_probe(name: String, configured: String) -> ToolBinaryStatus {
-    // Shares find_tool_binary's exact chain (build_tiers), so latheStatus
-    // reflects what the chop video path would resolve — including the cached
-    // lathe capability probe, so an ancient/incapable lathe is skipped here too
-    // and the GUI never reports a dead lathe as connected.
-    let tiers = build_tiers(&name, &configured);
-    if let Some((t, p)) = resolve_tiers(&tiers, &|c| candidate_ok(&name, c)) {
+// Pure tier resolution for `name` under an exact `configured` value (no Settings
+// fallback). Shares find_tool_binary's chain (build_tiers) — including the cached
+// lathe capability probe, so an ancient/incapable lathe is skipped here too and
+// the GUI never reports a dead lathe as connected.
+fn probe_impl(name: &str, configured: &str) -> ToolBinaryStatus {
+    let tiers = build_tiers(name, configured);
+    if let Some((t, p)) = resolve_tiers(&tiers, &|c| candidate_ok(name, c)) {
         return ToolBinaryStatus {
             resolved: true,
             path:     p.display().to_string(),
@@ -785,6 +829,122 @@ pub fn tool_binary_probe(name: String, configured: String) -> ToolBinaryStatus {
             env_var,
             format!(r"%USERPROFILE%\Dev\{}\build", name),
         ),
+    }
+}
+
+#[tauri::command]
+pub fn tool_binary_probe(name: String, configured: String) -> ToolBinaryStatus {
+    // Settings-aware: an empty caller value falls back to the persisted override
+    // (lathe), so latheStatus reflects what the chop video path would resolve.
+    let configured = effective_configured(&name, &configured);
+    probe_impl(&name, &configured)
+}
+
+fn core_tool_exe(name: &str) -> &'static str {
+    match name {
+        "yt-dlp" => if cfg!(windows) { "yt-dlp.exe" } else { "yt-dlp" },
+        "ffmpeg" => if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" },
+        _ => "",
+    }
+}
+
+// Managed home mirroring paths.cpp: ffmpeg in the SHARED bin, yt-dlp in Latch's
+// own bin, under the machine-wide vendor root (ProgramData on Windows).
+fn core_tool_managed_dir(name: &str) -> Option<PathBuf> {
+    let shared = name == "ffmpeg";
+    #[cfg(windows)]
+    {
+        let pd = std::env::var_os("ProgramData")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"));
+        let root = pd.join("Vacant Systems");
+        Some(if shared {
+            root.join("Shared").join("bin")
+        } else {
+            root.join("Latch").join("bin")
+        })
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let root = PathBuf::from(std::env::var_os("HOME")?)
+            .join("Library/Application Support/Vacant Systems");
+        Some(if shared { root.join("Shared/bin") } else { root.join("Latch/bin") })
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let base = std::env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))?;
+        let root = base.join("vacant-systems");
+        Some(if shared { root.join("shared/bin") } else { root.join("latch/bin") })
+    }
+}
+
+fn core_tool_status(exists: bool, path: &std::path::Path, source: &str, message: &str) -> ToolBinaryStatus {
+    ToolBinaryStatus {
+        resolved: exists,
+        path:     path.display().to_string(),
+        source:   source.into(),
+        message:  message.into(),
+    }
+}
+
+// Mirror of the C++ core's resolve_binary (paths.cpp) for the tools latch.exe
+// owns — yt-dlp and ffmpeg: explicit override → LATCH_<TOOL> env → portable copy
+// next to the core → managed home. Reported for the Settings readout so it
+// matches what the core actually uses at runtime. KEEP IN LOCKSTEP with
+// paths.cpp resolved_ffmpeg / resolved_ytdlp.
+fn resolve_core_tool(name: &str, configured: &str) -> ToolBinaryStatus {
+    let exe = core_tool_exe(name);
+    let env_var = match name {
+        "yt-dlp" => "LATCH_YTDLP",
+        "ffmpeg" => "LATCH_FFMPEG",
+        _ => "",
+    };
+    // 1. explicit override (the configured tier)
+    let c = configured.trim();
+    if !c.is_empty() {
+        let p = PathBuf::from(c);
+        return core_tool_status(p.exists(), &p, "configured", "explicit override");
+    }
+    // 2. env var the C++ core reads
+    if let Ok(v) = std::env::var(env_var) {
+        if !v.is_empty() {
+            let p = PathBuf::from(&v);
+            return core_tool_status(p.exists(), &p, "env", &format!("from {env_var}"));
+        }
+    }
+    // 3. portable copy next to the latch core
+    let core = resolve_self_core();
+    if let Some(dir) = core.as_deref().and_then(std::path::Path::parent) {
+        let p = dir.join(exe);
+        if p.exists() {
+            return core_tool_status(true, &p, "portable", "next to latch core");
+        }
+    }
+    // 4. managed home (bootstrap's download target)
+    if let Some(dir) = core_tool_managed_dir(name) {
+        let p = dir.join(exe);
+        let exists = p.exists();
+        return core_tool_status(
+            exists,
+            &p,
+            if exists { "managed" } else { "missing" },
+            if exists { "managed install" } else { "not installed (fetched on first use)" },
+        );
+    }
+    core_tool_status(false, std::path::Path::new(""), "missing", "unresolved")
+}
+
+/// Settings-window readout: resolve `name` under an EXPLICIT `configured`
+/// override, with NO Settings fallback — the field value IS the override, and an
+/// empty value previews the auto resolution. yt-dlp / ffmpeg mirror the C++
+/// core; lathe (and the latch core) use the shared tier chain.
+#[tauri::command]
+pub fn resolve_tool_status(name: String, configured: String) -> ToolBinaryStatus {
+    match name.as_str() {
+        "yt-dlp" | "ffmpeg" => resolve_core_tool(&name, &configured),
+        _ => probe_impl(&name, &configured),
     }
 }
 
@@ -980,6 +1140,31 @@ mod tests {
         ];
         let (t, _) = resolve_tiers(&tiers, &|_| true).expect("resolves");
         assert_eq!(t.source, "dev");
+    }
+
+    #[test]
+    fn registry_wins_over_installed() {
+        // The shared-registry tier sits ahead of the installed-guess tier, so a
+        // manifest-recorded Lathe path is preferred over the layout guess.
+        let tiers = vec![
+            tier("registry", r"C:\Program Files\Vacant Systems\Lathe\coredist\lathe.exe", true),
+            tier("installed", r"C:\Program Files\Vacant Systems\Lathe\lathe.exe", true),
+        ];
+        let (t, _) = resolve_tiers(&tiers, &|_| true).expect("resolves");
+        assert_eq!(t.source, "registry");
+    }
+
+    // The sibling-app install layout is <Program Files>\Vacant Systems\<App>\
+    // coredist\<app>.exe. That coredist path MUST be an installed candidate or a
+    // standalone Latch can't find an installed Lathe (the laptop bug).
+    #[cfg(windows)]
+    #[test]
+    fn installed_fallbacks_include_vendor_coredist() {
+        std::env::set_var("ProgramFiles", r"C:\Program Files");
+        let cands = installed_tool_fallbacks("lathe");
+        let want =
+            PathBuf::from(r"C:\Program Files\Vacant Systems\Lathe\coredist\lathe.exe");
+        assert!(cands.contains(&want), "expected {want:?} among {cands:?}");
     }
 
     #[test]

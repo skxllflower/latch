@@ -52,11 +52,18 @@ pub fn sweep_temp_root() {
 #[tauri::command]
 pub fn latch_clips_dir(app: AppHandle) -> Result<String, String> {
     use tauri::Manager;
-    let docs = app
-        .path()
-        .document_dir()
-        .map_err(|e| format!("no Documents dir: {e}"))?;
-    let dir = docs.join("Vacant Systems").join("Latch Clips");
+    // A configured clips folder (Settings) wins; empty falls back to the
+    // Documents default below.
+    let configured = crate::settings::load().clips_dir;
+    let dir = if !configured.trim().is_empty() {
+        PathBuf::from(configured.trim())
+    } else {
+        let docs = app
+            .path()
+            .document_dir()
+            .map_err(|e| format!("no Documents dir: {e}"))?;
+        docs.join("Vacant Systems").join("Latch Clips")
+    };
     std::fs::create_dir_all(&dir).map_err(|e| format!("clips dir: {e}"))?;
     Ok(dir.to_string_lossy().into_owned())
 }

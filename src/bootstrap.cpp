@@ -126,12 +126,57 @@ bool ffmpeg_present() {
   return ffmpeg_exists();
 }
 
+bool ffprobe_present() {
+  return ffprobe_exists();
+}
+
 bool ytdlp_present() {
   return ytdlp_exists();
 }
 
+namespace {
+
+// Install one binary found in the extract dir into the shared bin via
+// tmp + rename so a concurrent reader (or a sibling app's bootstrap racing us
+// in the shared dir) never sees a partial binary. A failed rename with the
+// target now present means the racer won — treated as success. Returns true
+// when `target` ends up present, sets *err on failure.
+bool install_from_extract(const fs::path& extract_d, const std::string& filename,
+                          const fs::path& target, std::string* err) {
+  fs::path found = find_recursive(extract_d, filename);
+  if (found.empty()) {
+    if (err) *err = filename + " not found in extracted archive";
+    return false;
+  }
+  std::error_code ec;
+  fs::path tmp = target;
+  tmp += ".tmp";
+  fs::copy_file(found, tmp, fs::copy_options::overwrite_existing, ec);
+  std::string install_err = ec ? ec.message() : std::string();
+  if (!ec) {
+    std::error_code rename_ec;
+    fs::rename(tmp, target, rename_ec);
+    if (rename_ec) {
+      install_err = rename_ec.message();
+      fs::remove(tmp, ec);
+    }
+  }
+  std::error_code exists_ec;
+  if (!fs::exists(target, exists_ec)) {
+    if (err) *err = "could not install " + filename + " into shared bin: " + install_err;
+    return false;
+  }
+  return true;
+}
+
+}  // namespace
+
 bool ensure_ffmpeg() {
-  if (ffmpeg_present()) return true;
+  // ffprobe is required too: yt-dlp's post-processing (metadata/merge)
+  // discovers it next to ffmpeg via --ffmpeg-location. Both ship in the same
+  // BtbN archive, so one download installs both. Re-fetch if EITHER is missing
+  // (covers an older install that seeded ffmpeg without ffprobe).
+  if (ffmpeg_present() && ffprobe_present()) return true;
 
   emit_bootstrap("download", "ffmpeg");
 
@@ -144,6 +189,7 @@ bool ensure_ffmpeg() {
   fs::path zip_path  = bin_dir / "_ffmpeg_download.zip";
   fs::path extract_d = bin_dir / "_ffmpeg_extract";
   fs::path target    = bin_dir / "ffmpeg.exe";
+  fs::path probe_tgt = bin_dir / "ffprobe.exe";
 
   std::error_code ec;
   fs::remove(zip_path, ec);
@@ -172,34 +218,12 @@ bool ensure_ffmpeg() {
     return false;
   }
 
-  fs::path found = find_recursive(extract_d, "ffmpeg.exe");
-  if (found.empty()) {
-    emit_bootstrap("failed", "ffmpeg", 0, 0,
-                   "ffmpeg.exe not found in extracted archive");
-    fs::remove(zip_path, ec);
-    fs::remove_all(extract_d, ec);
-    return false;
-  }
-
-  // Install via tmp + rename so a concurrent reader (or a sibling app's
-  // bootstrap racing us in the shared dir) never sees a partial binary.
-  // A failed rename with the target now present means the racer won.
-  fs::path tmp = target;
-  tmp += ".tmp";
-  fs::copy_file(found, tmp, fs::copy_options::overwrite_existing, ec);
-  std::string install_err = ec ? ec.message() : std::string();
-  if (!ec) {
-    std::error_code rename_ec;
-    fs::rename(tmp, target, rename_ec);
-    if (rename_ec) {
-      install_err = rename_ec.message();
-      fs::remove(tmp, ec);
-    }
-  }
-  std::error_code exists_ec;
-  if (!fs::exists(target, exists_ec)) {
-    emit_bootstrap("failed", "ffmpeg", 0, 0,
-                   "could not install ffmpeg.exe into shared bin: " + install_err);
+  std::string install_err;
+  bool installed_ffmpeg  = install_from_extract(extract_d, "ffmpeg.exe",  target,    &install_err);
+  bool installed_ffprobe = installed_ffmpeg &&
+                           install_from_extract(extract_d, "ffprobe.exe", probe_tgt, &install_err);
+  if (!installed_ffmpeg || !installed_ffprobe) {
+    emit_bootstrap("failed", "ffmpeg", 0, 0, install_err);
     fs::remove(zip_path, ec);
     fs::remove_all(extract_d, ec);
     return false;
@@ -208,7 +232,8 @@ bool ensure_ffmpeg() {
   fs::remove(zip_path, ec);
   fs::remove_all(extract_d, ec);
 
-  write_binary_manifest(path_to_utf8(target), url, "-version");
+  write_binary_manifest(path_to_utf8(target),    url, "-version");
+  write_binary_manifest(path_to_utf8(probe_tgt), url, "-version");
 
   emit_bootstrap("done", "ffmpeg");
   return true;

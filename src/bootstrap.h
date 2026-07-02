@@ -3,6 +3,7 @@
 namespace latch {
 
 bool ffmpeg_present();
+bool ffprobe_present();
 bool ytdlp_present();
 
 // Best-effort: ensures the named binary is on disk next to the wrapper.

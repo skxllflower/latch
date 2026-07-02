@@ -29,15 +29,21 @@ Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $zip -MaximumRedirection 1
 if ((Get-Item $zip).Length -lt 5000000) { Remove-Item $zip -Force; throw "ffmpeg zip too small (got an error page?)" }
 
 Expand-Archive -Path $zip -DestinationPath $tmp -Force
-# BtbN ships it at <root>/bin/ffmpeg.exe - walk to find it.
+# BtbN ships them at <root>/bin/ffmpeg.exe + ffprobe.exe - walk to find both.
+# ffprobe is required by yt-dlp's post-processing (metadata/merge); yt-dlp
+# discovers it next to ffmpeg (--ffmpeg-location), so it must land in the same
+# shared bin dir.
 $exe = Get-ChildItem -Path $tmp -Recurse -Filter 'ffmpeg.exe' | Select-Object -First 1
 if (-not $exe) { throw "ffmpeg.exe not found in the extracted package" }
+$probe = Get-ChildItem -Path $tmp -Recurse -Filter 'ffprobe.exe' | Select-Object -First 1
+if (-not $probe) { throw "ffprobe.exe not found in the extracted package" }
 
 New-Item -ItemType Directory -Force -Path $Dest | Out-Null
 Copy-Item -Path $exe.FullName -Destination (Join-Path $Dest 'ffmpeg.exe') -Force
+Copy-Item -Path $probe.FullName -Destination (Join-Path $Dest 'ffprobe.exe') -Force
 # GPL compliance: ship the build's license text alongside the binary.
 $lic = Get-ChildItem -Path $tmp -Recurse -Include 'LICENSE*','COPYING*' | Select-Object -First 1
 if ($lic) { Copy-Item -Path $lic.FullName -Destination (Join-Path $Dest 'LICENSE.txt') -Force }
 
 Remove-Item -Recurse -Force $tmp
-Write-Host "Placed: $(Join-Path $Dest 'ffmpeg.exe')"
+Write-Host "Placed: $(Join-Path $Dest 'ffmpeg.exe') + ffprobe.exe"

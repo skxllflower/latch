@@ -31,6 +31,12 @@ std::string ytdlp_cache_dir();
 // target so bootstrap and error messages agree on where it belongs.
 std::string resolved_ffmpeg();
 
+// The ffprobe binary to use (resolution mirrors ffmpeg — env LATCH_FFPROBE,
+// portable next-to-exe, then Shared\bin). yt-dlp needs ffprobe alongside
+// ffmpeg for its post-processing (metadata/merge); it discovers ffprobe in
+// ffmpeg's directory, so both live in Shared\bin together.
+std::string resolved_ffprobe();
+
 // The yt-dlp binary to use. Resolution order mirrors ffmpeg:
 //   1. LATCH_YTDLP env var
 //   2. yt-dlp.exe next to latch.exe (portable override)
@@ -39,6 +45,7 @@ std::string resolved_ytdlp();
 
 // True when the resolved binary points at an existing file.
 bool ffmpeg_exists();
+bool ffprobe_exists();
 bool ytdlp_exists();
 
 // One-time tidy-up: pre-vendor-folder bootstraps left ffmpeg.exe and

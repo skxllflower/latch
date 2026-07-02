@@ -21,7 +21,7 @@ import {
   CheckCircle2, XCircle, Loader2, ChevronRight, ChevronDown, CloudDownload,
   Link2, Link2Off, RefreshCw, Cookie, AlertTriangle, CheckSquare,
   Terminal, LayoutList, Image as ImageIcon, Film, Music, Check, Search, Minus,
-  Scissors, Info, FileText, ShieldAlert,
+  Scissors, Info, FileText, ShieldAlert, Settings as SettingsIcon,
 } from 'lucide-react';
 import { useTheme, THEME_BG } from './theme';
 import { startOverlayDrag, endOverlayDrag } from './internalDragHandoff';
@@ -29,6 +29,8 @@ import { confirmInWindow, infoInWindow } from './dialogs';
 import { open as openFileDialog } from '@tauri-apps/plugin-dialog';
 import { openChopWindow } from './chopWindow';
 import { openAboutWindow } from './aboutWindow';
+import { openSettingsWindow } from './settingsWindow';
+import { getSettings } from './settings';
 import { WdSelect, type WdSelectOption } from './WdSelect';
 
 interface LatchOptionsPayload {
@@ -272,15 +274,18 @@ export default function ExtractApp() {
   });
   const [items, setItems]           = useState<ExtractItem[]>([]);
 
-  // First-run defaulting: if the user has never picked an output dir,
-  // seed it from the platform's user-Downloads folder. Tauri's
-  // downloadDir() does the OS-specific lookup (USERPROFILE\Downloads,
-  // ~/Downloads, XDG_DOWNLOAD_DIR). Saved choice always wins; this
-  // only fires on a truly empty initial state. Async because the
-  // path lookup goes through the IPC boundary.
+  // First-run defaulting: if the user has never picked an output dir, seed it
+  // from the configured Settings download folder, else the platform's user
+  // Downloads folder (Tauri's downloadDir() does the OS-specific lookup:
+  // USERPROFILE\Downloads, ~/Downloads, XDG_DOWNLOAD_DIR). Saved choice always
+  // wins; this only fires on a truly empty initial state.
   useEffect(() => {
     if (outputDir) return;
     void (async () => {
+      try {
+        const s = await getSettings();
+        if (s.downloadDir) { setOutputDir(s.downloadDir); return; }
+      } catch { /* fall through to the OS Downloads folder */ }
       try {
         const d = await downloadDir();
         if (d) setOutputDir(d);
@@ -2341,11 +2346,19 @@ export default function ExtractApp() {
                 {activeCount} live
               </span>
             )}
+            {/* Settings — gear next to About, opens the Settings window. */}
+            <button
+              onClick={() => { void openSettingsWindow(); }}
+              className="ml-auto flex items-center text-zinc-600 hover:text-zinc-300 shrink-0 cursor-pointer"
+              title="Settings"
+            >
+              <SettingsIcon size={10} className="shrink-0" />
+            </button>
             {/* About — info glyph opposite the latch.exe chip; hover
                 reveals the "ABOUT" label, click opens the About window. */}
             <button
               onClick={() => { void openAboutWindow(); }}
-              className="wd-about ml-auto flex items-center gap-1 text-zinc-600 hover:text-zinc-300 shrink-0 cursor-pointer"
+              className="wd-about flex items-center gap-1 text-zinc-600 hover:text-zinc-300 shrink-0 cursor-pointer"
               title="About Latch"
             >
               <span className="wd-about-label uppercase tracking-wider text-[0.5rem]">About</span>

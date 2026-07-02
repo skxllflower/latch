@@ -4,6 +4,7 @@ import ExtractApp from './ExtractApp';
 import ChopApp from './ChopApp';
 import DialogApp from './DialogApp';
 import AboutApp from './AboutApp';
+import SettingsApp from './SettingsApp';
 import DragOverlayApp from './DragOverlayApp';
 import { subscribeOpenDialogs, getOpenDialogCount } from './dialogWindows';
 import './styles.css';
@@ -11,7 +12,8 @@ import './styles.css';
 // Window routing by query param — the main window is the Extract app,
 // `?wd=chop` is the Chop satellite (chopWindow.ts), `?wd=dialog` is a
 // spawned dialog window (dialogWindows.ts), `?wd=about` is the About
-// window (aboutWindow.ts).
+// window (aboutWindow.ts), `?wd=settings` is the Settings window
+// (settingsWindow.ts).
 const wd = new URLSearchParams(window.location.search).get('wd');
 
 // No native browser context menu anywhere except text fields.
@@ -38,6 +40,8 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     <DialogApp />
   ) : wd === 'about' ? (
     <AboutApp />
+  ) : wd === 'settings' ? (
+    <SettingsApp />
   ) : wd === 'drag-overlay' ? (
     <DragOverlayApp />
   ) : wd === 'chop' ? (

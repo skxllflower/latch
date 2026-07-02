@@ -12,6 +12,7 @@ mod native_drag_chip;
 mod cursor;
 mod os_drag;
 mod peaks;
+mod settings;
 mod tools;
 mod registry;
 #[cfg(target_os = "windows")]
@@ -104,6 +105,9 @@ pub fn run() {
             tools::latch_update_ytdlp,
             tools::latch_bootstrap,
             tools::tool_binary_probe,
+            tools::resolve_tool_status,
+            settings::settings_get,
+            settings::settings_set,
             tools::os_reveal_path,
             tools::os_open_path,
             tools::os_open_url,

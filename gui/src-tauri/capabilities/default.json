@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "default permissions for the Latch window",
-  "windows": ["main", "chop", "dialog-*", "about", "drag-overlay"],
+  "windows": ["main", "chop", "dialog-*", "about", "settings", "drag-overlay"],
   "permissions": [
     "core:default",
     "core:window:allow-start-dragging",

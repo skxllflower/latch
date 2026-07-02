@@ -72,7 +72,7 @@ export const VideoPreview = forwardRef<VideoViewHandle, VideoViewProps>(
         <div className="w-full h-full flex flex-col items-center justify-center gap-1 px-4 text-center select-none">
           <div className="text-zinc-400 text-xs">Lathe is required to preview this video.</div>
           <div className="text-zinc-500 text-[11px]">
-            Install Lathe or set its path in Settings → Processing.
+            Install Lathe to enable video preview.
           </div>
         </div>
       );

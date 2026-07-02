@@ -35,6 +35,14 @@ const char* ffmpeg_name() {
 #endif
 }
 
+const char* ffprobe_name() {
+#ifdef _WIN32
+  return "ffprobe.exe";
+#else
+  return "ffprobe";
+#endif
+}
+
 const char* ytdlp_name() {
 #ifdef _WIN32
   return "yt-dlp.exe";
@@ -182,6 +190,10 @@ std::string resolved_ffmpeg() {
   return resolve_binary("LATCH_FFMPEG", ffmpeg_name(), shared_bin_path());
 }
 
+std::string resolved_ffprobe() {
+  return resolve_binary("LATCH_FFPROBE", ffprobe_name(), shared_bin_path());
+}
+
 std::string resolved_ytdlp() {
   return resolve_binary("LATCH_YTDLP", ytdlp_name(), latch_bin_path());
 }
@@ -196,8 +208,9 @@ static bool binary_present(const std::string& path_utf8) {
   return !ec && sz > 0;
 }
 
-bool ffmpeg_exists() { return binary_present(resolved_ffmpeg()); }
-bool ytdlp_exists()  { return binary_present(resolved_ytdlp()); }
+bool ffmpeg_exists()  { return binary_present(resolved_ffmpeg()); }
+bool ffprobe_exists() { return binary_present(resolved_ffprobe()); }
+bool ytdlp_exists()   { return binary_present(resolved_ytdlp()); }
 
 void migrate_legacy_binaries() {
   migrate_one(ffmpeg_name(), shared_bin_path(), "-version");

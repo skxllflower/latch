@@ -145,8 +145,11 @@ if (Test-Path $ytdlpExe) {
 # runtime download takes over.
 $ffmpegDir = Join-Path $tauriDir 'resources\ffmpeg'
 $ffmpegExe = Join-Path $ffmpegDir 'ffmpeg.exe'
-if (Test-Path $ffmpegExe) {
-    Write-Host "  ffmpeg already vendored -> reusing"
+$ffprobeExe = Join-Path $ffmpegDir 'ffprobe.exe'
+# Require BOTH ffmpeg.exe and ffprobe.exe: an older bundle vendored only
+# ffmpeg, so re-fetch when ffprobe is missing (yt-dlp post-processing needs it).
+if ((Test-Path $ffmpegExe) -and (Test-Path $ffprobeExe)) {
+    Write-Host "  ffmpeg + ffprobe already vendored -> reusing"
 } elseif ($SkipFfmpeg) {
     New-Item -ItemType Directory -Force -Path $ffmpegDir | Out-Null
     if (-not (Test-Path (Join-Path $ffmpegDir '.gitkeep'))) { Set-Content -Path (Join-Path $ffmpegDir '.gitkeep') -Value '' }
