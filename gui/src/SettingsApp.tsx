@@ -162,7 +162,7 @@ export default function SettingsApp() {
         </span>
         <button
           onClick={close}
-          className="ml-auto text-zinc-500 hover:text-zinc-100 hover:bg-zinc-800 p-0.5 transition-none cursor-pointer"
+          className="ml-auto text-zinc-500 hover:text-zinc-100 hover:bg-zinc-800 p-0.5 transition-none cursor-default"
           title="Close"
         >
           <X size={11} />

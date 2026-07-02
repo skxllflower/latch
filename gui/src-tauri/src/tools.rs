@@ -422,6 +422,27 @@ pub(crate) fn spawn_tool(
         .spawn()
         .map_err(|e| format!("failed to spawn {}: {}", binary.display(), e))?;
     crate::job_object::assign_child(&child);
+    // Drain stderr on a detached thread. We pipe it (above) but the reader only
+    // ever consumes stdout — a chatty child (yt-dlp/ffmpeg noise) could fill the
+    // OS stderr pipe buffer and block its own writes, wedging the whole download
+    // ("hung forever" with no output). Reading to EOF keeps it flowing and
+    // surfaces the tail for post-mortem.
+    if let Some(mut stderr) = child.stderr.take() {
+        std::thread::spawn(move || {
+            use std::io::Read;
+            let mut buf = Vec::new();
+            let _ = stderr.read_to_end(&mut buf);
+            if !buf.is_empty() {
+                let text = String::from_utf8_lossy(&buf);
+                let lines: Vec<&str> = text.lines().collect();
+                let start = lines.len().saturating_sub(20);
+                let tail = lines[start..].join("\n");
+                if !tail.trim().is_empty() {
+                    eprintln!("[latch child stderr]\n{tail}");
+                }
+            }
+        });
+    }
     let stdout = child.stdout.take().ok_or_else(|| "no stdout".to_string())?;
     Ok((child, stdout))
 }

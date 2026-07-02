@@ -1,11 +1,17 @@
 #include "progress.h"
 
 #include <cstdio>
+#include <mutex>
 #include <string>
 
 namespace latch {
 
 namespace {
+
+// Serialize every emit: progress lines come from the subprocess reader thread
+// while the stall watchdog writes from its own thread. Without the lock two
+// NDJSON lines could interleave and corrupt the stream.
+std::mutex g_emit_mutex;
 
 std::string json_escape(const std::string& s) {
   std::string out;
@@ -31,6 +37,7 @@ std::string json_escape(const std::string& s) {
 }
 
 void emit(const std::string& json) {
+  std::lock_guard<std::mutex> lock(g_emit_mutex);
   std::fputs(json.c_str(), stdout);
   std::fputc('\n', stdout);
   std::fflush(stdout);
@@ -82,6 +89,17 @@ void progress_error(const std::string& message) {
     "{\"type\":\"error\",\"message\":\"%s\"}",
     json_escape(message).c_str());
   emit(buf);
+}
+
+void progress_log(const std::string& phase, const std::string& message) {
+  // std::string (not a fixed buffer) — an invocation summary or a stderr line
+  // can run past a couple KB and must not be silently truncated.
+  std::string json = "{\"type\":\"log\",\"phase\":\"";
+  json += json_escape(phase);
+  json += "\",\"message\":\"";
+  json += json_escape(message);
+  json += "\"}";
+  emit(json);
 }
 
 }

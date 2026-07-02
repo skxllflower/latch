@@ -205,34 +205,43 @@ export const WaveformView: React.FC<WaveformViewProps> = ({
     const iStart = Math.max(0, Math.floor(((cur.tStart - pk.tStart) / pkSpan) * n) - 1);
     const iEnd = Math.min(n - 1, Math.ceil(((cur.tEnd - pk.tStart) / pkSpan) * n) + 1);
     if (iStart >= iEnd) return;
-    const vis = iEnd - iStart + 1;
 
-    // Bound the control-point count to ~2 per CSS pixel. The whole-file peak
-    // set can be 200k bins; zoomed out, that's far more than the canvas can
-    // show, so fold each output point over its bin group via min-of-mins /
-    // max-of-maxes (preserves the outer envelope exactly). Zoomed in, vis is
-    // small and each output maps to one bin (group size 1 = no fold).
-    const out = Math.max(2, Math.min(vis, Math.ceil(w * 2)));
+    // Decimate with a stride PINNED to the bin grid, not the viewport. WAVdesk
+    // gets stable columns for free from its fixed tier grid; here the whole
+    // file is one dense array, so we emulate it: derive the fold stride from
+    // the ZOOM (visible seconds only, via span) so it stays constant while
+    // panning, and snap group boundaries to multiples of that stride. The old
+    // code distributed `vis` bins across the columns by viewport fraction, so
+    // as iStart slid a fraction of a bin every frame the min/max landing in
+    // each column reshuffled — that reshuffle IS the "sparkle"/shimmer the
+    // standalone had and WAVdesk doesn't. Target ~1 column per DEVICE pixel
+    // (crispest, matches the WebGL renderer's density); step 1 = one bin per
+    // column when zoomed in (no fold).
+    const binsPerSec = n / pkSpan;
+    const targetCols = Math.max(2, Math.ceil(w * dpr));
+    const step = Math.max(1, Math.round((span * binsPerSec) / targetCols));
+    const gFirst = Math.floor(iStart / step) * step;    // grid-aligned start
+    const out = Math.max(2, Math.floor((iEnd - gFirst) / step) + 1);
     const xs = new Float32Array(out);
     const tops = new Float32Array(out);
     const bots = new Float32Array(out);
-    for (let j = 0; j < out; j++) {
-      const g0 = iStart + Math.floor((j / out) * vis);
-      let g1 = iStart + Math.floor(((j + 1) / out) * vis);
-      if (g1 <= g0) g1 = g0 + 1;
+    let visN = 0;
+    for (let g0 = gFirst; g0 <= iEnd; g0 += step) {
+      const lo = Math.max(0, g0);
+      const g1 = Math.min(g0 + step, n);
       let mn = Infinity, mx = -Infinity;
-      for (let i = g0; i < g1 && i <= iEnd; i++) {
+      for (let i = lo; i < g1; i++) {
         if (pts[i][0] < mn) mn = pts[i][0];
         if (pts[i][1] > mx) mx = pts[i][1];
       }
       if (!isFinite(mn)) { mn = 0; mx = 0; }
-      const bc = (g0 + g1 - 1) / 2;                      // group center bin
+      const bc = (lo + g1 - 1) / 2;                      // group center bin
       const tBin = pk.tStart + ((bc + 0.5) / n) * pkSpan;
-      xs[j] = ((tBin - cur.tStart) / span) * w;
-      tops[j] = cx - mx * scale; // max (positive) → above center
-      bots[j] = cx - mn * scale; // min (negative) → below center
+      xs[visN] = ((tBin - cur.tStart) / span) * w;
+      tops[visN] = cx - mx * scale; // max (positive) → above center
+      bots[visN] = cx - mn * scale; // min (negative) → below center
+      visN++;
     }
-    const visN = out;
 
     // Filled min/max envelope: quad-smoothed closed polygon + round-cap stroke.
     ctx.fillStyle = WAVE_COLOR;

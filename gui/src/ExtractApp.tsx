@@ -586,6 +586,13 @@ export default function ExtractApp() {
           else if (event.stage === 'failed') setBootstrap({ stage: 'failed', binary: event.binary, message: event.message });
           return;
         }
+        if (event.type === 'log') {
+          // Diagnostic line from the wrapper (invocation summary, elapsed +
+          // exit code, stall notices, stderr tail). Surface to the console so a
+          // slow/failed download names itself; kept out of item state.
+          console.debug(`[latch:${event.phase ?? 'log'}]`, event.message ?? '', jobId ? `(job ${jobId})` : '');
+          return;
+        }
         setItems(prev => prev.map(it => {
           if (it.jobId !== jobId) return it;
           if (event.type === 'info') {

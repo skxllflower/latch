@@ -91,7 +91,8 @@ std::string utf16_to_utf8(const std::wstring& s) {
 }
 
 int run_subprocess(const std::vector<std::string>& argv,
-                   const std::function<void(const std::string&)>& on_line) {
+                   const std::function<void(const std::string&)>& on_line,
+                   const std::function<void()>& on_idle) {
   g_cancelled.store(false);
   g_last_error.clear();
   if (argv.empty()) { g_last_error = "empty argv"; return -1; }
@@ -163,8 +164,29 @@ int run_subprocess(const std::vector<std::string>& argv,
 
   std::string line;
   char buf[4096];
-  DWORD n = 0;
-  while (ReadFile(rd, buf, sizeof(buf), &n, nullptr) && n > 0) {
+  // Poll the pipe instead of a blocking ReadFile so a running-but-silent child
+  // (a stalled download) can be surfaced via on_idle. PeekNamedPipe tells us
+  // how much is buffered without consuming it; on an empty buffer we wait
+  // briefly on the process and, if it's still alive, fire the idle hook.
+  for (;;) {
+    DWORD avail = 0;
+    if (!PeekNamedPipe(rd, nullptr, 0, nullptr, &avail, nullptr)) {
+      break;  // write end closed → EOF
+    }
+    if (avail == 0) {
+      if (WaitForSingleObject(pi.hProcess, 50) == WAIT_OBJECT_0) {
+        // Child exited — one more drain pass for anything still buffered.
+        if (!PeekNamedPipe(rd, nullptr, 0, nullptr, &avail, nullptr) || avail == 0) {
+          break;
+        }
+      } else {
+        if (on_idle) on_idle();  // running + silent → stall check
+        continue;
+      }
+    }
+    DWORD want = avail < sizeof(buf) ? avail : static_cast<DWORD>(sizeof(buf));
+    DWORD n = 0;
+    if (!ReadFile(rd, buf, want, &n, nullptr) || n == 0) break;
     for (DWORD i = 0; i < n; ++i) {
       char c = buf[i];
       if (c == '\n' || c == '\r') {
@@ -207,7 +229,8 @@ std::string exe_dir() {
 #else  // POSIX
 
 int run_subprocess(const std::vector<std::string>& argv,
-                   const std::function<void(const std::string&)>& on_line) {
+                   const std::function<void(const std::string&)>& on_line,
+                   const std::function<void()>& /*on_idle*/) {
   g_cancelled.store(false);
   g_last_error.clear();
   if (argv.empty()) { g_last_error = "empty argv"; return -1; }

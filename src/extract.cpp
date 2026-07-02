@@ -7,6 +7,9 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
+#include <cstdio>
+#include <deque>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -226,12 +229,63 @@ ExtractResult extract(const std::string& url,
   }
   argv.push_back(url);
 
+  // --- Diagnostics ---------------------------------------------------------
+  // Log the exact invocation (cookie file paths redacted) so a failed or slow
+  // download names itself in the GUI's log stream instead of leaving us to
+  // guess. Paired with the elapsed/exit/stderr-tail log emitted at the end.
+  {
+    std::string summary;
+    summary.reserve(512);
+    for (size_t i = 0; i < argv.size(); ++i) {
+      if (i) summary += ' ';
+      // The value after --cookies is a filesystem path (often under the user's
+      // home); keep --cookies-from-browser (just a browser name).
+      if (i > 0 && argv[i - 1] == "--cookies") { summary += "<redacted>"; continue; }
+      summary += argv[i];
+    }
+    progress_log("invoke", summary);
+  }
+
   bool had_error = false;
   std::string final_path;
   std::string last_error_text;
 
-  run_subprocess(argv, [&](const std::string& line) {
+  // Last raw (non-protocol) lines — yt-dlp warnings/errors, ffmpeg noise —
+  // replayed on failure so the cause is legible after the fact.
+  std::deque<std::string> raw_tail;
+  const size_t kRawTailMax = 12;
+
+  // Stall detector. Any child output counts as activity; the on_idle hook (run
+  // from run_subprocess's poll loop, same thread — no watchdog) logs a stall
+  // line naming the current phase after 30s of silence, so a hung first
+  // download (network wedge) is diagnosable instead of a silent spinner.
+  using clock = std::chrono::steady_clock;
+  auto now_ms = [] {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+             clock::now().time_since_epoch()).count();
+  };
+  auto fmt1 = [](double v) {
+    char b[32]; std::snprintf(b, sizeof(b), "%.1f", v); return std::string(b);
+  };
+  long long last_activity  = now_ms();
+  long long last_stall_log = 0;
+  bool      downloading    = false;   // false = resolving, true = downloading
+  auto t0 = clock::now();
+
+  auto on_idle = [&] {
+    long long n = now_ms();
+    if (n - last_activity >= 30000 && n - last_stall_log >= 30000) {
+      last_stall_log = n;
+      progress_log("stall",
+        "no progress for " + std::to_string((n - last_activity) / 1000) +
+        "s (phase: " + (downloading ? "downloading" : "resolving") + ")");
+    }
+  };
+
+  int rc = run_subprocess(argv, [&](const std::string& line) {
+    last_activity = now_ms();
     if (line.rfind("LATCH_PROG\t", 0) == 0) {
+      downloading = true;
       std::string rest = line.substr(11);
       std::string parts[3];
       size_t pi = 0, start = 0;
@@ -253,6 +307,7 @@ ExtractResult extract(const std::string& url,
       return;
     }
     if (line.rfind("LATCH_INFO\t", 0) == 0) {
+      downloading = true;
       std::string rest = line.substr(11);
       std::string title = rest;
       double duration = 0.0;
@@ -274,13 +329,30 @@ ExtractResult extract(const std::string& url,
     if (line.rfind("ERROR:", 0) == 0) {
       last_error_text = line;
       had_error = true;
-      return;
+      // Fall through so the error line is also kept in the tail buffer.
     }
-  });
+    // Any non-protocol line (yt-dlp text, warnings, ffmpeg) → tail buffer.
+    raw_tail.push_back(line);
+    if (raw_tail.size() > kRawTailMax) raw_tail.pop_front();
+  }, on_idle);
+
+  double elapsed_s = std::chrono::duration<double>(clock::now() - t0).count();
 
   if (was_cancelled()) {
+    progress_log("cancelled",
+      "yt-dlp cancelled after " + fmt1(elapsed_s) + "s (exit " + std::to_string(rc) + ")");
     progress_cancelled();
     return ExtractResult::Cancelled;
+  }
+
+  const bool failed = had_error || final_path.empty();
+  if (failed) {
+    progress_log("failed",
+      "yt-dlp exit " + std::to_string(rc) + " after " + fmt1(elapsed_s) + "s");
+    for (const auto& l : raw_tail) progress_log("stderr", l);
+  } else {
+    progress_log("done", "yt-dlp ok in " + fmt1(elapsed_s) + "s (exit " +
+      std::to_string(rc) + ")");
   }
 
   if (had_error) {

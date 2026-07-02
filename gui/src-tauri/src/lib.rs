@@ -50,6 +50,13 @@ pub fn run() {
         })
         .setup(|app| {
             use tauri::Manager;
+            // Startup sweep of the chop temp root: a crash or hard-kill never
+            // runs the window-destroy / app-exit sweeps, so downloaded previews
+            // and HD files can strand in %TEMP%\latch-chop across launches.
+            // Safe to wipe wholesale here — single-instance means no other
+            // session owns an in-flight dir at startup. Mirrors WAVdesk's
+            // startup cache-sweep pattern.
+            chop::sweep_temp_root();
             // Self-register our CLI core so WAVdesk can discover this install.
             registry::register_self();
             // Provision the bundled yt-dlp into the core's managed bin dir so a

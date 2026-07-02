@@ -360,6 +360,16 @@ export default function ChopApp() {
     lastPushRef.current = { tag: '', at: 0 };
     try { playbackEngine.stop(); } catch { /* ignore */ }
 
+    // Wipe the PREVIOUS session's temp downloads before allocating a fresh
+    // dir. Re-seeding this window (loading a different clip) or a Retry would
+    // otherwise orphan the old preview/HD downloads in %TEMP% until the window
+    // finally closes — they pile up across a long chopping session.
+    if (tempDirRef.current) {
+      const stale = tempDirRef.current;
+      tempDirRef.current = null;
+      void invoke('latch_chop_cleanup_dir', { dir: stale }).catch(() => {});
+    }
+
     let dir: string;
     try {
       dir = await invoke<string>('latch_chop_alloc_dir', { windowLabel });
@@ -846,15 +856,30 @@ export default function ChopApp() {
 
   const auditionRegion = auditionId ? regions.find((r) => r.id === auditionId) ?? null : null;
 
-  // Re-apply the video loop whenever the auditioned region's bounds change
-  // (e.g. you resize the region while it's looping) so the <video> never
-  // keeps looping the stale, pre-resize in/out points. videoPath is a dep
-  // too: the low-res → HD swap REMOUNTS VideoView (fresh engine, no loop
-  // armed) — without the re-fire the audio sails out of the region right
-  // after the swap.
+  // Single update path for a LIVE edit of the ARMED region (resize / move /
+  // nudge while it's auditioning): keep the active stream's loop bounds in
+  // sync AND clamp the playhead into the new span if the edit stranded it
+  // outside. Without the clamp the OLD loop appears to keep playing — the
+  // audio drifts past the new out-point, or the picture freezes on the stale
+  // seam until the clock re-enters the region. Both streams update off the
+  // ONE bounds-change here so audio and video never diverge. videoPath is a
+  // dep too: the low-res → HD swap REMOUNTS VideoView (fresh engine, no loop
+  // armed), so the bounds must re-fire after the swap.
   useEffect(() => {
-    if (!hasVideo || !auditionRegion) return;
-    videoRef.current?.setLoop(auditionRegion.startSec, auditionRegion.endSec);
+    if (!auditionRegion) return;
+    const s = auditionRegion.startSec;
+    const e = auditionRegion.endSec;
+    const EPS = 0.01;
+    if (hasVideo) {
+      videoRef.current?.setLoop(s, e);
+      const t = videoRef.current?.getCurrentTime() ?? s;
+      if (t < s - EPS || t > e + EPS) { videoRef.current?.seek(s); setCursorSec(s); }
+    } else if (onOurFileRef.current) {
+      // The audio wrap itself stays owned by RegionLoopWatcher; here we only
+      // rescue a playhead the edit pushed out of the (possibly shrunk) span.
+      const t = playbackEngine.getPosition();
+      if (t < s - EPS || t > e + EPS) { playbackEngine.seek(s); setCursorSec(s); }
+    }
   }, [hasVideo, videoPath, auditionRegion?.startSec, auditionRegion?.endSec]);
 
   // The VideoView (and its play state) only exists while the preview is shown.
