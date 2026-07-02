@@ -501,7 +501,14 @@ export default function ChopApp() {
   // into uselessness.
   useEffect(() => {
     void getCurrentWindow().setMinSize(new LogicalSize(560, 440)).catch(() => {});
-    const id = requestAnimationFrame(() => { void getCurrentWindow().show().catch(() => {}); });
+    const id = requestAnimationFrame(() => {
+      void (async () => {
+        try { await getCurrentWindow().show(); } catch { /* ignore */ }
+        // Register the chop window as a real taskbar + alt-tab window (it's a
+        // full editor, not a transient popup). See register_taskbar_window.
+        try { await invoke('register_taskbar_window', { label: getCurrentWindow().label }); } catch { /* ignore */ }
+      })();
+    });
     return () => cancelAnimationFrame(id);
   }, []);
 

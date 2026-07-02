@@ -835,7 +835,16 @@ export const VideoView = forwardRef<VideoViewHandle, VideoViewProps>(function Vi
       v.playbackRate = speed;
       if (v.paused) void v.play().catch(() => {});
     },
-    setLoop: (inSec: number, outSec: number) => { setInPoint(inSec); setOutPoint(outSec); setLoopRegion(true); },
+    setLoop: (inSec: number, outSec: number) => {
+      setInPoint(inSec); setOutPoint(outSec); setLoopRegion(true);
+      // Push the new bounds to the native engine SYNCHRONOUSLY — not only via
+      // the deferred inPoint/outPoint mirror effect. A live region-resize that
+      // strands the playhead needs the engine to re-arm + force-wrap in the
+      // SAME tick, before the chop host's follow-up seek runs; otherwise that
+      // seek re-cues the decoder while the OLD loop is still armed and the old
+      // span replays for a cycle or two. Idempotent with the mirror effect.
+      if (outSec > inSec) nativeEngineRef.current?.setLoopRegion({ inSec, outSec });
+    },
     clearLoop: () => { setLoopRegion(false); },
     pause: () => {
       const eng = nativeEngineRef.current;

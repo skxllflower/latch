@@ -280,6 +280,21 @@ export class NativeVideoEngine {
   setLoopRegion(region: { inSec: number; outSec: number } | null): void {
     this.loopRegion = region && region.outSec > region.inSec ? region : null;
     this.queueArmLoop();
+    // Live region-resize rescue. A resize that drags the out-point behind the
+    // playhead (or the in-point ahead of it) leaves the clock OUTSIDE the new
+    // loop: both decoders are still cued to a now-stale spot and keep
+    // streaming the OLD span — the freeze / "2-3 old loops before the new one
+    // takes" / chaos. Force an immediate wrap to the new in-point through the
+    // seek path so BOTH decoders re-cue and the loop re-arms at the right spot,
+    // reading LIVE bounds (this.clock / this.loopRegion), not a stale
+    // mirror-effect closure. Forward playback only, and only when actually
+    // stranded — normal region activation seeks to the in-point FIRST, so the
+    // clock is already inside and this no-ops.
+    const r = this.loopRegion;
+    if (r && this._playing && this.dir > 0 &&
+        (this.clock > r.outSec + 0.02 || this.clock < r.inSec - 0.02)) {
+      this.seek(r.inSec);
+    }
   }
 
   private queueArmLoop(): void {

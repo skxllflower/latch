@@ -21,6 +21,39 @@ mod video_stream_server;
 
 use tauri::{WebviewUrl, WebviewWindowBuilder};
 
+/// Force a runtime-created, borderless/transparent satellite window to register
+/// as a real taskbar + alt-tab window on Windows. Undecorated windows spawned
+/// hidden-then-shown can miss the shell's taskbar/alt-tab registration; setting
+/// WS_EX_APPWINDOW (and clearing WS_EX_TOOLWINDOW), then (re)adding the taskbar
+/// tab, makes them behave like the config-declared main window. No-op off
+/// Windows. Called by the chop window (and any other real satellite) after it
+/// shows itself.
+#[tauri::command]
+fn register_taskbar_window(app: tauri::AppHandle, label: String) {
+    use tauri::Manager;
+    let Some(window) = app.get_webview_window(&label) else {
+        return;
+    };
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
+        };
+        if let Ok(hwnd) = window.hwnd() {
+            unsafe {
+                let cur = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
+                let next = (cur & !WS_EX_TOOLWINDOW.0) | WS_EX_APPWINDOW.0;
+                if next != cur {
+                    SetWindowLongPtrW(hwnd, GWL_EXSTYLE, next as isize);
+                }
+            }
+        }
+    }
+    // (Re)register the taskbar button now that the window is visible + flagged
+    // as an app window. Harmless (idempotent AddTab) if already present.
+    let _ = window.set_skip_taskbar(false);
+}
+
 pub fn run() {
     // Kill-on-close job from the very start, so latch.exe + its yt-dlp/
     // ffmpeg children (and the WebView2 tree) can never outlive a crash.
@@ -147,6 +180,7 @@ pub fn run() {
             audio::set_video_audio_loop,
             tools::video_audio_peaks,
             cursor::set_native_cursor_position,
+            register_taskbar_window,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Latch");
