@@ -26,14 +26,11 @@ fn latch_jobs() -> &'static JobMap {
     LATCH_JOBS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-// Resolution order:
-//   1) {NAME}_EXE env override (shell-launched testing)
-//   2) sibling dev checkout at %USERPROFILE%\Dev\{name}\build\Debug
-//   3) installed locations (exe-relative siblings, then the default
-//      vendor spaces — Program Files\Vacant Systems on Windows)
-// Release first: a Debug-built decoder can't sustain realtime video
-// (decode throughput caps near 1x — shuttle/reverse starve), so when
-// both configurations exist the Release build must win.
+// Dev-checkout candidates at %USERPROFILE%\Dev\{name}\build\{Release,Debug}.
+// See build_tiers for the full ordering — this tier is DEBUG-ONLY (a stray dev
+// core must not shadow the installed binary in a shipped build). Release first
+// within the tier: a Debug-built decoder can't sustain realtime video (decode
+// throughput caps near 1x — shuttle/reverse starve), so it must win over Debug.
 fn dev_tool_fallbacks(name: &str) -> Vec<PathBuf> {
     let Some(home) = std::env::var_os("USERPROFILE") else {
         return Vec::new();
@@ -169,41 +166,188 @@ fn installed_tool_fallbacks(name: &str) -> Vec<PathBuf> {
     out
 }
 
-pub(crate) fn find_tool_binary(name: &str, configured: &str) -> Result<PathBuf, String> {
-    if !configured.trim().is_empty() {
-        let pb = PathBuf::from(configured.trim());
-        if pb.exists() {
-            return Ok(pb);
+// ---------------------------------------------------------------------------
+// Lathe capability probe (mirror of WAVdesk external_tools.rs — keep in sync).
+//
+// The chop window's video decode spawns `lathe decode-server`. If resolution
+// lands on an ANCIENT lathe.exe — a stale %USERPROFILE%\Dev checkout, or a
+// stale-configured/latheStatus-supplied path — that PREDATES decode-server, the
+// audio track loads but video shows "Couldn't load this video". Such a build
+// still runs basic converts, so exists() looks fine.
+//
+// `lathe libav-version` is the cheapest discriminator: a modern build prints
+// the linked ffmpeg versions and exits 0; a build predating the subcommand
+// errors "unknown command" and exits nonzero; a build compiled WITHOUT libav
+// prints "libav not built in" (exit 0) and can't decode. Accept only the first.
+//
+// Verdicts are cached per (path, size, mtime) — the cache IS the spawn-storm
+// guard (a same-path repeat is an O(1) cache hit). A reinstall changes
+// size/mtime, yielding a fresh key that re-probes.
+type ProbeKey = (String, u64, u64);
+
+fn lathe_probe_cache() -> &'static Mutex<HashMap<ProbeKey, bool>> {
+    static CACHE: OnceLock<Mutex<HashMap<ProbeKey, bool>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn probe_key(path: &std::path::Path) -> Option<ProbeKey> {
+    let md = std::fs::metadata(path).ok()?;
+    let mtime = md
+        .modified()
+        .ok()
+        .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    Some((path.to_string_lossy().into_owned(), md.len(), mtime))
+}
+
+// Map a `lathe libav-version` result to accept (Ok) / reject-with-reason (Err).
+// Pure, so the semantics are unit-tested without spawning a real subprocess.
+fn interpret_probe(success: bool, code: Option<i32>, stdout: &str, stderr_tail: &str) -> Result<(), String> {
+    if !success {
+        let code = code.map(|c| c.to_string()).unwrap_or_else(|| "signal".into());
+        return Err(if stderr_tail.is_empty() {
+            format!("exit {code}")
+        } else {
+            format!("exit {code}: {stderr_tail}")
+        });
+    }
+    if stdout.contains("not built in") {
+        return Err("libav not built in (decode-server would be a stub)".into());
+    }
+    Ok(())
+}
+
+fn run_lathe_probe(path: &std::path::Path) -> Result<(), String> {
+    let mut cmd = Command::new(path);
+    cmd.arg("libav-version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(target_os = "windows")]
+    {
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let out = cmd.output().map_err(|e| format!("spawn failed: {e}"))?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let tail = stderr
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .last()
+        .unwrap_or("");
+    interpret_probe(out.status.success(), out.status.code(), &stdout, tail)
+}
+
+fn cached_verdict<F: FnOnce() -> bool>(key: ProbeKey, compute: F) -> bool {
+    if let Ok(cache) = lathe_probe_cache().lock() {
+        if let Some(v) = cache.get(&key) {
+            return *v;
         }
-        return Err(format!(
-            "{}: configured path does not exist: {}",
-            name,
-            pb.display()
-        ));
+    }
+    let ok = compute();
+    if let Ok(mut cache) = lathe_probe_cache().lock() {
+        cache.insert(key, ok);
+    }
+    ok
+}
+
+fn lathe_capable(path: &std::path::Path) -> bool {
+    let key = match probe_key(path) {
+        Some(k) => k,
+        None => return run_lathe_probe(path).is_ok(),
+    };
+    cached_verdict(key, || match run_lathe_probe(path) {
+        Ok(()) => true,
+        Err(detail) => {
+            log::warn!(
+                "[tools] {}: lathe capability probe failed ({detail}); trying next tier",
+                path.display()
+            );
+            false
+        }
+    })
+}
+
+// Acceptable if it exists AND — for lathe only — passes the capability probe.
+fn candidate_ok(name: &str, cand: &std::path::Path) -> bool {
+    cand.exists() && (name != "lathe" || lathe_capable(cand))
+}
+
+// One resolution tier: candidates sharing a source label. `enabled=false` skips
+// the tier without disturbing the ordering (makes the dev tier debug-only).
+struct Tier {
+    source: &'static str,
+    message: String,
+    cands: Vec<PathBuf>,
+    enabled: bool,
+}
+
+// Ordered resolution tiers for `name` — SINGLE source of ordering truth shared
+// by find_tool_binary and tool_binary_probe. Release order: configured → env →
+// installed (Latch has no shared-registry tier). The dev-checkout tier is
+// DEBUG-ONLY so an ancient dev core never shadows the installed binary in a
+// shipped build. A stale/missing (or, for lathe, incapable) candidate is
+// skipped and resolution falls through.
+fn build_tiers(name: &str, configured: &str) -> Vec<Tier> {
+    let mut tiers = Vec::new();
+    let configured = configured.trim();
+    if !configured.is_empty() {
+        tiers.push(Tier {
+            source: "configured",
+            message: String::new(),
+            cands: vec![PathBuf::from(configured)],
+            enabled: true,
+        });
     }
     let env_var = format!("{}_EXE", name.to_uppercase());
     if let Ok(p) = std::env::var(&env_var) {
-        let pb = PathBuf::from(&p);
-        if pb.exists() {
-            return Ok(pb);
-        }
+        tiers.push(Tier {
+            source: "env",
+            message: format!("from {}", env_var),
+            cands: vec![PathBuf::from(p)],
+            enabled: true,
+        });
     }
-    // Dev builds prefer a locally-built binary; a RELEASE/installed build must
-    // NOT — a stray %USERPROFILE%\Dev\<tool>\build checkout (possibly a stale,
-    // pre-feature core) would otherwise SHADOW the freshly-installed coredist
-    // binary and run old/missing commands (e.g. "unknown command probe").
-    if cfg!(debug_assertions) {
-        for cand in dev_tool_fallbacks(name) {
-            if cand.exists() {
-                return Ok(cand);
+    tiers.push(Tier {
+        source: "dev",
+        message: "dev fallback".into(),
+        cands: dev_tool_fallbacks(name),
+        enabled: cfg!(debug_assertions),
+    });
+    tiers.push(Tier {
+        source: "installed",
+        message: "default install location".into(),
+        cands: installed_tool_fallbacks(name),
+        enabled: true,
+    });
+    tiers
+}
+
+fn resolve_tiers<'a>(
+    tiers: &'a [Tier],
+    accept: &dyn Fn(&std::path::Path) -> bool,
+) -> Option<(&'a Tier, PathBuf)> {
+    for t in tiers {
+        if !t.enabled {
+            continue;
+        }
+        for c in &t.cands {
+            if accept(c) {
+                return Some((t, c.clone()));
             }
         }
     }
-    for cand in installed_tool_fallbacks(name) {
-        if cand.exists() {
-            return Ok(cand);
-        }
+    None
+}
+
+pub(crate) fn find_tool_binary(name: &str, configured: &str) -> Result<PathBuf, String> {
+    let tiers = build_tiers(name, configured);
+    if let Some((_, p)) = resolve_tiers(&tiers, &|c| candidate_ok(name, c)) {
+        return Ok(p);
     }
+    let env_var = format!("{}_EXE", name.to_uppercase());
     Err(format!(
         "{}.exe not found. Set {} env, reinstall {}, or build at {}.",
         name,
@@ -617,56 +761,20 @@ pub struct ToolBinaryStatus {
 
 #[tauri::command]
 pub fn tool_binary_probe(name: String, configured: String) -> ToolBinaryStatus {
-    let trimmed = configured.trim();
-    if !trimmed.is_empty() {
-        let pb = PathBuf::from(trimmed);
-        if pb.exists() {
-            return ToolBinaryStatus {
-                resolved: true,
-                path:     pb.display().to_string(),
-                source:   "configured".into(),
-                message:  String::new(),
-            };
-        }
+    // Shares find_tool_binary's exact chain (build_tiers), so latheStatus
+    // reflects what the chop video path would resolve — including the cached
+    // lathe capability probe, so an ancient/incapable lathe is skipped here too
+    // and the GUI never reports a dead lathe as connected.
+    let tiers = build_tiers(&name, &configured);
+    if let Some((t, p)) = resolve_tiers(&tiers, &|c| candidate_ok(&name, c)) {
         return ToolBinaryStatus {
-            resolved: false,
-            path:     pb.display().to_string(),
-            source:   "missing".into(),
-            message:  format!("configured path does not exist: {}", pb.display()),
+            resolved: true,
+            path:     p.display().to_string(),
+            source:   t.source.into(),
+            message:  t.message.clone(),
         };
     }
     let env_var = format!("{}_EXE", name.to_uppercase());
-    if let Ok(p) = std::env::var(&env_var) {
-        let pb = PathBuf::from(&p);
-        if pb.exists() {
-            return ToolBinaryStatus {
-                resolved: true,
-                path:     pb.display().to_string(),
-                source:   "env".into(),
-                message:  format!("from {}", env_var),
-            };
-        }
-    }
-    for cand in dev_tool_fallbacks(&name) {
-        if cand.exists() {
-            return ToolBinaryStatus {
-                resolved: true,
-                path:     cand.display().to_string(),
-                source:   "dev".into(),
-                message:  "dev fallback".into(),
-            };
-        }
-    }
-    for cand in installed_tool_fallbacks(&name) {
-        if cand.exists() {
-            return ToolBinaryStatus {
-                resolved: true,
-                path:     cand.display().to_string(),
-                source:   "installed".into(),
-                message:  "default install location".into(),
-            };
-        }
-    }
     ToolBinaryStatus {
         resolved: false,
         path:     String::new(),
@@ -829,5 +937,79 @@ pub fn os_open_url(url: String) -> Result<(), String> {
             .spawn()
             .map(|_| ())
             .map_err(|e| format!("xdg-open url spawn: {}", e))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn tier(source: &'static str, path: &str, enabled: bool) -> Tier {
+        Tier {
+            source,
+            message: source.to_string(),
+            cands: vec![PathBuf::from(path)],
+            enabled,
+        }
+    }
+
+    #[test]
+    fn probe_semantics() {
+        assert!(interpret_probe(true, Some(0), "libav linked OK\n  avcodec 62", "").is_ok());
+        assert!(interpret_probe(false, Some(2), "", "error: unknown command 'libav-version'").is_err());
+        assert!(interpret_probe(true, Some(0), "libav not built in (LGPL ...)\n", "").is_err());
+    }
+
+    #[test]
+    fn release_skips_dev_tier() {
+        let tiers = vec![
+            tier("dev", r"C:\Dev\lathe\build\Release\lathe.exe", false),
+            tier("installed", r"C:\Program Files\Vacant Systems\Lathe\coredist\lathe.exe", true),
+        ];
+        let (t, _) = resolve_tiers(&tiers, &|_| true).expect("resolves");
+        assert_eq!(t.source, "installed");
+    }
+
+    #[test]
+    fn debug_prefers_dev_tier() {
+        let tiers = vec![
+            tier("dev", r"C:\Dev\lathe\build\Release\lathe.exe", true),
+            tier("installed", r"C:\Program Files\Vacant Systems\Lathe\lathe.exe", true),
+        ];
+        let (t, _) = resolve_tiers(&tiers, &|_| true).expect("resolves");
+        assert_eq!(t.source, "dev");
+    }
+
+    #[test]
+    fn lathe_falls_through_incapable() {
+        let ancient = r"C:\Dev\lathe\build\Release\lathe.exe";
+        let installed = r"C:\Program Files\Vacant Systems\Lathe\coredist\lathe.exe";
+        let tiers = vec![
+            tier("configured", ancient, true),
+            tier("installed", installed, true),
+        ];
+        let (t, p) = resolve_tiers(&tiers, &|c| c != std::path::Path::new(ancient))
+            .expect("resolves");
+        assert_eq!(t.source, "installed");
+        assert_eq!(p, PathBuf::from(installed));
+    }
+
+    #[test]
+    fn cached_verdict_computes_once() {
+        let calls = AtomicUsize::new(0);
+        let key: ProbeKey = ("test-unique-cache-key".into(), 42, 1234);
+        let v1 = cached_verdict(key.clone(), || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            true
+        });
+        let v2 = cached_verdict(key, || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            false
+        });
+        assert!(v1);
+        assert!(v2);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 }
