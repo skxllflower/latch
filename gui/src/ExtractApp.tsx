@@ -2297,7 +2297,7 @@ export default function ExtractApp() {
                     return (
                       <button
                         onClick={(e) => { e.stopPropagation(); toggleAudition(it.output!); }}
-                        className={`shrink-0 transition-none ${playing ? 'text-emerald-400 hover:text-emerald-300' : 'text-zinc-600 hover:text-zinc-300'}`}
+                        className={`shrink-0 p-1 -m-1 flex items-center justify-center transition-none ${playing ? 'text-emerald-400 hover:text-emerald-300' : 'text-zinc-600 hover:text-zinc-300'}`}
                         title={playing ? 'Pause' : 'Play'}
                       >
                         {playing ? <Pause size={10} /> : <Play size={10} />}
@@ -2311,7 +2311,7 @@ export default function ExtractApp() {
                   {it.status === 'done' && it.output && (
                     <button
                       onClick={(e) => { e.stopPropagation(); onRevealItem(it.output!); }}
-                      className="shrink-0 text-zinc-600 hover:text-zinc-300 transition-none"
+                      className="shrink-0 p-1 -m-1 flex items-center justify-center text-zinc-600 hover:text-zinc-300 transition-none"
                       title="Reveal in file manager"
                     >
                       <FolderSearch size={10} />

@@ -1399,6 +1399,7 @@ export default function ChopApp() {
                 shuttle, zoom/pan, frame-step. It owns playback (audio) for
                 video links, so the WAV transport below is hidden then. */}
             <VideoPreview ref={videoRef} src={convertFileSrc(videoPath)} path={videoPath} suppressChip disableKeyboard
+              pitchPreviewLock={pitchMode === 'preserve'}
               onPlayingChange={setVideoPlaying}
               onLoopPointsChange={onLoopPoints}
               onReady={() => {
@@ -1608,7 +1609,11 @@ export default function ChopApp() {
                   <span className={`flex-1 min-w-0 truncate ${mutedLabel} tabular-nums`}>
                     {fmtTime(r.startSec)} – {fmtTime(r.endSec)} · {fmtTime(r.endSec - r.startSec)}
                   </span>
-                  {r.clipState === 'rendering' && <Loader2 size={10} className="animate-spin shrink-0 text-[color:var(--theme-text-muted)]" />}
+                  {r.clipState === 'rendering' && (
+                    <span className="shrink-0 flex items-center" title="Pre-rendering this clip so it's ready to drag out instantly">
+                      <Loader2 size={10} className="animate-spin text-[color:var(--theme-text-muted)]" />
+                    </span>
+                  )}
                   {canExportVideo && (
                     <button
                       className={railBtn(r.exportVideo ?? false)}
@@ -1690,11 +1695,17 @@ export default function ChopApp() {
                 setPitchMode(m); pitchModeRef.current = m; pitchAskedRef.current = true;
               }}
               title={pitchMode === 'tape'
-                ? 'Tape mode: pitch follows speed on export (click to keep original pitch)'
-                : 'Locked pitch: only tempo changes on export (click for tape mode: pitch follows speed)'}
+                ? 'Tape mode: pitch follows speed, previewing live. Click to keep the original pitch.'
+                : "Locked pitch: only tempo changes on export. A pitch-lock can't be previewed at a changed speed, so preview plays at 1×. Click for tape mode (previews live)."}
             >
               Pitch: {pitchMode === 'tape' ? 'Tape' : 'Locked'}
             </button>
+          )}
+          {phase === 'ready' && videoSpeed !== 1 && pitchMode === 'preserve' && (
+            <span className="shrink-0 text-[0.5rem] uppercase tracking-tight text-[color:var(--theme-text-muted)]"
+              title="Locked pitch can't be previewed at a changed speed. Preview plays at 1×; export keeps the original pitch.">
+              preview 1×
+            </span>
           )}
           <span className={`flex-1 min-w-0 truncate ${mutedLabel} tabular-nums`}>
             {exportMsg || (hdLoading

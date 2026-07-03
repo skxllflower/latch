@@ -127,8 +127,12 @@ export function createDragRegion(
   return { regions: sortRegions([...regions, region]), id: region.id };
 }
 
-// Move one edge of a region to `toSec`, clamped so it never crosses the
-// opposite edge (minus MIN) or a neighbour boundary.
+// Move one edge of a region to `toSec`. It can't cross its own opposite edge
+// (minus MIN). A touching neighbour on the dragged side is PUSHED rather than
+// acting as a brick wall: dragging past it shoves its facing edge along,
+// shrinking it down to — but never past — MIN_REGION_SEC. So the clamp is the
+// neighbour's FAR edge (± MIN), and the neighbour's near edge follows the
+// dragged edge into the overlap (both regions' clips invalidate).
 export function resizeEdge(
   regions: ChopRegion[],
   id: string,
@@ -140,15 +144,26 @@ export function resizeEdge(
   const idx = sorted.findIndex((r) => r.id === id);
   if (idx < 0) return regions;
   const r = sorted[idx];
-  const prevEnd = idx > 0 ? sorted[idx - 1].endSec : 0;
-  const nextStart = idx < sorted.length - 1 ? sorted[idx + 1].startSec : duration;
+  const prev = idx > 0 ? sorted[idx - 1] : null;
+  const next = idx < sorted.length - 1 ? sorted[idx + 1] : null;
   let { startSec, endSec } = r;
+  let pushed: ChopRegion | null = null;
   if (edge === 'start') {
-    startSec = Math.max(0, Math.max(prevEnd, Math.min(toSec, endSec - MIN_REGION_SEC)));
+    // Floor is the PREV region's far edge (start + MIN), not its end — so the
+    // drag can eat into it; the near edge (prev.endSec) is pushed to match.
+    const floor = prev ? prev.startSec + MIN_REGION_SEC : 0;
+    startSec = Math.max(0, Math.max(floor, Math.min(toSec, endSec - MIN_REGION_SEC)));
+    if (prev && startSec < prev.endSec) pushed = invalidateClip({ ...prev, endSec: startSec });
   } else {
-    endSec = Math.min(duration, Math.min(nextStart, Math.max(toSec, startSec + MIN_REGION_SEC)));
+    const ceil = next ? next.endSec - MIN_REGION_SEC : duration;
+    endSec = Math.min(duration, Math.min(ceil, Math.max(toSec, startSec + MIN_REGION_SEC)));
+    if (next && endSec > next.startSec) pushed = invalidateClip({ ...next, startSec: endSec });
   }
-  return sorted.map((x) => (x.id === id ? invalidateClip({ ...x, startSec, endSec }) : x));
+  return sorted.map((x) => {
+    if (x.id === id) return invalidateClip({ ...x, startSec, endSec });
+    if (pushed && x.id === pushed.id) return pushed;
+    return x;
+  });
 }
 
 // Shift a whole region so its start lands at `newStartSec` (drag the

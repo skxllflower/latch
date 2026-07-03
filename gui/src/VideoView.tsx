@@ -123,10 +123,16 @@ export interface VideoViewProps {
   // mode for now (Phase 0: prove the picture path); play/pause/seek + audio
   // sync land next.
   nativeStream?: NativeStreamConfig | null;
+  // When true, the preview plays at 1× regardless of the speed button. The
+  // audio engine only does varispeed (pitch follows speed), so a pitch-locked
+  // speed change can't be previewed honestly — the Latch chop window's "Locked
+  // pitch" mode passes this to preview at true 1× pitch instead of faking it.
+  // `getSpeed()` still returns the chosen speed, so export is unaffected.
+  pitchPreviewLock?: boolean;
 }
 
 export const VideoView = forwardRef<VideoViewHandle, VideoViewProps>(function VideoView(
-  { src, onPopOut, suppressChip = false, onReady, onTime, disableKeyboard = false, onPlayingChange, nativeStream, onLoopPointsChange }, ref,
+  { src, onPopOut, suppressChip = false, onReady, onTime, disableKeyboard = false, onPlayingChange, nativeStream, onLoopPointsChange, pitchPreviewLock = false }, ref,
 ) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -170,6 +176,7 @@ export const VideoView = forwardRef<VideoViewHandle, VideoViewProps>(function Vi
   const volumeRef = useRef(volume); volumeRef.current = volume;
   const mutedRef = useRef(muted); mutedRef.current = muted;
   const speedRef = useRef(speed); speedRef.current = speed;
+  const pitchPreviewLockRef = useRef(pitchPreviewLock); pitchPreviewLockRef.current = pitchPreviewLock;
   const volAnimRef = useRef<number | null>(null);
   const volTargetDbRef = useRef(0);
   const volDragRef = useRef<{ startDb: number; passed: boolean; preDy: number; accumPct: number } | null>(null);
@@ -381,7 +388,7 @@ export const VideoView = forwardRef<VideoViewHandle, VideoViewProps>(function Vi
     // persist across file switches; in/out points are cleared per-src so the
     // loop region starts empty). Later changes flow via the mirror effects.
     engine.setVolume(mutedRef.current ? 0 : volumeRef.current);
-    if (speedRef.current !== 1) engine.setRate(speedRef.current);
+    if (!pitchPreviewLockRef.current && speedRef.current !== 1) engine.setRate(speedRef.current);
     return () => {
       nativeEngineRef.current = null;
       engine.destroy();      // closes every buffered bitmap
@@ -718,8 +725,8 @@ export const VideoView = forwardRef<VideoViewHandle, VideoViewProps>(function Vi
     nativeEngineRef.current?.setVolume(muted ? 0 : volume);
   }, [volume, muted]);
   useEffect(() => {
-    nativeEngineRef.current?.setRate(speed);
-  }, [speed]);
+    nativeEngineRef.current?.setRate(pitchPreviewLock ? 1 : speed);
+  }, [speed, pitchPreviewLock]);
   useEffect(() => {
     nativeEngineRef.current?.setLoopRegion(
       loopRegion && inPoint != null && outPoint != null && outPoint > inPoint
