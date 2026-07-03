@@ -51,10 +51,22 @@ interface ChopRegionOverlayProps {
   // fires on release ONLY when the gesture actually changed a region.
   onGestureStart?: () => void;
   onGestureEnd?: (info: { id: string; kind: 'create' | 'resize' | 'move'; edge?: 'start' | 'end' }) => void;
+  // Pan the waveform viewport by a signed second delta. Backs both the
+  // ctrl/cmd+drag pan and the near-edge auto-scroll during a gesture.
+  panViewport?: (deltaSec: number) => void;
+  // Imperative live-bounds channel: fired every gesture tick (create/resize/
+  // move) so the host can re-arm the audition loop DIRECTLY, ungated by React
+  // state — see ChopApp's rAF-coalesced re-arm.
+  onLiveBounds?: (id: string, startSec: number, endSec: number) => void;
 }
 
 const DRAG_THRESH_PX = 4;
 const EDGE_HIT_PX = 6;
+// Auto-scroll when a gesture drags the pointer within this many px of the
+// container edge. The pan speed scales with proximity (0 at the boundary of
+// the zone, max right at the edge).
+const EDGE_SCROLL_PX = 24;
+const EDGE_SCROLL_MAX_FRAC = 0.05; // up to 5% of the visible span per frame
 // The drag-out "Export" handle: a pill anchored at the BOTTOM-centre of a
 // region. Its hit zone is just the handle box itself (so the rest of the
 // body drags-to-move); the visual + hitbox use the same dimensions.
@@ -75,11 +87,26 @@ type Zone =
 export const ChopRegionOverlay: React.FC<ChopRegionOverlayProps> = ({
   regions, selectedId, viewportStartSec, viewportEndSec, durationSec,
   onChange, onSelect, onSeek, onActivate, onCreateDefault, onDragOut, canExportVideo = false,
-  onGestureStart, onGestureEnd,
+  onGestureStart, onGestureEnd, panViewport, onLiveBounds,
 }) => {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const gestureRef = useRef<Zone | null>(null);
   const workingRef = useRef<ChopRegion[]>(regions);
+  // Live viewport mirrors so an in-flight gesture (and the edge auto-scroll
+  // rAF) reads the CURRENT pan/zoom every tick, not the value captured when
+  // the gesture began. Without this the region bound stops tracking the
+  // waveform the instant the viewport pans underneath it.
+  const vpStartRef = useRef(viewportStartSec); vpStartRef.current = viewportStartSec;
+  const vpEndRef = useRef(viewportEndSec); vpEndRef.current = viewportEndSec;
+  // Near-edge auto-scroll loop + last pointer position it re-applies at.
+  const edgeRafRef = useRef(0);
+  const lastPtrRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const panViewportRef = useRef(panViewport); panViewportRef.current = panViewport;
+  const onLiveBoundsRef = useRef(onLiveBounds); onLiveBoundsRef.current = onLiveBounds;
+  // True while a ctrl/cmd+drag pan is in flight — suppresses the hover cursor
+  // handler so the grabbing cursor doesn't flicker back to the zone cursor.
+  const panningRef = useRef(false);
+  useEffect(() => () => { if (edgeRafRef.current) cancelAnimationFrame(edgeRafRef.current); }, []);
   // Timestamp until which a double-click is ignored — a drag-create's
   // release can fire a spurious dblclick at the end point, which would
   // otherwise spawn a stray default region in the gap right after.
@@ -112,6 +139,17 @@ export const ChopRegionOverlay: React.FC<ChopRegionOverlayProps> = ({
     const frac = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
     return Math.max(0, Math.min(durationSec, viewportStartSec + frac * vpSpan));
   }, [viewportStartSec, vpSpan, durationSec]);
+
+  // Like secAtClientX but reads the LIVE viewport refs, so it stays correct
+  // while the viewport pans mid-gesture (edge auto-scroll / ctrl+drag pan).
+  const secAtClientXLive = useCallback((clientX: number): number => {
+    const rect = rootRef.current?.getBoundingClientRect();
+    const vs = vpStartRef.current;
+    const span = Math.max(1e-6, vpEndRef.current - vs);
+    if (!rect || rect.width <= 0) return vs;
+    const frac = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    return Math.max(0, Math.min(durationSec, vs + frac * span));
+  }, [durationSec]);
 
   // Classify the pointer position into a gesture zone. Edges win over the
   // bottom-centre Export handle, which wins over the body, which wins over
@@ -169,13 +207,27 @@ export const ChopRegionOverlay: React.FC<ChopRegionOverlayProps> = ({
     if (g.kind === 'create' || g.kind === 'resize' || g.kind === 'move') onGestureStart?.();
     if (g.kind === 'resize' || g.kind === 'move' || g.kind === 'dragout') onSelect(g.id);
 
-    const onMove = (ev: PointerEvent) => {
+    // Fire the imperative live-bounds channel for the gesture's active
+    // region — the host re-arms the audition loop off this, ungated by React.
+    const emitLive = () => {
       const cur = gestureRef.current;
       if (!cur) return;
-      const sec = secAtClientX(ev.clientX);
+      const id = cur.kind === 'create' ? cur.createdId
+        : (cur.kind === 'resize' || cur.kind === 'move') ? cur.id : null;
+      if (!id) return;
+      const r = workingRef.current.find((x) => x.id === id);
+      if (r) onLiveBoundsRef.current?.(id, r.startSec, r.endSec);
+    };
+
+    // Apply the active mutation for a pointer at clientX, reading the LIVE
+    // viewport so the bound keeps tracking while the view auto-scrolls.
+    const applyAt = (clientX: number) => {
+      const cur = gestureRef.current;
+      if (!cur) return;
+      const sec = secAtClientXLive(clientX);
       if (cur.kind === 'create') {
         if (cur.createdId == null) {
-          if (Math.abs(ev.clientX - cur.startX) < DRAG_THRESH_PX) return;
+          if (Math.abs(clientX - cur.startX) < DRAG_THRESH_PX) return;
           const { regions: next, id } = createDragRegion(workingRef.current, cur.anchorSec, sec, durationSec);
           if (id) { cur.createdId = id; workingRef.current = next; onChange(next); onSelect(id); }
         } else {
@@ -186,11 +238,53 @@ export const ChopRegionOverlay: React.FC<ChopRegionOverlayProps> = ({
         workingRef.current = resizeEdge(workingRef.current, cur.id, cur.edge, sec, durationSec);
         onChange(workingRef.current);
       } else if (cur.kind === 'move') {
-        if (!cur.moved && Math.abs(ev.clientX - cur.startX) < DRAG_THRESH_PX) return;
+        if (!cur.moved && Math.abs(clientX - cur.startX) < DRAG_THRESH_PX) return;
         cur.moved = true;
         workingRef.current = moveRegion(workingRef.current, cur.id, cur.origStart + (sec - cur.grabSec), durationSec);
         onChange(workingRef.current);
-      } else if (cur.kind === 'dragout') {
+      }
+      emitLive();
+    };
+
+    const stopEdgeScroll = () => {
+      if (edgeRafRef.current) { cancelAnimationFrame(edgeRafRef.current); edgeRafRef.current = 0; }
+    };
+    // Self-scheduling rAF: while a mutating gesture holds the pointer near an
+    // edge, pan the viewport (proximity-scaled) and re-apply the bound at the
+    // stationary pointer each frame. Stops when the pointer leaves the zone.
+    const edgeTick = () => {
+      edgeRafRef.current = 0;
+      const cur = gestureRef.current;
+      if (!cur || cur.kind === 'dragout') return;
+      const rect = rootRef.current?.getBoundingClientRect();
+      if (!rect || rect.width <= 0) return;
+      const x = lastPtrRef.current.x;
+      const leftDist = x - rect.left;
+      const rightDist = rect.right - x;
+      let dir = 0, prox = 0;
+      if (leftDist < EDGE_SCROLL_PX) { dir = -1; prox = (EDGE_SCROLL_PX - Math.max(0, leftDist)) / EDGE_SCROLL_PX; }
+      else if (rightDist < EDGE_SCROLL_PX) { dir = 1; prox = (EDGE_SCROLL_PX - Math.max(0, rightDist)) / EDGE_SCROLL_PX; }
+      if (dir === 0) return;
+      const span = Math.max(1e-6, vpEndRef.current - vpStartRef.current);
+      panViewportRef.current?.(dir * prox * span * EDGE_SCROLL_MAX_FRAC);
+      applyAt(x);
+      edgeRafRef.current = requestAnimationFrame(edgeTick);
+    };
+    const maybeEdgeScroll = () => {
+      if (edgeRafRef.current || !panViewportRef.current) return;
+      const rect = rootRef.current?.getBoundingClientRect();
+      if (!rect || rect.width <= 0) return;
+      const x = lastPtrRef.current.x;
+      if (x - rect.left < EDGE_SCROLL_PX || rect.right - x < EDGE_SCROLL_PX) {
+        edgeRafRef.current = requestAnimationFrame(edgeTick);
+      }
+    };
+
+    const onMove = (ev: PointerEvent) => {
+      const cur = gestureRef.current;
+      if (!cur) return;
+      lastPtrRef.current = { x: ev.clientX, y: ev.clientY };
+      if (cur.kind === 'dragout') {
         // Past the threshold, hand off to the OS file drag and end the
         // pointer gesture (release capture so DoDragDrop's modal loop gets
         // the button). The grabbed GRIP decides audio vs video — never a
@@ -200,15 +294,20 @@ export const ChopRegionOverlay: React.FC<ChopRegionOverlayProps> = ({
             Math.abs(ev.clientY - cur.startY) < DRAG_THRESH_PX) return;
         cur.armed = true;
         gestureRef.current = null;
+        stopEdgeScroll();
         captureEl.releasePointerCapture?.(pid);
         window.removeEventListener('pointermove', onMove);
         window.removeEventListener('pointerup', onUp);
         onDragOut(cur.id, { video: cur.video });
+        return;
       }
+      applyAt(ev.clientX);
+      maybeEdgeScroll();
     };
     const onUp = (ev: PointerEvent) => {
       const cur = gestureRef.current;
       gestureRef.current = null;
+      stopEdgeScroll();
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
       if (!cur) return;
@@ -233,22 +332,54 @@ export const ChopRegionOverlay: React.FC<ChopRegionOverlayProps> = ({
     };
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
-  }, [regions, durationSec, secAtClientX, onChange, onSelect, onSeek, onActivate, onDragOut,
+  }, [regions, durationSec, secAtClientX, secAtClientXLive, onChange, onSelect, onSeek, onActivate, onDragOut,
       onGestureStart, onGestureEnd]);
+
+  // ctrl/cmd + left-drag pans the viewport (mirrors WaveformView's middle-drag
+  // pan) instead of starting a region gesture. No undo snapshot; a press that
+  // never moves is a no-op (no seek, no activate).
+  const beginPan = useCallback((e: React.PointerEvent) => {
+    e.preventDefault();
+    const captureEl = e.currentTarget as Element;
+    const pid = e.pointerId;
+    captureEl.setPointerCapture?.(pid);
+    const rect = rootRef.current?.getBoundingClientRect();
+    if (!rect || rect.width <= 0) return;
+    let lastX = e.clientX;
+    const prevCursor = rootRef.current?.style.cursor ?? '';
+    panningRef.current = true;
+    if (rootRef.current) rootRef.current.style.cursor = 'grabbing';
+    const onMove = (ev: PointerEvent) => {
+      const span = Math.max(1e-6, vpEndRef.current - vpStartRef.current);
+      const delta = ((lastX - ev.clientX) / rect.width) * span;
+      lastX = ev.clientX;
+      panViewportRef.current?.(delta);
+    };
+    const onUp = () => {
+      panningRef.current = false;
+      captureEl.releasePointerCapture?.(pid);
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      if (rootRef.current) rootRef.current.style.cursor = prevCursor || 'crosshair';
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  }, []);
 
   const cursorFor = (kind: Zone['kind']): string =>
     kind === 'resize' ? 'ew-resize' : kind === 'dragout' ? 'grab' : kind === 'move' ? 'move' : 'crosshair';
 
   const onRootPointerDown = useCallback((e: React.PointerEvent) => {
     if (e.button !== 0) return; // middle/right bubble → WaveformView built-in pan
+    if (e.ctrlKey || e.metaKey) { beginPan(e); return; } // ctrl/cmd+drag = pan
     beginGesture(e, hitTest(e.clientX, e.clientY));
-  }, [beginGesture, hitTest]);
+  }, [beginGesture, beginPan, hitTest]);
 
   // Hover: track which region (and zone) the pointer is over so we can show
   // the edit affordances and set a zone-appropriate cursor. Skipped while a
   // gesture is active (the pressed-zone cursor persists through the drag).
   const onRootPointerMove = useCallback((e: React.PointerEvent) => {
-    if (gestureRef.current) return;
+    if (gestureRef.current || panningRef.current) return;
     const z = hitTest(e.clientX, e.clientY);
     if (rootRef.current) rootRef.current.style.cursor = cursorFor(z.kind);
     const hid = z.kind === 'create' ? null : z.id;

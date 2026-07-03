@@ -21,9 +21,11 @@ import {
   CheckCircle2, XCircle, Loader2, ChevronRight, ChevronDown, CloudDownload,
   Link2, Link2Off, RefreshCw, Cookie, AlertTriangle, CheckSquare,
   Terminal, LayoutList, Image as ImageIcon, Film, Music, Check, Search, Minus,
-  Scissors, Info, FileText, ShieldAlert, Settings as SettingsIcon,
+  Scissors, Info, FileText, ShieldAlert, Settings as SettingsIcon, Play, Pause,
 } from 'lucide-react';
 import { useTheme, THEME_BG } from './theme';
+import { playbackEngine } from './playbackEngine';
+import { usePlaybackState, usePlaybackCurrentPath } from './PlaybackContext';
 import { startOverlayDrag, endOverlayDrag } from './internalDragHandoff';
 import { confirmInWindow, infoInWindow } from './dialogs';
 import { open as openFileDialog } from '@tauri-apps/plugin-dialog';
@@ -1384,6 +1386,24 @@ export default function ExtractApp() {
     () => items.filter(it => it.selected && it.status === 'done' && it.output).map(it => it.output!),
     [items]
   );
+
+  // In-place audition of a finished output. The standalone engine is rodio
+  // built WAV-only (Cargo: features = ["wav"]), so the toggle is offered only
+  // for .wav outputs — everything else can't be decoded here. Position/state
+  // arrive via the `audio-pos` broadcast (audio.rs emits app-wide, not just to
+  // the chop window) so this row reflects play/pause live.
+  const playState = usePlaybackState();
+  const playPath = usePlaybackCurrentPath();
+  const canAudition = useCallback(
+    (p: string | undefined): p is string => !!p && /\.wav$/i.test(p),
+    [],
+  );
+  const toggleAudition = useCallback((path: string) => {
+    const isThis = playPath === path && playState !== 'stopped';
+    if (isThis && playState === 'playing') { playbackEngine.pause(); return; }
+    if (isThis && playState === 'paused') { void playbackEngine.resume(); return; }
+    void playbackEngine.play(path, 'full', { startSec: 0 });
+  }, [playPath, playState]);
   // Batch-aware progress: finished/total + summed percent over the items
   // of the CURRENT batch only, so old session rows don't skew the bar.
   const batchProgress = useMemo(() => {
@@ -1499,6 +1519,14 @@ export default function ExtractApp() {
                 <LayoutList size={9} />
               </button>
             </div>
+            <button
+              onClick={clearInputQueue}
+              disabled={inputQueue.length === 0}
+              className="text-zinc-400 hover:text-zinc-100 disabled:opacity-30 disabled:hover:text-zinc-400 p-0.5 transition-none"
+              title="Clear all queued URLs"
+            >
+              <Trash2 size={11} />
+            </button>
           </div>
 
           {gatedPending && (
@@ -2262,6 +2290,20 @@ export default function ExtractApp() {
                       </>
                     )}
                   </div>
+                  {/* Audition — play/pause the finished WAV in place (the
+                      only format the WAV-only rodio engine can decode). */}
+                  {it.status === 'done' && canAudition(it.output) && (() => {
+                    const playing = playPath === it.output && playState === 'playing';
+                    return (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); toggleAudition(it.output!); }}
+                        className={`shrink-0 transition-none ${playing ? 'text-emerald-400 hover:text-emerald-300' : 'text-zinc-600 hover:text-zinc-300'}`}
+                        title={playing ? 'Pause' : 'Play'}
+                      >
+                        {playing ? <Pause size={10} /> : <Play size={10} />}
+                      </button>
+                    );
+                  })()}
                   {/* Reveal — finished item, open OS file manager with
                       the file pre-selected. Skipped on Linux when the
                       file lives outside the user's home (Tauri can't

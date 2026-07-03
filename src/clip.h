@@ -23,6 +23,10 @@ struct ClipOptions {
   // track — never for playback or clip export. Ignored for video / when the
   // audio format is set.
   bool preview = false;
+  // Playback speed multiplier. 1.0 = unchanged. >1 faster, <1 slower.
+  // Applied to video (setpts + atempo) and audio-only (atempo) exports.
+  // Never applied to the preview WAV — the waveform source stays 1x.
+  double speed = 1.0;
 };
 
 // Cuts [start_sec, end_sec) out of `input` into `output` with ffmpeg.

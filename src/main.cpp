@@ -44,6 +44,9 @@ int print_help() {
     "                                   flac / mp3 / m4a / aac / opus\n"
     "  --preview                        audio-only: tiny mono 22.05k 16-bit WAV\n"
     "                                   for waveform display (not for playback)\n"
+    "  --speed=<x>                      playback speed multiplier (1.0 default,\n"
+    "                                   e.g. 0.5 = half, 2.0 = double). Never\n"
+    "                                   applied to --preview.\n"
     "\n"
     "Extract options (all optional):\n"
     "  --format=<f>                     audio format: mp3 / m4a / wav / opus /\n"
@@ -587,12 +590,14 @@ int run_cli(const std::vector<std::string>& args) {
       std::string v;
       if (parse_kv(a, "start", &v)) { try { start_sec = std::stod(v); have_start = true; } catch (...) {} continue; }
       if (parse_kv(a, "end",   &v)) { try { end_sec   = std::stod(v); have_end   = true; } catch (...) {} continue; }
+      if (parse_kv(a, "speed", &v)) { try { opts.speed = std::stod(v); } catch (...) {} continue; }
       if (parse_kv(a, "audio-format", &opts.audio_format)) continue;
       if (a == "--video")      { opts.video = true;  continue; }
       if (a == "--audio-only") { opts.video = false; continue; }
       if (a == "--preview")    { opts.preview = true; continue; }
       if (a == "--start" && i + 1 < args.size()) { try { start_sec = std::stod(args[++i]); have_start = true; } catch (...) {} continue; }
       if (a == "--end"   && i + 1 < args.size()) { try { end_sec   = std::stod(args[++i]); have_end   = true; } catch (...) {} continue; }
+      if (a == "--speed" && i + 1 < args.size()) { try { opts.speed = std::stod(args[++i]); } catch (...) {} continue; }
       std::fprintf(stderr, "error: unknown argument '%s'\n", a.c_str());
       return 2;
     }

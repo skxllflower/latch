@@ -75,6 +75,9 @@ export interface VideoViewHandle {
   pause: () => void;
   // Live media time, read per-frame for a seamless follower playhead.
   getCurrentTime: () => number;
+  // Current preview playback-speed multiplier — the chop export applies it
+  // to the rendered clip (video setpts + atempo / audio atempo).
+  getSpeed: () => number;
   // Snapshot the currently-visible frame to a fresh offscreen canvas
   // (or null if nothing is painted yet). Used by the chop drag-out chip.
   captureFrame: () => HTMLCanvasElement | null;
@@ -859,6 +862,7 @@ export const VideoView = forwardRef<VideoViewHandle, VideoViewProps>(function Vi
       if (!v.paused) v.pause();
     },
     getCurrentTime: () => nativeEngineRef.current?.currentTime ?? videoRef.current?.currentTime ?? 0,
+    getSpeed: () => speedRef.current,
     captureFrame: () => {
       // Prefer the painted canvas (what's actually on screen, incl. a
       // reverse-decoded frame); fall back to the raw <video> element.

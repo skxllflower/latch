@@ -118,6 +118,7 @@ pub async fn latch_clip(
     audio_format: String,
     overwrite: Option<bool>,
     preview: Option<bool>,
+    speed: Option<f64>,
 ) -> Result<(), String> {
     let bin = crate::tools::find_tool_binary("latch", &binary_path)?;
     let output = if overwrite.unwrap_or(false) {
@@ -132,6 +133,12 @@ pub async fn latch_clip(
         format!("--start={}", start_sec),
         format!("--end={}", end_sec),
     ];
+    // Speed multiplier: only pass when it actually changes playback. Never
+    // for the preview WAV (the waveform source must stay 1x).
+    let speed = speed.unwrap_or(1.0);
+    if !preview.unwrap_or(false) && (speed - 1.0).abs() > 1e-6 {
+        args.push(format!("--speed={}", speed));
+    }
     if video {
         args.push("--video".to_string());
     } else if preview.unwrap_or(false) {

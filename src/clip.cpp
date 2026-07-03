@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <string>
@@ -56,6 +57,24 @@ static bool split_kv(const std::string& s, std::string* key, std::string* val) {
   return true;
 }
 
+// atempo is limited to a single factor in [0.5, 2.0], so a speed outside
+// that window must be decomposed into a chain of factors that multiply to
+// the target (e.g. 0.25 -> "atempo=0.5,atempo=0.5", 4.0 -> "atempo=2,atempo=2").
+static std::string atempo_chain(double speed) {
+  std::string chain;
+  double s = speed;
+  auto append = [&](double f) {
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "atempo=%.6g", f);
+    if (!chain.empty()) chain += ",";
+    chain += buf;
+  };
+  while (s > 2.0 + 1e-9) { append(2.0); s /= 2.0; }
+  while (s < 0.5 - 1e-9) { append(0.5); s *= 2.0; }
+  append(s);
+  return chain;
+}
+
 // "HH:MM:SS.uuuuuu" -> seconds, or -1 on garbage / N/A.
 static double parse_ffmpeg_time(const std::string& v) {
   int h = 0, m = 0;
@@ -77,6 +96,18 @@ ClipResult clip(const std::string& input,
   }
   if (start_sec < 0.0) start_sec = 0.0;
   const double duration = end_sec - start_sec;
+
+  // Speed change (never for the preview WAV — the waveform source stays 1x).
+  double speed = opts.speed;
+  if (!(speed > 0.0)) speed = 1.0;
+  if (speed < 0.1)  speed = 0.1;
+  if (speed > 16.0) speed = 16.0;
+  const bool speed_changed = !opts.preview && std::fabs(speed - 1.0) > 1e-6;
+  // With a speed change the output length is span/speed. Slower speeds make
+  // the output longer than the source span, so trimming the OUTPUT to `span`
+  // would truncate it. Trim the INPUT (source-time) instead and let the
+  // filter re-time the full span; progress tracks the resulting output length.
+  const double out_duration = speed_changed ? duration / speed : duration;
 
   // ffmpeg only — check first, bootstrap solely if missing (no surprise
   // network use when it's already on disk).
@@ -113,11 +144,21 @@ ClipResult clip(const std::string& input,
     "-nostdin",
     "-y",
     "-ss", ss_buf,
-    "-i", input,
-    "-t", t_buf,
   };
+  // Speed change: trim on the input side (source-time) so the re-timing
+  // filter keeps the whole span. Otherwise keep the original output-side -t.
+  if (speed_changed) argv.insert(argv.end(), {"-t", t_buf});
+  argv.insert(argv.end(), {"-i", input});
+  if (!speed_changed) argv.insert(argv.end(), {"-t", t_buf});
 
   if (opts.video) {
+    if (speed_changed) {
+      char sp_buf[64];
+      std::snprintf(sp_buf, sizeof(sp_buf), "%.6f", speed);
+      std::string fc = std::string("[0:v]setpts=PTS/") + sp_buf + "[v];[0:a]" +
+                       atempo_chain(speed) + "[a]";
+      argv.insert(argv.end(), {"-filter_complex", fc, "-map", "[v]", "-map", "[a]"});
+    }
     const std::string e = ext_lower(output);
     if (e == "webm") {
       const char* a[] = {
@@ -145,6 +186,9 @@ ClipResult clip(const std::string& input,
   } else {
     std::string fmt = opts.audio_format.empty() ? std::string("wav") : opts.audio_format;
     argv.insert(argv.end(), {"-vn", "-map", "0:a:0"});
+    if (speed_changed) {
+      argv.insert(argv.end(), {"-filter:a", atempo_chain(speed)});
+    }
     if (fmt == "wav") {
       argv.insert(argv.end(), {"-c:a", "pcm_s24le"});
     } else if (fmt == "flac") {
@@ -171,8 +215,8 @@ ClipResult clip(const std::string& input,
     if (split_kv(line, &key, &val)) {
       if (key == "out_time") {
         double t = parse_ffmpeg_time(val);
-        if (t >= 0.0 && duration > 0.0) {
-          double pct = (t / duration) * 100.0;
+        if (t >= 0.0 && out_duration > 0.0) {
+          double pct = (t / out_duration) * 100.0;
           if (pct < 0.0) pct = 0.0;
           if (pct > 100.0) pct = 100.0;
           progress_update(pct, "", "");

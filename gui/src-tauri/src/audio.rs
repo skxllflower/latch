@@ -616,7 +616,7 @@ fn audio_thread(app: AppHandle, rx: Receiver<Cmd>) {
     // The stream must outlive every sink — owned here for the thread's life.
     let Ok((_stream, handle)) = rodio::OutputStream::try_default() else {
         // No output device: report once; commands drain into the void.
-        let _ = app.emit_to("chop", "audio-pos", serde_json::json!({
+        let _ = app.emit("audio-pos", serde_json::json!({
             "path": "", "posSec": 0.0, "state": "error",
             "message": "no audio output device",
         }));
@@ -650,7 +650,7 @@ fn audio_thread(app: AppHandle, rx: Receiver<Cmd>) {
                         }
                         Err(e) => {
                             st.path = String::new();
-                            let _ = app.emit_to("chop", "audio-pos", serde_json::json!({
+                            let _ = app.emit("audio-pos", serde_json::json!({
                                 "path": path, "posSec": 0.0, "state": "error", "message": e,
                             }));
                         }
@@ -756,7 +756,7 @@ fn audio_thread(app: AppHandle, rx: Receiver<Cmd>) {
         }
         if last_emit.elapsed() >= Duration::from_millis(33) {
             last_emit = Instant::now();
-            let _ = app.emit_to("chop", "audio-pos", serde_json::json!({
+            let _ = app.emit("audio-pos", serde_json::json!({
                 "path": st.path,
                 "posSec": pos,
                 "state": state,

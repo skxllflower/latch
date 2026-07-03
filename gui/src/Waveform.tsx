@@ -31,7 +31,7 @@ interface WaveformViewProps {
   // When provided, the playhead renders at this position; when absent it
   // follows the engine while OUR file is playing.
   playheadGetter?: () => number;
-  overlay?: (vp: { tStart: number; tEnd: number; durationSec: number }) => React.ReactNode;
+  overlay?: (vp: { tStart: number; tEnd: number; durationSec: number; panViewport: (deltaSec: number) => void }) => React.ReactNode;
   // Vertical tick marks (e.g. chapter starts, the armed I point) drawn
   // behind the peaks. Default tint is the chapter amber; pass `color`
   // for distinct marks.
@@ -143,6 +143,19 @@ export const WaveformView: React.FC<WaveformViewProps> = ({
     vpTargetRef.current = next;
     if (!tweenRafRef.current) tweenRafRef.current = requestAnimationFrame(tweenTick);
   }, [tweenTick]);
+  // Pan the viewport by a signed second delta (clamped to [0, duration],
+  // width-preserving) — backs the region overlay's ctrl+drag pan and its
+  // near-edge auto-scroll. Compounds on the in-flight target like the wheel
+  // pan (:306-310) so a burst stays continuous.
+  const panBySec = useCallback((deltaSec: number) => {
+    if (duration <= 0 || !deltaSec) return;
+    const cur = vpTargetRef.current ?? vpRef.current;
+    let s = cur.tStart + deltaSec;
+    let t = cur.tEnd + deltaSec;
+    if (s < 0) { t -= s; s = 0; }
+    if (t > duration) { s -= t - duration; t = duration; }
+    commitTarget({ tStart: Math.max(0, s), tEnd: Math.min(duration, t) });
+  }, [duration, commitTarget]);
   // Immediate commit (file reset) — snap with no tween.
   const commitVp = useCallback((next: { tStart: number; tEnd: number }) => {
     if (tweenRafRef.current) { cancelAnimationFrame(tweenRafRef.current); tweenRafRef.current = 0; }
@@ -452,8 +465,8 @@ export const WaveformView: React.FC<WaveformViewProps> = ({
   }, [filePath, playheadGetter]);
 
   const vpForOverlay = useMemo(
-    () => ({ tStart: vp.tStart, tEnd: vp.tEnd, durationSec: duration }),
-    [vp, duration],
+    () => ({ tStart: vp.tStart, tEnd: vp.tEnd, durationSec: duration, panViewport: panBySec }),
+    [vp, duration, panBySec],
   );
 
   return (

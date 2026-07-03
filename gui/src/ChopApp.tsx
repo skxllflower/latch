@@ -113,6 +113,10 @@ export default function ChopApp() {
   const [showVideo, setShowVideo] = useState(true);
   const [videoAspect] = useState(16 / 9);
   const [videoPaneH, setVideoPaneH] = useState(0);
+  // Manual splitter override for the video/waveform split (null = auto-fit).
+  // Set by dragging the row-resize handle; reset to null on any structural
+  // change (video shown/hidden, aspect) by the fit effect.
+  const [userVideoPaneH, setUserVideoPaneH] = useState<number | null>(null);
   const [cursorSec, setCursorSec] = useState(0);       // click position → playhead when audio isn't playing
   const videoRef = useRef<VideoViewHandle>(null);
   // Carried across the low-res → HD preview swap so the reload keeps the
@@ -199,6 +203,7 @@ export default function ChopApp() {
   // download never fires with an empty path due to a stale seed.
   const binaryPathRef = useRef('');
   const hasVideo = videoPath !== null;                 // preview exists (low-res ok)
+  const hasVideoRef = useRef(hasVideo); hasVideoRef.current = hasVideo;
   const canExportVideo = hdVideoPath !== null;          // full-res ready → video export allowed
   const windowLabel = useMemo(() => getCurrentWindow().label, []);
   // Base name for exported clips — the media title from the seed.
@@ -281,7 +286,7 @@ export default function ChopApp() {
   // it so they don't disturb it.
   const runClip = useCallback((args: {
     input: string; output: string; startSec: number; endSec: number;
-    video: boolean; overwrite: boolean; preview?: boolean; onProgress?: (pct: number) => void;
+    video: boolean; overwrite: boolean; preview?: boolean; speed?: number; onProgress?: (pct: number) => void;
   }): Promise<string> => {
     return new Promise((resolve, reject) => {
       const jobId = uid();
@@ -301,6 +306,7 @@ export default function ChopApp() {
         input: args.input, output: args.output,
         startSec: args.startSec, endSec: args.endSec,
         video: args.video, audioFormat: 'wav', overwrite: args.overwrite, preview: args.preview ?? false,
+        speed: args.speed ?? 1,
       }).catch((err) => done(() => reject(err)));
     });
   }, [windowLabel]);
@@ -525,6 +531,11 @@ export default function ChopApp() {
   // on show/hide/aspect — never on a width resize — so there's no loop.
   useEffect(() => {
     if (phase !== 'ready') return;
+    // A structural change (video shown/hidden, aspect) returns the split to
+    // auto — the user's manual splitter height only holds until the next one.
+    // userVideoPaneH is deliberately NOT a dep, so a splitter drag doesn't
+    // re-run this and snap the window back.
+    setUserVideoPaneH(null);
     const W = Math.max(360, Math.round(window.innerWidth));
     const showV = hasVideo && showVideo;
     const paneH = showV ? Math.round(W / Math.max(0.1, videoAspect)) : 0;
@@ -543,6 +554,20 @@ export default function ChopApp() {
       if (tempDirRef.current) void invoke('latch_chop_cleanup_dir', { dir: tempDirRef.current }).catch(() => {});
     });
     return () => { void unP.then((u) => u()).catch(() => {}); };
+  }, []);
+
+  // Pause on defocus: stepping out to a DAW / another window shouldn't leave
+  // this window playing under it. onFocusChanged (the OS-level window focus)
+  // is used deliberately, NOT DOM blur — blur fires spuriously when a child
+  // window or an in-window input takes focus.
+  useEffect(() => {
+    const w = getCurrentWindow();
+    const unF = w.onFocusChanged(({ payload: focused }) => {
+      if (focused) return;
+      if (hasVideoRef.current) videoRef.current?.pause();
+      else playbackEngine.pause();
+    });
+    return () => { void unF.then((u) => u()).catch(() => {}); };
   }, []);
 
   // ---- Transport / audition ----------------------------------------------
@@ -653,6 +678,17 @@ export default function ChopApp() {
       playRegion(r);
     }
   }, [hasVideo, select, playRegion]);
+
+  // Space RETRIGGERS: replay the selected (or armed) region from its start,
+  // re-arming the loop (audio re-fires playbackEngine.play with startSec; video
+  // re-seeks + re-loops + plays). No region → whole-file play/pause, as before.
+  // K stays the plain pause/resume toggle.
+  const retriggerSelected = useCallback(() => {
+    const aid = selectedIdRef.current ?? auditionIdRef.current;
+    const r = aid ? regionsRef.current.find((x) => x.id === aid) ?? null : null;
+    if (r) playRegionLooped(r);
+    else playPause();
+  }, [playRegionLooped, playPause]);
 
   // Delete a region and keep the audition sane. If the deleted region is the
   // one being auditioned, release its loop and SWAP to the next region in
@@ -842,7 +878,8 @@ export default function ChopApp() {
       if (hasVideo) {
         const v = videoRef.current;
         switch (e.code) {
-          case 'Space': case 'KeyK': e.preventDefault(); v?.togglePlay(); break;
+          case 'Space': e.preventDefault(); retriggerSelected(); break;
+          case 'KeyK': e.preventDefault(); v?.togglePlay(); break;
           case 'KeyJ': e.preventDefault(); v?.shuttle(-1); break;
           case 'KeyL': e.preventDefault(); v?.shuttle(1); break;
           case 'ArrowLeft': e.preventDefault(); v?.stepFrame(-1); break;
@@ -850,7 +887,8 @@ export default function ChopApp() {
         }
       } else {
         switch (e.code) {
-          case 'Space': case 'KeyK': e.preventDefault(); playPause(); break;
+          case 'Space': e.preventDefault(); retriggerSelected(); break;
+          case 'KeyK': e.preventDefault(); playPause(); break;
           case 'ArrowLeft': e.preventDefault(); nudge(-1); break;
           case 'ArrowRight': e.preventDefault(); nudge(1); break;
         }
@@ -858,7 +896,7 @@ export default function ChopApp() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [selectedId, phase, hasVideo, playPause, nudge, removeAndAdvance,
+  }, [selectedId, phase, hasVideo, playPause, retriggerSelected, nudge, removeAndAdvance,
       undo, redo, pushHistory, setRegions, durationSec, cursorSec]);
 
   const auditionRegion = auditionId ? regions.find((r) => r.id === auditionId) ?? null : null;
@@ -889,8 +927,38 @@ export default function ChopApp() {
     }
   }, [hasVideo, videoPath, auditionRegion?.startSec, auditionRegion?.endSec]);
 
-  // The VideoView (and its play state) only exists while the preview is shown.
-  useEffect(() => { if (!(hasVideo && showVideo)) setVideoPlaying(false); }, [hasVideo, showVideo]);
+  // Imperative live-loop channel (item 7): the overlay fires onLiveBounds on
+  // every gesture tick. We re-arm the active stream's loop DIRECTLY — ungated
+  // by auditionId (arm-on-grab: the region under the drag becomes the live
+  // loop for the gesture's duration) and coalesced to ONE authoritative
+  // re-arm per frame so a fast drag can't thrash the decoder. The React
+  // settle effect above stays as the on-drop backstop.
+  const liveLoopRaf = useRef(0);
+  const liveLoopPending = useRef<{ s: number; e: number; armed: boolean } | null>(null);
+  const onLiveBounds = useCallback((_id: string, s: number, e: number) => {
+    // Video arm-on-grabs any region (setLoop is transient — the settle effect
+    // reverts to the armed region on drop). Audio's Rust loop applies to the
+    // one playing stream, so re-arming it for a NON-armed region would corrupt
+    // the armed region's loop — gate the audio path to the armed region.
+    liveLoopPending.current = { s, e, armed: auditionIdRef.current === _id };
+    if (liveLoopRaf.current) return;
+    liveLoopRaf.current = requestAnimationFrame(() => {
+      liveLoopRaf.current = 0;
+      const p = liveLoopPending.current;
+      if (!p || !(p.e > p.s)) return;
+      const EPS = 0.01;
+      if (hasVideoRef.current) {
+        videoRef.current?.setLoop(p.s, p.e);
+        const t = videoRef.current?.getCurrentTime() ?? p.s;
+        if (t < p.s - EPS || t > p.e + EPS) videoRef.current?.seek(p.s);
+      } else if (p.armed && onOurFileRef.current) {
+        playbackEngine.setLoop(p.s, p.e);
+        const t = playbackEngine.getPosition();
+        if (t < p.s - EPS || t > p.e + EPS) playbackEngine.seek(p.s);
+      }
+    });
+  }, []);
+  useEffect(() => () => { if (liveLoopRaf.current) cancelAnimationFrame(liveLoopRaf.current); }, []);
 
   // ---- Export / drag-out --------------------------------------------------
   // `forceVideo` overrides the per-region/default toggle: the drag-out path
@@ -936,7 +1004,7 @@ export default function ChopApp() {
       const stem = regionFileStem(r, i, sourceStem);
       const out = `${dir}${dsep}${stem}.${ext}`;
       try {
-        const written = await runClip({ input, output: out, startSec: r.startSec, endSec: r.endSec, video, overwrite: false });
+        const written = await runClip({ input, output: out, startSec: r.startSec, endSec: r.endSec, video, overwrite: false, speed: videoRef.current?.getSpeed() ?? 1 });
         void emit('wd-latch-clip-exported', { path: written, title: stem });
         ok++;
       } catch { fail++; }
@@ -1003,6 +1071,7 @@ export default function ChopApp() {
       const path = await runClip({
         input, output: `${clipsDir}${dsep}${stem}.${ext}`,
         startSec: r.startSec, endSec: r.endSec, video, overwrite: false,
+        speed: videoRef.current?.getSpeed() ?? 1,
       });
       const cur = regionsRef.current.find((x) => x.id === id);
       const variantIsDefault = (forceVideo ?? (r.exportVideo ?? false)) === (cur?.exportVideo ?? false);
@@ -1051,6 +1120,8 @@ export default function ChopApp() {
   // "drag again" and is gone).
   const beginRegionDragOut = useCallback(async (r: ChopRegion, forceVideo?: boolean) => {
     if (!audioPath || !tempDirRef.current) return;
+    // Dragging a clip out shouldn't leave the source playing underneath it.
+    if (hasVideoRef.current) videoRef.current?.pause(); else playbackEngine.pause();
     const { input, video, ext } = clipInputFor(r, forceVideo);
     const idx = regionsRef.current.findIndex((x) => x.id === r.id);
     const stem = regionFileStem(r, idx < 0 ? 0 : idx, sourceStem);
@@ -1088,7 +1159,7 @@ export default function ChopApp() {
       // after a folder drop, so a cached path can't be trusted. No-clobber
       // keeps any path an app has already linked byte-stable.
       setClip(r.id, 'rendering');
-      const path = await runClip({ input, output: out, startSec: r.startSec, endSec: r.endSec, video, overwrite: false });
+      const path = await runClip({ input, output: out, startSec: r.startSec, endSec: r.endSec, video, overwrite: false, speed: videoRef.current?.getSpeed() ?? 1 });
       setClip(r.id, 'ready', path);
       void emit('wd-latch-clip-exported', { path, title: fileName });
       if (released) {
@@ -1151,6 +1222,32 @@ export default function ChopApp() {
   }, [durationSec, pushHistory, setRegions, select]);
   onLoopPointsRef.current = onLoopPoints;
 
+  // ---- Video / waveform splitter ------------------------------------------
+  // A thin row-resize handle between the video pane and the waveform lets the
+  // user trade video height for waveform height. It only redistributes the
+  // internal split (userVideoPaneH); the WINDOW size is left alone, so the
+  // waveform (flex-1) simply absorbs whatever the video pane gives up.
+  const splitDragRef = useRef<{ y: number; h: number } | null>(null);
+  const onSplitPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    splitDragRef.current = { y: e.clientY, h: userVideoPaneH ?? videoPaneH };
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+  }, [userVideoPaneH, videoPaneH]);
+  const onSplitPointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const d = splitDragRef.current;
+    if (!d) return;
+    const MIN_VIDEO = 80;
+    const bodyH = Math.max(0, window.innerHeight - 26);
+    const RESERVED = 90 /* waveform min */ + 92 /* rail */ + 14 /* hint */ + 31 /* bottom */;
+    const maxVideo = Math.max(MIN_VIDEO, bodyH - RESERVED);
+    const next = Math.round(Math.max(MIN_VIDEO, Math.min(maxVideo, d.h + (e.clientY - d.y))));
+    setUserVideoPaneH(next);
+  }, []);
+  const onSplitPointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    splitDragRef.current = null;
+    e.currentTarget.releasePointerCapture?.(e.pointerId);
+  }, []);
+
   // ---- Render -------------------------------------------------------------
   const railBtn = (active: boolean) =>
     `h-6 px-2 border transition-none text-[0.5625rem] uppercase font-bold tracking-tight shrink-0 ${
@@ -1189,7 +1286,7 @@ export default function ChopApp() {
             is sized to the video's aspect (see the fit effect) so a 16:9
             clip fills it with no letterbox deadspace. */}
         {hasVideo && showVideo && videoPath && phase === 'ready' && (
-          <div className="w-full shrink-0 border-b border-[color:var(--theme-border)] bg-black" style={{ height: videoPaneH || undefined }}>
+          <div className="w-full shrink-0 border-b border-[color:var(--theme-border)] bg-black" style={{ height: (userVideoPaneH ?? videoPaneH) || undefined }}>
             {/* The real visualizer video player: rich transport, J/K/L
                 shuttle, zoom/pan, frame-step. It owns playback (audio) for
                 video links, so the WAV transport below is hidden then. */}
@@ -1210,6 +1307,19 @@ export default function ChopApp() {
                 }
               }} />
           </div>
+        )}
+        {/* Row-resize handle: drag up to give the waveform more room, down to
+            grow the video. Only redistributes the internal split. */}
+        {hasVideo && showVideo && videoPath && phase === 'ready' && (
+          <div
+            onPointerDown={onSplitPointerDown}
+            onPointerMove={onSplitPointerMove}
+            onPointerUp={onSplitPointerUp}
+            onPointerCancel={onSplitPointerUp}
+            className="w-full shrink-0 cursor-row-resize bg-[color:var(--theme-border)] hover:bg-[color:var(--theme-border-strong)]"
+            style={{ height: '4px', touchAction: 'none' }}
+            title="Drag to resize the video / waveform split"
+          />
         )}
         {/* Waveform + region overlay */}
         <div ref={waveContainerRef} className="relative w-full flex-1 min-h-0 border-b border-[color:var(--theme-border)]">
@@ -1248,6 +1358,8 @@ export default function ChopApp() {
                     canExportVideo={canExportVideo}
                     onGestureStart={() => pushHistory()}
                     onGestureEnd={(info) => { void onGestureEnd(info); }}
+                    panViewport={vp.panViewport}
+                    onLiveBounds={onLiveBounds}
                   />
                 );
               }}
@@ -1327,7 +1439,7 @@ export default function ChopApp() {
                 <div
                   key={r.id}
                   draggable
-                  onDragStart={(e) => { e.preventDefault(); select(r.id); void beginRegionDragOut(r); }}
+                  onDragStart={(e) => { e.preventDefault(); if (hasVideoRef.current) videoRef.current?.pause(); else playbackEngine.pause(); select(r.id); void beginRegionDragOut(r); }}
                   onMouseDown={() => select(r.id)}
                   className={`flex items-center gap-1.5 px-2 h-7 border-b border-[color:var(--theme-border)] cursor-grab ${
                     sel ? 'bg-[var(--theme-bg-hover)]' : 'hover:bg-[var(--theme-bg-elevated)]'}`}
@@ -1386,10 +1498,10 @@ export default function ChopApp() {
         <div
           className="flex items-center px-2 border-t border-[color:var(--theme-border)] shrink-0 overflow-hidden"
           style={{ height: '14px' }}
-          title="space: play/pause · J/K/L: shuttle (video) · double-click or drag: add region · I then O: mark a region · arrows: nudge selected region (Shift: coarse, Ctrl: start edge, Alt: end edge) · Delete: remove region · Ctrl+Z / Ctrl+Y: undo / redo · region grips: drag out the audio / video clip"
+          title="space: retrigger the selected region from its start (whole file if none) · K: play / pause · J/L: shuttle (video) · double-click or drag: add region · I then O: mark a region · arrows: nudge selected region (Shift: coarse, Ctrl: start edge, Alt: end edge) · Delete: remove region · Ctrl+Z / Ctrl+Y: undo / redo · region grips: drag out the audio / video clip"
         >
           <span className="truncate text-[0.5rem] text-[color:var(--theme-text-muted)] select-none tabular-nums">
-            space play{hasVideo ? ' · J/K/L shuttle' : ''} · dbl-click add · I/O mark region · arrows nudge (shift coarse · ctrl start · alt end) · del remove · ctrl+Z undo · grips drag out audio{hasVideo ? '/video' : ''}
+            space retrigger · K play/pause{hasVideo ? ' · J/L shuttle' : ''} · dbl-click add · I/O mark region · arrows nudge (shift coarse · ctrl start · alt end) · del remove · ctrl+Z undo · grips drag out audio{hasVideo ? '/video' : ''}
           </span>
         </div>
 
