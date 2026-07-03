@@ -605,23 +605,34 @@ export default function ChopApp() {
     if (!audioPath) return;
     setAuditionId(r.id);
     void playbackEngine.play(audioPath, 'full', { startSec: r.startSec });
+    // Cmd::Play resets the Rust loop; re-arm explicitly (channel order
+    // guarantees play-then-arm). The watcher's arm effect only fires on a
+    // BOUNDS change, so a same-region retrigger (Space stop → Space, which
+    // now keeps the region armed) would otherwise play through the out.
+    playbackEngine.setLoop(r.startSec, r.endSec);
   }, [audioPath]);
 
-  // Folded play: a selected region auditions THAT region (looped per the
-  // Loop toggle); otherwise the whole file. Pause/resume when our file is
-  // already going.
+  // Folded play: an ARMED selected region auditions THAT region (looped);
+  // otherwise the whole file. Pause/resume when our file is already going.
+  // Video links route to VideoView unconditionally — the WAV engine must
+  // never start under a video session (that pairing was the "two audio
+  // sources with no way to kill them" field bug: retrigger's no-region
+  // fallback landed here with hasVideo true and played the companion WAV
+  // alongside the video audio).
   const playPause = useCallback(() => {
     if (!audioPath) return;
+    if (hasVideoRef.current) { videoRef.current?.togglePlay(); return; }
     if (isPlaying && onOurFile) { playbackEngine.pause(); return; }
     if (playState === 'paused' && onOurFile) { void playbackEngine.resume(); return; }
-    const sel = selectedId ? regions.find((r) => r.id === selectedId) ?? null : null;
+    const sel = selectedId && auditionId === selectedId
+      ? regions.find((r) => r.id === selectedId) ?? null : null;
     if (sel) playRegion(sel); else playWhole();
-  }, [audioPath, isPlaying, onOurFile, playState, selectedId, regions, playRegion, playWhole]);
+  }, [audioPath, isPlaying, onOurFile, playState, selectedId, auditionId, regions, playRegion, playWhole]);
 
   const stopAll = useCallback(() => {
     setAuditionId(null);
     playbackEngine.stop({ fadeMs: 20 });
-    if (hasVideo) videoRef.current?.clearLoop();
+    if (hasVideo) { videoRef.current?.pause(); videoRef.current?.clearLoop(); }
   }, [hasVideo]);
 
   // Stop: pause and jump the playhead back to the start of the looping (or
@@ -636,6 +647,7 @@ export default function ChopApp() {
     if (hasVideo) {
       videoRef.current?.pause();
       videoRef.current?.seek(target);
+      playbackEngine.stop({ fadeMs: 20 }); // Stop kills EVERY source — no WAV may survive it
     } else if (onOurFileRef.current) {
       playbackEngine.pause();
       playbackEngine.seek(target);
@@ -646,8 +658,12 @@ export default function ChopApp() {
   // drive VideoView, audio links drive playbackEngine.
   const transportPlaying = hasVideo ? videoPlaying : (isPlaying && onOurFile);
   const toggleTransport = useCallback(() => {
-    if (hasVideo) videoRef.current?.togglePlay();
-    else playPause();
+    if (hasVideo) {
+      // Belt-and-braces single-source rule: a WAV audition must never
+      // underlap the video session.
+      if (playStateRef.current === 'playing') playbackEngine.stop({ fadeMs: 20 });
+      videoRef.current?.togglePlay();
+    } else playPause();
   }, [hasVideo, playPause]);
 
   // Click OUTSIDE any selection: park the playhead there, un-looped, and
@@ -685,6 +701,10 @@ export default function ChopApp() {
     setAuditionId(r.id);
     setCursorSec(r.startSec);
     if (hasVideo) {
+      // Single-source rule: kill any WAV audition before the video session
+      // becomes the transport (a leaked engine play would otherwise run
+      // UNDER the video audio with no UI showing it).
+      playbackEngine.stop({ fadeMs: 20 });
       videoRef.current?.seek(r.startSec);
       videoRef.current?.setLoop(r.startSec, r.endSec);
       videoRef.current?.play();
@@ -693,30 +713,33 @@ export default function ChopApp() {
     }
   }, [hasVideo, select, playRegion]);
 
-  // Space ALTERNATES retrigger <-> STOP on the selected (or armed) region:
-  // if it's currently playing, STOP it (not pause) and park the playhead at
-  // its start; otherwise retrigger it from the top (re-arming the loop). So
-  // Space goes retrigger, stop, retrigger, stop… No region → whole-file
-  // play/pause, as before. K stays the plain pause/resume toggle.
+  // Space ALTERNATES retrigger <-> STOP, but ONLY on a region that is both
+  // SELECTED and ACTIVE (armed as the audition loop): retrigger from the top
+  // if stopped, STOP (not pause) parking the playhead at its start if playing.
+  // The region stays selected AND armed through the stop so Space keeps
+  // alternating retrigger, stop, retrigger… Anything else — no selection, or
+  // a region merely selected in the rail — falls back to the ORIGINAL
+  // whole-file play/pause transport (kind-routed: video links drive
+  // VideoView, audio links the engine). K stays the plain pause/resume.
   const retriggerSelected = useCallback(() => {
-    const aid = selectedIdRef.current ?? auditionIdRef.current;
-    const r = aid ? regionsRef.current.find((x) => x.id === aid) ?? null : null;
+    const selId = selectedIdRef.current;
+    const armed = selId != null && auditionIdRef.current === selId;
+    const r = armed ? regionsRef.current.find((x) => x.id === selId) ?? null : null;
     if (!r) { playPause(); return; }
     const playing = hasVideoRef.current
       ? videoPlayingRef.current
       : (isPlayingRef.current && onOurFileRef.current);
     if (playing) {
-      // STOP: halt playback, keep the region selected/armed, and park the
-      // playhead at its start so the next Space retriggers cleanly.
+      // STOP: halt EVERY live source (video session AND the WAV engine — the
+      // pair must never survive a stop), keep the region selected + armed +
+      // loop-cued, and park the playhead at its start so the next Space
+      // retriggers cleanly.
       setCursorSec(r.startSec);
-      setAuditionId(null);
       if (hasVideoRef.current) {
         videoRef.current?.pause();
-        videoRef.current?.clearLoop();
         videoRef.current?.seek(r.startSec);
-      } else {
-        playbackEngine.stop({ fadeMs: 20 });
       }
+      playbackEngine.stop({ fadeMs: 20 });
     } else {
       playRegionLooped(r);
     }
@@ -1444,16 +1467,35 @@ export default function ChopApp() {
                     onGestureStart={() => { draggingRef.current = true; pushHistory(); }}
                     onGestureEnd={(info) => {
                       draggingRef.current = false;
+                      // Kill the trailing onLiveBounds rAF BEFORE re-arming.
+                      // Queued by the gesture's last pointermove, it would
+                      // otherwise fire AFTER the drop's setLoop, flip the
+                      // engine back into live-drag mode (liveLoopActive) and
+                      // collapse the just-queued arm into a disarm — the
+                      // settled loop then escapes at the out-point every
+                      // cycle until the next activation (the post-release
+                      // right-boundary disrespect).
+                      if (liveLoopRaf.current) {
+                        cancelAnimationFrame(liveLoopRaf.current);
+                        liveLoopRaf.current = 0;
+                      }
+                      liveLoopPending.current = null;
                       // Re-arm the gapless video loop at the settled bounds
                       // (present() ran on the live-drag seek-wrap path during
                       // the gesture). One re-arm on drop, never per move. When
                       // a NON-armed region was dragged (video arm-on-grab moved
                       // the live walls there), restore the ARMED region's cage.
+                      // A CREATE was armed by onActivate a beat ago (the
+                      // auditionId ref is still stale here) — treat it as the
+                      // armed target. NO armed region at all → release the
+                      // gesture cage entirely, or liveLoopActive dangles at
+                      // the drag bounds and cages whole-file playback.
                       if (hasVideoRef.current) {
-                        const armedId = auditionIdRef.current;
+                        const armedId = info.kind === 'create' ? info.id : auditionIdRef.current;
                         const target = regionsRef.current.find((x) =>
                           x.id === (armedId === info.id ? info.id : armedId));
                         if (target) videoRef.current?.setLoop(target.startSec, target.endSec);
+                        else videoRef.current?.clearLoop();
                       }
                       void onGestureEnd(info);
                     }}

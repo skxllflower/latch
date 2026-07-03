@@ -27,6 +27,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { latheStatus } from './latheStatus';
+import { staleWrapFlushNeeded } from './liveLoopFlush';
 
 export interface NativeStreamConfig {
   path: string;
@@ -82,15 +83,38 @@ const VIDEO_AV_LEAD_SEC = 0.05;
 const SEEK_DEBOUNCE_PTS_MS = 50;
 const SEEK_DEBOUNCE_RAW_MS = 120;
 
-// How far AHEAD of the clock the decode pipeline can already be, in content
-// seconds: the Rust deck's PCM queue (VA_Q_CAP_SEC = 2s) + this engine's
-// frame buffer (0.6s) + pipe slack. When a live region-drag starts with the
-// playhead within this of the armed loop's out-point, the decoders may have
-// PRE-BUFFERED the wrap (gapless = they decode ahead, wrap included) —
-// disarming alone leaves that stale post-wrap data queued and the OLD loop
-// audibly/visibly replays before the new bounds take. Only a re-cue seek
-// (its markers) flushes both streams.
-const STALE_WRAP_LOOKAHEAD_SEC = 2.75;
+// The AUDIO pipeline's decode look-ahead in content seconds: the Rust deck's
+// PCM queue (0.75s — see VA_Q_CAP_MS in audio.rs) + the OS pipe + slack. This
+// is the part of the decode horizon JS can't inspect directly; the VIDEO side
+// is checked against the actual frame buffer instead. staleWrapFlushNeeded()
+// combines the two: a loop-bounds handoff (grab OR drop) only pays the flush
+// re-cue when stale data at/beyond the relevant out-point can actually be
+// queued — a grab far from the walls stays glitchless. (The old blanket 2.75s
+// clock window fired for most of a small region's cycle: the grab hiccup.)
+const AUDIO_PIPELINE_LOOKAHEAD_SEC = 1.0;
+
+// present()'s settled-loop escape hatch: with the gapless decoder loop armed,
+// the audio master must wrap AT the out-point (the deck's rebase is sample-
+// exact; event jitter is ~1 tick). If the clock sails this far past it, the
+// decoders are NOT actually looping (a lost/raced arm — e.g. a stale live-drag
+// callback disarming behind a drop's re-arm) — re-take authority instead of
+// hard-following the audio out of the region forever.
+const LOOP_WRAP_OVERDUE_SEC = 0.3;
+
+// Live-wall bounce seeks: seek()'s trailing debounce alone can be STARVED when
+// a dragged wall keeps crossing the clock (every crossing re-arms the timer,
+// no command ever issues, and the DISARMED audio free-runs seconds past the
+// region — the left-edge-drag escape). Guarantee a leading issue at least this
+// often during a sustained chase.
+const LIVE_BOUNCE_MAX_GAP_MS = 120;
+
+// A vaudio_pos within this of an in-flight seek's target counts as post-seek
+// audio; anything farther is the OLD cursor still emitting and must not steer
+// the clock (it would yank the playhead straight back past a just-bounced
+// wall). Bounded so a lost marker can't gate the audio master forever — the
+// deck's own watchdog reopens its side at 1.5s.
+const SEEK_AUDIO_NEAR_SEC = 1.25;
+const SEEK_AUDIO_PENDING_MAX_MS = 4000;
 
 const sleep = (ms: number) => new Promise<void>((r) => window.setTimeout(r, ms));
 
@@ -194,6 +218,12 @@ export class NativeVideoEngine {
   private audioActive = false;
   private audioPos = 0;       // last vaudio_pos (sec)
   private audioPosAt = 0;     // performance.now() when audioPos arrived
+  // Gates the audio master out of the clock while a seek's post-seek position
+  // hasn't landed: a stale (pre-seek) cursor steering the clock is exactly the
+  // playhead-yanked-back-past-the-wall escape during loop bounces.
+  private audioSeekPending = false;
+  private audioSeekTarget = 0;
+  private audioSeekPendingAt = 0;
   // Set once the first frame is buffered: the clock holds until then (no startup
   // race), then runs on the wall clock and eases onto the audio position. Reset
   // on seek so the same hold re-arms while the new position spins up.
@@ -222,6 +252,15 @@ export class NativeVideoEngine {
         const p = e.payload as { event?: string; sec?: number; active?: boolean } | null;
         if (!p) return;
         if (p.event === 'vaudio_pos' && typeof p.sec === 'number') {
+          if (this.audioSeekPending) {
+            // A position far from the in-flight seek's target is the OLD
+            // cursor still emitting/in transit — letting it steer the clock
+            // yanks the playhead straight back past a just-bounced wall.
+            const near = Math.abs(p.sec - this.audioSeekTarget) <= SEEK_AUDIO_NEAR_SEC;
+            const expired = performance.now() - this.audioSeekPendingAt > SEEK_AUDIO_PENDING_MAX_MS;
+            if (!near && !expired) return;
+            this.audioSeekPending = false;
+          }
           // Only a position event activates the audio clock — it carries the
           // anchor (audioPos + audioPosAt) the ease needs. (vaudio_state{active:
           // true} is just "audio is coming"; activating on it would ease from an
@@ -231,6 +270,7 @@ export class NativeVideoEngine {
           this.audioActive = true;
         } else if (p.event === 'vaudio_state' && !p.active) {
           this.audioActive = false; // confirmed no audio track → wall clock, muted
+          this.audioSeekPending = false;
         }
       });
     } catch { this.unlistenAudio = null; }
@@ -313,10 +353,41 @@ export class NativeVideoEngine {
     // stranded — normal region activation seeks to the in-point FIRST, so the
     // clock is already inside and this no-ops.
     const r = this.loopRegion;
-    if (r && this._playing && this.dir > 0 &&
-        (this.clock > r.outSec + 0.02 || this.clock < r.inSec - 0.02)) {
-      this.seek(r.inSec);
+    if (r && this._playing && this.dir > 0) {
+      if (this.clock > r.outSec + 0.02 || this.clock < r.inSec - 0.02) {
+        this.seek(r.inSec);
+      } else if (this.pipelineStaleBeyond(r.outSec)) {
+        // Settled re-arm with the decode pipeline possibly already PAST the
+        // new out-point (right-edge shrink release: the decoders free-ran
+        // while disarmed for the gesture). The arm alone can't un-queue the
+        // stale post-out PCM/frames — only a seek's markers flush both
+        // streams — so without this the playhead (audio master) sails past
+        // the settled wall until the pipes drain. Re-cue in place; the armed
+        // decoders then wrap exactly at the settled out.
+        this.seek(this.clock);
+      }
     }
+  }
+
+  // Can the decode pipeline already hold data at/beyond `outSec`? Video side
+  // from the actual frame buffer; audio side from the clock vs the PCM
+  // pipeline look-ahead. See liveLoopFlush.ts.
+  private pipelineStaleBeyond(outSec: number, seamBuffered?: boolean): boolean {
+    let seam = seamBuffered ?? false;
+    if (seamBuffered === undefined) {
+      for (let i = 1; i < this.frames.length; i++) {
+        if (this.frames[i].t < this.frames[i - 1].t) { seam = true; break; }
+      }
+    }
+    return staleWrapFlushNeeded({
+      playing: this._playing,
+      dirForward: this.dir > 0,
+      clock: this.clock,
+      outSec,
+      seamBuffered: seam,
+      lastBufferedT: this.frames.length ? this.frames[this.frames.length - 1].t : null,
+      audioLookaheadSec: AUDIO_PIPELINE_LOOKAHEAD_SEC,
+    });
   }
 
   // Live region-drag bounds update: refresh the loop bounds present() reads
@@ -359,8 +430,7 @@ export class NativeVideoEngine {
       for (let i = seam; i < this.frames.length; i++) this.frames[i].bmp.close();
       this.frames.length = seam;
     }
-    if (old && this._playing && this.dir > 0 &&
-        (seam > 0 || this.clock > old.outSec - STALE_WRAP_LOOKAHEAD_SEC)) {
+    if (old && this.pipelineStaleBeyond(old.outSec, seam > 0)) {
       this.seek(this.clock);
     }
   }
@@ -470,6 +540,12 @@ export class NativeVideoEngine {
     this.clock = tt;
     this.audioPos = tt;
     this.audioPosAt = performance.now();
+    // Gate the audio master until a post-seek position lands: the deck's OLD
+    // cursor keeps emitting for a beat, and adopting it would yank the clock
+    // straight back to the pre-seek spot (past a just-bounced loop wall).
+    this.audioSeekPending = true;
+    this.audioSeekTarget = tt;
+    this.audioSeekPendingAt = performance.now();
     this.lastNow = performance.now();
     this.presentedT = -1;
     this.started = false;
@@ -493,6 +569,7 @@ export class NativeVideoEngine {
 
   private applySeek(tt: number): void {
     if (this.destroyed) return;
+    this.lastSeekCmdAt = performance.now();
     if (this.persistent) {
       this.pendingMarkers++;
       this.holdingForSeek = false;
@@ -513,6 +590,20 @@ export class NativeVideoEngine {
     // The daemon keeps play/pause state across seeks, but re-assert pause in
     // case any layer resumed (raw fallback restarts the audio playing).
     if (!this._playing) void invoke('pause_video_audio').catch(() => {});
+  }
+
+  // Wall-bounce seek for the loop paths in present(). Keeps seek()'s trailing
+  // coalesce, but fires the leading edge when no command has issued recently:
+  // a wall that keeps crossing the clock (live left-edge drag) re-calls seek()
+  // every frame, and the pure trailing debounce then NEVER issues — the
+  // disarmed audio free-runs past the region while the clock sits parked.
+  private lastSeekCmdAt = 0;
+  private liveBounceSeek(t: number): void {
+    this.seek(t);
+    if (performance.now() - this.lastSeekCmdAt >= LIVE_BOUNCE_MAX_GAP_MS) {
+      if (this.seekTimer) { window.clearTimeout(this.seekTimer); this.seekTimer = 0; }
+      this.applySeek(t);
+    }
   }
 
   // POST a transport command to the persistent decoder. True on 2xx. Seeks
@@ -734,7 +825,7 @@ export class NativeVideoEngine {
       // Signed clock: forward at +rate, TRUE reverse at -rate (the reversed
       // audio's position descends and remains the master either way).
       this.clock += dt * this.effRate() * this.dir;
-      if (this.audioActive) {
+      if (this.audioActive && !this.audioSeekPending) {
         // Audio is the master, but EASE onto it rather than snapping: smooth
         // startup takeover + rejection of bursty/late position events. A big
         // drift (a seek) snaps. Between events the position extrapolates at
@@ -758,8 +849,11 @@ export class NativeVideoEngine {
         }
       } else if (this.liveLoopActive && this.loopRegion && this.clock < this.loopRegion.inSec - 0.02) {
         // The LEFT wall was dragged right past the playhead — snap the ball
-        // back inside. The bounce target moves with the wall, live.
-        this.seek(this.loopRegion.inSec);
+        // back inside. The bounce target moves with the wall, live; the
+        // leading-edge bounce seek keeps the AUDIO re-cued during a sustained
+        // chase (a pure trailing debounce starves and the disarmed audio
+        // free-runs past the out-point — the left-edge-drag escape).
+        this.liveBounceSeek(this.loopRegion.inSec);
       } else if (this.loopRegion && this.clock >= this.loopRegion.outSec) {
         // Loop region wraps before the end-of-video check (out may sit at the
         // very end).
@@ -767,8 +861,17 @@ export class NativeVideoEngine {
           // Raw fallback OR a live region-drag (the decoder is still armed at
           // the grab-time out-point and can't chase the moving wall) — re-cue
           // to the LIVE in-point so the bounce lands on the current wall.
+          this.liveBounceSeek(this.loopRegion.inSec);
+        } else if (this.clock >= this.loopRegion.outSec + LOOP_WRAP_OVERDUE_SEC) {
+          // The gapless decoder loop owns this wrap, but the audio master has
+          // sailed past the out-point: the arm was lost or raced (e.g. a stale
+          // live-drag callback queued a disarm behind a drop's re-arm). Without
+          // this the hard-follow below tracks the escaped audio FOREVER.
+          // Re-take authority: re-cue inside the region and re-send the arm.
+          console.warn(`[nativeVideo] loop wrap overdue at ${this.clock.toFixed(2)}s (out ${this.loopRegion.outSec.toFixed(2)}s) - re-cueing + re-arming`);
           this.seek(this.loopRegion.inSec);
-        } else if (this.audioActive) {
+          this.queueArmLoop();
+        } else if (this.audioActive && !this.audioSeekPending) {
           // Gapless: the decoders already wrapped; hard-follow the audio
           // cursor through the seam (the ease's snap threshold can exceed a
           // SHORT loop's whole length, which would smear the wrap).
@@ -785,7 +888,7 @@ export class NativeVideoEngine {
         void invoke('pause_video_audio').catch(() => {});
         this.cb.onState?.(false);
       }
-    } else if (this.started && this.audioActive) {
+    } else if (this.started && this.audioActive && !this.audioSeekPending) {
       this.clock = this.audioPos; // paused: hold exactly at the audio cursor
     }
     this.lastNow = now;

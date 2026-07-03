@@ -858,7 +858,14 @@ export const VideoView = forwardRef<VideoViewHandle, VideoViewProps>(function Vi
       // the mirror effect never re-fires and re-arms the decoder per move.
       nativeEngineRef.current?.setLoopBounds(inSec, outSec);
     },
-    clearLoop: () => { setLoopRegion(false); },
+    clearLoop: () => {
+      setLoopRegion(false);
+      // Sync engine clear too: with loopRegion state ALREADY false (a gesture
+      // cage armed via setLoopBounds only — nothing ever set the React loop),
+      // the mirror effect won't re-fire, and the engine's live-drag loop
+      // would dangle at the last drag bounds, caging whole-file playback.
+      nativeEngineRef.current?.setLoopRegion(null);
+    },
     pause: () => {
       const eng = nativeEngineRef.current;
       if (eng) {

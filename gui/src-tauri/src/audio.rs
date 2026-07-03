@@ -78,7 +78,13 @@ const VA_OUTPUT_LATENCY_SEC: f64 = 0.0;
 // pipe (seek = respawn) is the fallback when decode-server is
 // unavailable.
 
-const VA_Q_CAP_SEC: usize = 2; // PCM queue depth before reader backpressure
+// PCM queue depth before reader backpressure. 750ms mirrors the WAVdesk
+// daemon's ring (~0.68s) this deck was cloned from: the queue bounds how far
+// the decoder runs AHEAD of playback, which is exactly how much stale audio
+// can escape a region after a loop-bounds handoff (grab/drop flush decisions
+// in nativeVideoStream size their AUDIO_PIPELINE_LOOKAHEAD to this). The old
+// 2s cap meant multi-second overshoots past a freshly-settled out-point.
+const VA_Q_CAP_MS: usize = 750;
 
 struct VaPos {
     base: f64,
@@ -463,7 +469,7 @@ impl VideoDeck {
 fn va_reader_chunked(mut stdout: std::process::ChildStdout, shared: std::sync::Arc<VaShared>) {
     use std::io::Read;
     let ch = shared.ch.max(1) as usize;
-    let q_cap = shared.sr as usize * ch * VA_Q_CAP_SEC;
+    let q_cap = shared.sr as usize * ch * VA_Q_CAP_MS / 1000;
     let mut payload: Vec<u8> = Vec::new();
     let mut rebase = true; // adopt the next data chunk's pts as the base
     let mut read_exact = |dst: &mut [u8]| -> bool {
@@ -561,7 +567,7 @@ fn va_reader_chunked(mut stdout: std::process::ChildStdout, shared: std::sync::A
 fn va_reader_raw(mut stdout: std::process::ChildStdout, shared: std::sync::Arc<VaShared>) {
     use std::io::Read;
     let ch = shared.ch.max(1) as usize;
-    let q_cap = shared.sr as usize * ch * VA_Q_CAP_SEC;
+    let q_cap = shared.sr as usize * ch * VA_Q_CAP_MS / 1000;
     let mut buf = [0u8; 32768];
     let mut carry: Vec<u8> = Vec::new();
     loop {
