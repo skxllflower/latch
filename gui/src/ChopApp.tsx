@@ -120,12 +120,14 @@ export default function ChopApp() {
   const [userVideoPaneH, setUserVideoPaneH] = useState<number | null>(null);
   const [cursorSec, setCursorSec] = useState(0);       // click position → playhead when audio isn't playing
   // Speed→pitch mode for exports, PER chop session (reset when a new video
-  // loads). 'preserve' keeps the original pitch (atempo); 'tape' lets pitch
-  // follow speed (asetrate varispeed, like a tape machine). The first speed!=1
-  // export asks once via a windowed dialog; the in-window chip flips it
-  // thereafter (and pre-empts the dialog). No cross-session persistence.
-  const [pitchMode, setPitchMode] = useState<'tape' | 'preserve'>('preserve');
-  const pitchModeRef = useRef<'tape' | 'preserve'>('preserve'); pitchModeRef.current = pitchMode;
+  // loads). 'tape' lets pitch follow speed (asetrate varispeed, like a tape
+  // machine); 'preserve' keeps the original pitch (atempo). Defaults to
+  // 'tape' — when sampling, people expect the pitch to move with speed. The
+  // first speed!=1 export still confirms once via a windowed dialog; the
+  // in-window chip flips it thereafter (and pre-empts the dialog). No
+  // cross-session persistence.
+  const [pitchMode, setPitchMode] = useState<'tape' | 'preserve'>('tape');
+  const pitchModeRef = useRef<'tape' | 'preserve'>('tape'); pitchModeRef.current = pitchMode;
   const pitchAskedRef = useRef(false);
   const [videoSpeed, setVideoSpeed] = useState(1); // mirrors VideoView speed → gates the pitch chip
   const videoRef = useRef<VideoViewHandle>(null);
@@ -374,9 +376,9 @@ export default function ChopApp() {
     setDurationSec(0); setRegions([]); select(null); setAuditionId(null); setExportMsg('');
     setChapters([]); historyRef.current = []; redoRef.current = [];
     lastPushRef.current = { tag: '', at: 0 };
-    // Fresh pitch-mode session for the new clip — ask again on its first
-    // speed-changed export.
-    setPitchMode('preserve'); pitchModeRef.current = 'preserve'; pitchAskedRef.current = false;
+    // Fresh pitch-mode session for the new clip — back to the 'tape'
+    // default, ask again on its first speed-changed export.
+    setPitchMode('tape'); pitchModeRef.current = 'tape'; pitchAskedRef.current = false;
     setVideoSpeed(1);
     try { playbackEngine.stop(); } catch { /* ignore */ }
 
