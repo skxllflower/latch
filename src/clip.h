@@ -24,9 +24,16 @@ struct ClipOptions {
   // audio format is set.
   bool preview = false;
   // Playback speed multiplier. 1.0 = unchanged. >1 faster, <1 slower.
-  // Applied to video (setpts + atempo) and audio-only (atempo) exports.
+  // Applied to video (setpts + atempo/asetrate) and audio-only exports.
   // Never applied to the preview WAV — the waveform source stays 1x.
   double speed = 1.0;
+  // Pitch behavior when speed != 1.0:
+  //   "preserve" (default / empty) — atempo chain: change tempo, keep pitch.
+  //   "tape" — asetrate varispeed: pitch follows speed like a tape machine
+  //   (a 0.5x clip is an octave down AND twice as long). The video setpts is
+  //   unchanged either way; only the audio filter differs. Ignored at 1x and
+  //   for the preview WAV.
+  std::string pitch_mode;
 };
 
 // Cuts [start_sec, end_sec) out of `input` into `output` with ffmpeg.

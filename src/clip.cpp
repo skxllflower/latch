@@ -75,6 +75,20 @@ static std::string atempo_chain(double speed) {
   return chain;
 }
 
+// Tape-style varispeed: reinterpret the sample rate so pitch AND tempo scale
+// together (a 0.5x clip drops an octave and doubles in length), the way a
+// tape machine slows down. asetrate needs a CONCRETE base rate, so normalize
+// to 48k first, relabel to 48k*speed, then resample back to 48k for the
+// encoder — robust to any source rate (the bare `asetrate=SR*speed,
+// aresample=SR` one-liner assumes the source is already SR).
+static std::string tape_chain(double speed) {
+  long r = std::lround(48000.0 * speed);
+  if (r < 1) r = 1;
+  char buf[96];
+  std::snprintf(buf, sizeof(buf), "aresample=48000,asetrate=%ld,aresample=48000", r);
+  return buf;
+}
+
 // "HH:MM:SS.uuuuuu" -> seconds, or -1 on garbage / N/A.
 static double parse_ffmpeg_time(const std::string& v) {
   int h = 0, m = 0;
@@ -108,6 +122,10 @@ ClipResult clip(const std::string& input,
   // would truncate it. Trim the INPUT (source-time) instead and let the
   // filter re-time the full span; progress tracks the resulting output length.
   const double out_duration = speed_changed ? duration / speed : duration;
+  // Tape mode swaps the atempo (tempo-only) chain for an asetrate varispeed
+  // (pitch follows speed). Both scale the output length by 1/speed identically,
+  // so out_duration is unchanged.
+  const bool tape = opts.pitch_mode == "tape";
 
   // ffmpeg only — check first, bootstrap solely if missing (no surprise
   // network use when it's already on disk).
@@ -156,7 +174,7 @@ ClipResult clip(const std::string& input,
       char sp_buf[64];
       std::snprintf(sp_buf, sizeof(sp_buf), "%.6f", speed);
       std::string fc = std::string("[0:v]setpts=PTS/") + sp_buf + "[v];[0:a]" +
-                       atempo_chain(speed) + "[a]";
+                       (tape ? tape_chain(speed) : atempo_chain(speed)) + "[a]";
       argv.insert(argv.end(), {"-filter_complex", fc, "-map", "[v]", "-map", "[a]"});
     }
     const std::string e = ext_lower(output);
@@ -187,7 +205,7 @@ ClipResult clip(const std::string& input,
     std::string fmt = opts.audio_format.empty() ? std::string("wav") : opts.audio_format;
     argv.insert(argv.end(), {"-vn", "-map", "0:a:0"});
     if (speed_changed) {
-      argv.insert(argv.end(), {"-filter:a", atempo_chain(speed)});
+      argv.insert(argv.end(), {"-filter:a", tape ? tape_chain(speed) : atempo_chain(speed)});
     }
     if (fmt == "wav") {
       argv.insert(argv.end(), {"-c:a", "pcm_s24le"});

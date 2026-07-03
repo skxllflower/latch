@@ -119,6 +119,7 @@ pub async fn latch_clip(
     overwrite: Option<bool>,
     preview: Option<bool>,
     speed: Option<f64>,
+    pitch_mode: Option<String>,
 ) -> Result<(), String> {
     let bin = crate::tools::find_tool_binary("latch", &binary_path)?;
     let output = if overwrite.unwrap_or(false) {
@@ -138,6 +139,10 @@ pub async fn latch_clip(
     let speed = speed.unwrap_or(1.0);
     if !preview.unwrap_or(false) && (speed - 1.0).abs() > 1e-6 {
         args.push(format!("--speed={}", speed));
+        // Pitch behavior at speed != 1: "tape" (pitch follows speed) or
+        // "preserve" (keep pitch, the default). Parsed before latch's
+        // unknown-arg reject.
+        args.push(format!("--pitch-mode={}", pitch_mode.as_deref().unwrap_or("preserve")));
     }
     if video {
         args.push("--video".to_string());

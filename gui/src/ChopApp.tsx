@@ -33,6 +33,7 @@ import { ChopRegionOverlay } from './ChopRegionOverlay';
 import { type VideoViewHandle } from './VideoView';
 import { VideoPreview } from './VideoPreview';
 import { latheStatus } from './latheStatus';
+import { confirmInWindow } from './dialogs';
 import { RegionLoopWatcher } from './chopAudition';
 import { useChopRegions } from './useChopRegions';
 import {
@@ -118,6 +119,15 @@ export default function ChopApp() {
   // change (video shown/hidden, aspect) by the fit effect.
   const [userVideoPaneH, setUserVideoPaneH] = useState<number | null>(null);
   const [cursorSec, setCursorSec] = useState(0);       // click position → playhead when audio isn't playing
+  // Speed→pitch mode for exports, PER chop session (reset when a new video
+  // loads). 'preserve' keeps the original pitch (atempo); 'tape' lets pitch
+  // follow speed (asetrate varispeed, like a tape machine). The first speed!=1
+  // export asks once via a windowed dialog; the in-window chip flips it
+  // thereafter (and pre-empts the dialog). No cross-session persistence.
+  const [pitchMode, setPitchMode] = useState<'tape' | 'preserve'>('preserve');
+  const pitchModeRef = useRef<'tape' | 'preserve'>('preserve'); pitchModeRef.current = pitchMode;
+  const pitchAskedRef = useRef(false);
+  const [videoSpeed, setVideoSpeed] = useState(1); // mirrors VideoView speed → gates the pitch chip
   const videoRef = useRef<VideoViewHandle>(null);
   // Carried across the low-res → HD preview swap so the reload keeps the
   // playhead (and resumes if it was playing) instead of jumping to 0.
@@ -286,7 +296,7 @@ export default function ChopApp() {
   // it so they don't disturb it.
   const runClip = useCallback((args: {
     input: string; output: string; startSec: number; endSec: number;
-    video: boolean; overwrite: boolean; preview?: boolean; speed?: number; onProgress?: (pct: number) => void;
+    video: boolean; overwrite: boolean; preview?: boolean; speed?: number; pitchMode?: string; onProgress?: (pct: number) => void;
   }): Promise<string> => {
     return new Promise((resolve, reject) => {
       const jobId = uid();
@@ -306,7 +316,7 @@ export default function ChopApp() {
         input: args.input, output: args.output,
         startSec: args.startSec, endSec: args.endSec,
         video: args.video, audioFormat: 'wav', overwrite: args.overwrite, preview: args.preview ?? false,
-        speed: args.speed ?? 1,
+        speed: args.speed ?? 1, pitchMode: args.pitchMode ?? 'preserve',
       }).catch((err) => done(() => reject(err)));
     });
   }, [windowLabel]);
@@ -364,6 +374,10 @@ export default function ChopApp() {
     setDurationSec(0); setRegions([]); select(null); setAuditionId(null); setExportMsg('');
     setChapters([]); historyRef.current = []; redoRef.current = [];
     lastPushRef.current = { tag: '', at: 0 };
+    // Fresh pitch-mode session for the new clip — ask again on its first
+    // speed-changed export.
+    setPitchMode('preserve'); pitchModeRef.current = 'preserve'; pitchAskedRef.current = false;
+    setVideoSpeed(1);
     try { playbackEngine.stop(); } catch { /* ignore */ }
 
     // Wipe the PREVIOUS session's temp downloads before allocating a fresh
@@ -679,15 +693,33 @@ export default function ChopApp() {
     }
   }, [hasVideo, select, playRegion]);
 
-  // Space RETRIGGERS: replay the selected (or armed) region from its start,
-  // re-arming the loop (audio re-fires playbackEngine.play with startSec; video
-  // re-seeks + re-loops + plays). No region → whole-file play/pause, as before.
-  // K stays the plain pause/resume toggle.
+  // Space ALTERNATES retrigger <-> STOP on the selected (or armed) region:
+  // if it's currently playing, STOP it (not pause) and park the playhead at
+  // its start; otherwise retrigger it from the top (re-arming the loop). So
+  // Space goes retrigger, stop, retrigger, stop… No region → whole-file
+  // play/pause, as before. K stays the plain pause/resume toggle.
   const retriggerSelected = useCallback(() => {
     const aid = selectedIdRef.current ?? auditionIdRef.current;
     const r = aid ? regionsRef.current.find((x) => x.id === aid) ?? null : null;
-    if (r) playRegionLooped(r);
-    else playPause();
+    if (!r) { playPause(); return; }
+    const playing = hasVideoRef.current
+      ? videoPlayingRef.current
+      : (isPlayingRef.current && onOurFileRef.current);
+    if (playing) {
+      // STOP: halt playback, keep the region selected/armed, and park the
+      // playhead at its start so the next Space retriggers cleanly.
+      setCursorSec(r.startSec);
+      setAuditionId(null);
+      if (hasVideoRef.current) {
+        videoRef.current?.pause();
+        videoRef.current?.clearLoop();
+        videoRef.current?.seek(r.startSec);
+      } else {
+        playbackEngine.stop({ fadeMs: 20 });
+      }
+    } else {
+      playRegionLooped(r);
+    }
   }, [playRegionLooped, playPause]);
 
   // Delete a region and keep the audition sane. If the deleted region is the
@@ -912,6 +944,12 @@ export default function ChopApp() {
   // armed), so the bounds must re-fire after the swap.
   useEffect(() => {
     if (!auditionRegion) return;
+    // During a live drag, onLiveBounds owns the bounds (video → setLoopBounds
+    // + present() live wrap; audio → st.looping read live by the Rust tick);
+    // re-arming/clamping here per bounds-change is the churn. The drop wrapper
+    // re-arms the gapless video loop once when draggingRef clears — this stays
+    // the settled-state path (activation, nudge, the HD-swap remount).
+    if (draggingRef.current) return;
     const s = auditionRegion.startSec;
     const e = auditionRegion.endSec;
     const EPS = 0.01;
@@ -935,30 +973,51 @@ export default function ChopApp() {
   // settle effect above stays as the on-drop backstop.
   const liveLoopRaf = useRef(0);
   const liveLoopPending = useRef<{ s: number; e: number; armed: boolean } | null>(null);
+  // True between a gesture's start and end. Gates the settle effect's re-arm
+  // so it fires ONCE on drop, not per bounds-change mid-drag (that per-move
+  // re-arm was the "freakout"). Live tracking is owned by onLiveBounds below.
+  const draggingRef = useRef(false);
   const onLiveBounds = useCallback((_id: string, s: number, e: number) => {
-    // Video arm-on-grabs any region (setLoop is transient — the settle effect
-    // reverts to the armed region on drop). Audio's Rust loop applies to the
-    // one playing stream, so re-arming it for a NON-armed region would corrupt
-    // the armed region's loop — gate the audio path to the armed region.
-    liveLoopPending.current = { s, e, armed: auditionIdRef.current === _id };
+    // VIDEO: arm-on-grab — dragging ANY region's walls makes it the ball's
+    // cage for the gesture (round-6 contract; the ball adopts the new cage at
+    // the next wall touch); the drop path restores the armed region's loop
+    // when a non-armed region was dragged.
+    // AUDIO: gated to the ARMED region — retargeting the Rust loop to a
+    // different region's bounds mid-gesture would corrupt the loop currently
+    // auditioning.
+    const armed = auditionIdRef.current === _id;
+    liveLoopPending.current = { s, e, armed };
     if (liveLoopRaf.current) return;
     liveLoopRaf.current = requestAnimationFrame(() => {
       liveLoopRaf.current = 0;
       const p = liveLoopPending.current;
       if (!p || !(p.e > p.s)) return;
-      const EPS = 0.01;
       if (hasVideoRef.current) {
-        videoRef.current?.setLoop(p.s, p.e);
-        const t = videoRef.current?.getCurrentTime() ?? p.s;
-        if (t < p.s - EPS || t > p.e + EPS) videoRef.current?.seek(p.s);
+        // Video: refresh the engine's LIVE loop bounds — present() bounces the
+        // clock at these moving walls. NO decoder re-arm (the freakout);
+        // setLoop re-arms the gapless loop once on release.
+        videoRef.current?.setLoopBounds(p.s, p.e);
       } else if (p.armed && onOurFileRef.current) {
+        // Audio: the Rust loop check reads st.looping live every ~4ms and owns
+        // the wrap + strand-clamp; just keep the target fresh (cheap — no seek,
+        // no restart). No JS clamp seek fighting the Rust tick.
         playbackEngine.setLoop(p.s, p.e);
-        const t = playbackEngine.getPosition();
-        if (t < p.s - EPS || t > p.e + EPS) playbackEngine.seek(p.s);
       }
     });
   }, []);
   useEffect(() => () => { if (liveLoopRaf.current) cancelAnimationFrame(liveLoopRaf.current); }, []);
+
+  // Mirror the video preview's speed so the Pitch chip appears only when speed
+  // != 1 (VideoView owns the speed button; there's no reactive callback, so a
+  // light 300ms poll is enough for a chip's visibility).
+  useEffect(() => {
+    if (phase !== 'ready' || !hasVideo) { setVideoSpeed(1); return; }
+    const id = window.setInterval(() => {
+      const s = videoRef.current?.getSpeed() ?? 1;
+      setVideoSpeed((cur) => (cur !== s ? s : cur));
+    }, 300);
+    return () => window.clearInterval(id);
+  }, [phase, hasVideo]);
 
   // ---- Export / drag-out --------------------------------------------------
   // `forceVideo` overrides the per-region/default toggle: the drag-out path
@@ -980,6 +1039,27 @@ export default function ChopApp() {
 
   const stagedRegions = regions.filter((r) => r.staged);
 
+  // Resolve the pitch mode for a speed-changed export. Asks ONCE per session
+  // (the first speed!=1 export with no choice yet) via a windowed dialog, then
+  // reuses the session choice; the in-window Pitch chip can also set it (which
+  // pre-empts the dialog). speed==1 → pitch mode is irrelevant.
+  const resolvePitchMode = useCallback(async (): Promise<'tape' | 'preserve'> => {
+    const speed = videoRef.current?.getSpeed() ?? 1;
+    if (Math.abs(speed - 1) <= 1e-6) return 'preserve';
+    if (pitchAskedRef.current) return pitchModeRef.current;
+    const tape = await confirmInWindow({
+      title: 'Speed change: keep pitch?',
+      message: 'This clip exports at a changed speed. Tape mode lets pitch follow speed (a slower clip sounds lower, like tape). Keep original pitch changes only the tempo.',
+      confirmLabel: 'Tape mode',
+      cancelLabel: 'Keep pitch',
+    });
+    const mode: 'tape' | 'preserve' = tape ? 'tape' : 'preserve';
+    pitchAskedRef.current = true;
+    pitchModeRef.current = mode;
+    setPitchMode(mode);
+    return mode;
+  }, []);
+
   // Resolve (and cache) the persistent clips folder in Documents.
   const ensureClipsDir = useCallback(async (): Promise<string> => {
     if (clipsDirRef.current) return clipsDirRef.current;
@@ -995,6 +1075,7 @@ export default function ChopApp() {
     const dir = await openDialog({ directory: true, multiple: false, defaultPath });
     if (!dir || typeof dir !== 'string') return;
     setExporting(true); setExportMsg('');
+    const pm = await resolvePitchMode();
     const dsep = dir.includes('\\') ? '\\' : '/';
     const sorted = [...stagedRegions].sort((a, b) => a.startSec - b.startSec);
     let ok = 0, fail = 0;
@@ -1004,14 +1085,14 @@ export default function ChopApp() {
       const stem = regionFileStem(r, i, sourceStem);
       const out = `${dir}${dsep}${stem}.${ext}`;
       try {
-        const written = await runClip({ input, output: out, startSec: r.startSec, endSec: r.endSec, video, overwrite: false, speed: videoRef.current?.getSpeed() ?? 1 });
+        const written = await runClip({ input, output: out, startSec: r.startSec, endSec: r.endSec, video, overwrite: false, speed: videoRef.current?.getSpeed() ?? 1, pitchMode: pm });
         void emit('wd-latch-clip-exported', { path: written, title: stem });
         ok++;
       } catch { fail++; }
     }
     setExporting(false);
     setExportMsg(`Exported ${ok} clip${ok !== 1 ? 's' : ''}${fail ? ` · ${fail} failed` : ''}`);
-  }, [audioPath, stagedRegions, clipInputFor, runClip, sourceStem, ensureClipsDir]);
+  }, [audioPath, stagedRegions, clipInputFor, runClip, sourceStem, ensureClipsDir, resolvePitchMode]);
 
   // Build the drag-out chip image: in video mode, a snapshot of the
   // currently-visible frame; otherwise a crisp mini-waveform rendered
@@ -1071,7 +1152,7 @@ export default function ChopApp() {
       const path = await runClip({
         input, output: `${clipsDir}${dsep}${stem}.${ext}`,
         startSec: r.startSec, endSec: r.endSec, video, overwrite: false,
-        speed: videoRef.current?.getSpeed() ?? 1,
+        speed: videoRef.current?.getSpeed() ?? 1, pitchMode: pitchModeRef.current,
       });
       const cur = regionsRef.current.find((x) => x.id === id);
       const variantIsDefault = (forceVideo ?? (r.exportVideo ?? false)) === (cur?.exportVideo ?? false);
@@ -1159,7 +1240,11 @@ export default function ChopApp() {
       // after a folder drop, so a cached path can't be trusted. No-clobber
       // keeps any path an app has already linked byte-stable.
       setClip(r.id, 'rendering');
-      const path = await runClip({ input, output: out, startSec: r.startSec, endSec: r.endSec, video, overwrite: false, speed: videoRef.current?.getSpeed() ?? 1 });
+      // Drag-out renders under a held pointer gesture, so it can't stop to ask
+      // — it uses the current session pitch mode (set by the Pitch chip or a
+      // prior Export dialog; defaults to preserve). The Export button owns the
+      // ask-once dialog.
+      const path = await runClip({ input, output: out, startSec: r.startSec, endSec: r.endSec, video, overwrite: false, speed: videoRef.current?.getSpeed() ?? 1, pitchMode: pitchModeRef.current });
       setClip(r.id, 'ready', path);
       void emit('wd-latch-clip-exported', { path, title: fileName });
       if (released) {
@@ -1356,8 +1441,22 @@ export default function ChopApp() {
                     }}
                     onDragOut={handleRegionDragOut}
                     canExportVideo={canExportVideo}
-                    onGestureStart={() => pushHistory()}
-                    onGestureEnd={(info) => { void onGestureEnd(info); }}
+                    onGestureStart={() => { draggingRef.current = true; pushHistory(); }}
+                    onGestureEnd={(info) => {
+                      draggingRef.current = false;
+                      // Re-arm the gapless video loop at the settled bounds
+                      // (present() ran on the live-drag seek-wrap path during
+                      // the gesture). One re-arm on drop, never per move. When
+                      // a NON-armed region was dragged (video arm-on-grab moved
+                      // the live walls there), restore the ARMED region's cage.
+                      if (hasVideoRef.current) {
+                        const armedId = auditionIdRef.current;
+                        const target = regionsRef.current.find((x) =>
+                          x.id === (armedId === info.id ? info.id : armedId));
+                        if (target) videoRef.current?.setLoop(target.startSec, target.endSec);
+                      }
+                      void onGestureEnd(info);
+                    }}
                     panViewport={vp.panViewport}
                     onLiveBounds={onLiveBounds}
                   />
@@ -1498,10 +1597,10 @@ export default function ChopApp() {
         <div
           className="flex items-center px-2 border-t border-[color:var(--theme-border)] shrink-0 overflow-hidden"
           style={{ height: '14px' }}
-          title="space: retrigger the selected region from its start (whole file if none) · K: play / pause · J/L: shuttle (video) · double-click or drag: add region · I then O: mark a region · arrows: nudge selected region (Shift: coarse, Ctrl: start edge, Alt: end edge) · Delete: remove region · Ctrl+Z / Ctrl+Y: undo / redo · region grips: drag out the audio / video clip"
+          title="space: retrigger / stop the selected region (whole file if none) · K: play / pause · J/L: shuttle (video) · double-click or drag: add region · I then O: mark a region · arrows: nudge selected region (Shift: coarse, Ctrl: start edge, Alt: end edge) · Delete: remove region · Ctrl+Z / Ctrl+Y: undo / redo · region grips: drag out the audio / video clip"
         >
           <span className="truncate text-[0.5rem] text-[color:var(--theme-text-muted)] select-none tabular-nums">
-            space retrigger · K play/pause{hasVideo ? ' · J/L shuttle' : ''} · dbl-click add · I/O mark region · arrows nudge (shift coarse · ctrl start · alt end) · del remove · ctrl+Z undo · grips drag out audio{hasVideo ? '/video' : ''}
+            space retrigger/stop · K play/pause{hasVideo ? ' · J/L shuttle' : ''} · dbl-click add · I/O mark region · arrows nudge (shift coarse · ctrl start · alt end) · del remove · ctrl+Z undo · grips drag out audio{hasVideo ? '/video' : ''}
           </span>
         </div>
 
@@ -1539,6 +1638,20 @@ export default function ChopApp() {
               title={(videoFetching && !videoPath) ? 'Fetching video…' : hasVideo ? (showVideo ? 'Hide the video preview' : 'Show the video preview') : 'Fetch this link as video and show the preview'}>
               {(videoFetching && !videoPath) ? <Loader2 size={10} className="inline -mt-px mr-1 animate-spin" /> : <Film size={10} className="inline -mt-px mr-1" />}
               Video
+            </button>
+          )}
+          {phase === 'ready' && videoSpeed !== 1 && (
+            <button
+              className={railBtn(pitchMode === 'tape')}
+              onClick={() => {
+                const m = pitchMode === 'tape' ? 'preserve' : 'tape';
+                setPitchMode(m); pitchModeRef.current = m; pitchAskedRef.current = true;
+              }}
+              title={pitchMode === 'tape'
+                ? 'Tape mode: pitch follows speed on export (click to keep original pitch)'
+                : 'Locked pitch: only tempo changes on export (click for tape mode: pitch follows speed)'}
+            >
+              Pitch: {pitchMode === 'tape' ? 'Tape' : 'Locked'}
             </button>
           )}
           <span className={`flex-1 min-w-0 truncate ${mutedLabel} tabular-nums`}>

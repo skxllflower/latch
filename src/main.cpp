@@ -47,6 +47,10 @@ int print_help() {
     "  --speed=<x>                      playback speed multiplier (1.0 default,\n"
     "                                   e.g. 0.5 = half, 2.0 = double). Never\n"
     "                                   applied to --preview.\n"
+    "  --pitch-mode=<m>                 how pitch behaves when --speed != 1:\n"
+    "                                   preserve (default, atempo — keep pitch) /\n"
+    "                                   tape (asetrate varispeed — pitch follows\n"
+    "                                   speed, like a tape machine).\n"
     "\n"
     "Extract options (all optional):\n"
     "  --format=<f>                     audio format: mp3 / m4a / wav / opus /\n"
@@ -591,6 +595,7 @@ int run_cli(const std::vector<std::string>& args) {
       if (parse_kv(a, "start", &v)) { try { start_sec = std::stod(v); have_start = true; } catch (...) {} continue; }
       if (parse_kv(a, "end",   &v)) { try { end_sec   = std::stod(v); have_end   = true; } catch (...) {} continue; }
       if (parse_kv(a, "speed", &v)) { try { opts.speed = std::stod(v); } catch (...) {} continue; }
+      if (parse_kv(a, "pitch-mode", &opts.pitch_mode)) continue;
       if (parse_kv(a, "audio-format", &opts.audio_format)) continue;
       if (a == "--video")      { opts.video = true;  continue; }
       if (a == "--audio-only") { opts.video = false; continue; }
@@ -598,6 +603,7 @@ int run_cli(const std::vector<std::string>& args) {
       if (a == "--start" && i + 1 < args.size()) { try { start_sec = std::stod(args[++i]); have_start = true; } catch (...) {} continue; }
       if (a == "--end"   && i + 1 < args.size()) { try { end_sec   = std::stod(args[++i]); have_end   = true; } catch (...) {} continue; }
       if (a == "--speed" && i + 1 < args.size()) { try { opts.speed = std::stod(args[++i]); } catch (...) {} continue; }
+      if (a == "--pitch-mode" && i + 1 < args.size()) { opts.pitch_mode = args[++i]; continue; }
       std::fprintf(stderr, "error: unknown argument '%s'\n", a.c_str());
       return 2;
     }

@@ -133,6 +133,13 @@ export class NativeVideoEngine {
   // wrap themselves gaplessly and the clock just follows; false = raw-dialect
   // fallback, where present() wraps with a plain seek.
   private decoderLoop = false;
+  // True while a live region-drag is feeding fresh loop bounds every frame
+  // (setLoopBounds). The gapless decoder loop can't chase a wall that's still
+  // moving, so present() bounces the clock at the LIVE in/out via a re-cue
+  // seek while this holds; setLoopRegion re-arms the gapless loop (and clears
+  // this) once the drag settles. No per-move decoder re-arm — that re-arm
+  // thrash was the drag "freakout".
+  private liveLoopActive = false;
   // Streamed height (the engine reconnects at the current clock when the
   // display target outgrows/shrinks past it — fullscreen, popout resize).
   private curHeight: number;
@@ -279,6 +286,7 @@ export class NativeVideoEngine {
 
   setLoopRegion(region: { inSec: number; outSec: number } | null): void {
     this.loopRegion = region && region.outSec > region.inSec ? region : null;
+    this.liveLoopActive = false; // settled bounds → the gapless decoder loop owns the wrap
     this.queueArmLoop();
     // Live region-resize rescue. A resize that drags the out-point behind the
     // playhead (or the in-point ahead of it) leaves the clock OUTSIDE the new
@@ -295,6 +303,16 @@ export class NativeVideoEngine {
         (this.clock > r.outSec + 0.02 || this.clock < r.inSec - 0.02)) {
       this.seek(r.inSec);
     }
+  }
+
+  // Live region-drag bounds update: refresh the loop bounds present() reads
+  // WITHOUT re-arming the gapless decoder loop. The overlay fires this every
+  // gesture tick; present() then bounces the clock at these LIVE walls (a
+  // re-cue seek per wrap, not per move), so the loop tracks the dragged edges
+  // in real time. setLoopRegion re-arms the gapless loop once the drag settles.
+  setLoopBounds(inSec: number, outSec: number): void {
+    this.loopRegion = outSec > inSec ? { inSec, outSec } : null;
+    this.liveLoopActive = this.loopRegion != null;
   }
 
   private queueArmLoop(): void {
@@ -667,7 +685,12 @@ export class NativeVideoEngine {
         // the playback rate (the daemon's cursor advances at rate too).
         const target = this.audioPos + ((now - this.audioPosAt) / 1000) * this.effRate() * this.dir;
         const err = target - this.clock;
-        if (Math.abs(err) > 0.75) this.clock = target;
+        // Snap (never smooth-glide) across a loop seam: the audio cursor jumps
+        // BACK to the in-point at a wrap, so a small NEGATIVE err while looping
+        // is a wrap, not drift — easing it would sweep the playhead smoothly
+        // backwards across the seam (the recurring "phantom bounce"). Big
+        // drifts snap too.
+        if (Math.abs(err) > 0.75 || (this.loopRegion && err < -0.02)) this.clock = target;
         else this.clock += err * Math.min(1, dt * 4);
       }
       if (this.dir < 0) {
@@ -677,11 +700,18 @@ export class NativeVideoEngine {
           this.shuttle(0);
           this.cb.onShuttleEnd?.();
         }
+      } else if (this.liveLoopActive && this.loopRegion && this.clock < this.loopRegion.inSec - 0.02) {
+        // The LEFT wall was dragged right past the playhead — snap the ball
+        // back inside. The bounce target moves with the wall, live.
+        this.seek(this.loopRegion.inSec);
       } else if (this.loopRegion && this.clock >= this.loopRegion.outSec) {
         // Loop region wraps before the end-of-video check (out may sit at the
         // very end).
-        if (!this.decoderLoop) {
-          this.seek(this.loopRegion.inSec); // raw fallback: seek-based loop
+        if (!this.decoderLoop || this.liveLoopActive) {
+          // Raw fallback OR a live region-drag (the decoder is still armed at
+          // the grab-time out-point and can't chase the moving wall) — re-cue
+          // to the LIVE in-point so the bounce lands on the current wall.
+          this.seek(this.loopRegion.inSec);
         } else if (this.audioActive) {
           // Gapless: the decoders already wrapped; hard-follow the audio
           // cursor through the seam (the ease's snap threshold can exceed a

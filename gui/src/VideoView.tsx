@@ -71,6 +71,10 @@ export interface VideoViewHandle {
   stepFrame: (dir: number) => void;
   play: () => void;
   setLoop: (inSec: number, outSec: number) => void;
+  // Live region-drag bounds: update the engine's loop bounds every frame
+  // WITHOUT re-arming the decoder loop (setLoop's per-move re-arm was the drag
+  // "freakout"). present() reads these live and bounces at the moving walls.
+  setLoopBounds: (inSec: number, outSec: number) => void;
   clearLoop: () => void;
   pause: () => void;
   // Live media time, read per-frame for a seamless follower playhead.
@@ -847,6 +851,12 @@ export const VideoView = forwardRef<VideoViewHandle, VideoViewProps>(function Vi
       // seek re-cues the decoder while the OLD loop is still armed and the old
       // span replays for a cycle or two. Idempotent with the mirror effect.
       if (outSec > inSec) nativeEngineRef.current?.setLoopRegion({ inSec, outSec });
+    },
+    setLoopBounds: (inSec: number, outSec: number) => {
+      // Live drag: poke ONLY the engine's live loop bounds (present() reads
+      // them each frame). Deliberately NOT touching inPoint/outPoint state so
+      // the mirror effect never re-fires and re-arms the decoder per move.
+      nativeEngineRef.current?.setLoopBounds(inSec, outSec);
     },
     clearLoop: () => { setLoopRegion(false); },
     pause: () => {

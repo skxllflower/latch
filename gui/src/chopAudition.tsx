@@ -23,11 +23,16 @@ export const RegionLoopWatcher: React.FC<RegionLoopWatcherProps> = ({
   const curPath = usePlaybackCurrentPath();
   const state = usePlaybackState();
 
+  // Keep the Rust loop's live bounds fresh (it reads them every ~4ms and owns
+  // the wrap + strand-clamp). Setting bounds is cheap — just an atomic-style
+  // update, no seek/restart — so a bounds change is NOT a re-arm. Crucially the
+  // clear is split out to unmount ONLY: clearing on every bounds change (the
+  // old cleanup) briefly disarmed the loop mid-drag, a tick could slip the
+  // wrap = the "re-arm churn" the collision-physics loop must not have.
   useEffect(() => {
-    if (!looping) return;
-    playbackEngine.setLoop(startSec, endSec);
-    return () => playbackEngine.clearLoop();
+    if (looping) playbackEngine.setLoop(startSec, endSec);
   }, [startSec, endSec, looping]);
+  useEffect(() => () => { playbackEngine.clearLoop(); }, []);
 
   useEffect(() => {
     if (curPath === path && state === 'stopped') onEnded();

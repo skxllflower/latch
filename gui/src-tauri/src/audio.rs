@@ -745,8 +745,13 @@ fn audio_thread(app: AppHandle, rx: Receiver<Cmd>) {
                 pos = sink.get_pos().as_secs_f64();
                 state = if sink.is_paused() { "paused" } else { "playing" };
                 if state == "playing" {
+                    // Collision-physics loop: the bounds are read LIVE every
+                    // tick (SetLoop just updates them — no re-arm), so a drag
+                    // that moves a wall reshapes the bounce instantly. Ball
+                    // hits the RIGHT wall -> jump to the left; the LEFT wall
+                    // dragged past the ball -> snap it back inside.
                     if let Some((lo, hi)) = st.looping {
-                        if pos >= hi {
+                        if pos >= hi || pos < lo - 0.006 {
                             let _ = sink.try_seek(Duration::from_secs_f64(lo.max(0.0)));
                             pos = lo;
                         }
