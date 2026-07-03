@@ -180,10 +180,18 @@ impl VaShared {
 // (never per sample — that contention class caused audible slow-mo in
 // an earlier design). Underruns play silence WITHOUT counting, so the
 // position holds rather than drifting ahead of real audio.
+
+// Post-flush declick: the first samples after a flush (seek re-cue, live
+// loop bounce) start at an arbitrary waveform point — a hard step that
+// clicks. Ramp in over ~5ms (interleaved samples; the per-channel gain
+// skew of one step is inaudible at this length).
+const VA_FADE_SAMPLES: u32 = 512;
+
 struct PcmSource {
     shared: std::sync::Arc<VaShared>,
     local: std::collections::VecDeque<f32>,
     local_gen: u64,
+    fade_pos: u32,
 }
 
 impl Iterator for PcmSource {
@@ -193,6 +201,7 @@ impl Iterator for PcmSource {
         if gen != self.local_gen {
             self.local.clear();
             self.local_gen = gen;
+            self.fade_pos = 0; // flushed = discontinuity — declick the restart
         }
         if self.local.is_empty() {
             if let Ok(mut q) = self.shared.q.try_lock() {
@@ -204,8 +213,12 @@ impl Iterator for PcmSource {
                 }
             }
         }
-        if let Some(v) = self.local.pop_front() {
+        if let Some(mut v) = self.local.pop_front() {
             self.shared.consumed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if self.fade_pos < VA_FADE_SAMPLES {
+                self.fade_pos += 1;
+                v *= self.fade_pos as f32 / VA_FADE_SAMPLES as f32;
+            }
             return Some(v);
         }
         if self.shared.done.load(std::sync::atomic::Ordering::Relaxed) {
@@ -402,7 +415,7 @@ impl VideoDeck {
             let _ = child.kill();
             return false;
         };
-        sink.append(PcmSource { shared: shared.clone(), local: std::collections::VecDeque::new(), local_gen: 0 });
+        sink.append(PcmSource { shared: shared.clone(), local: std::collections::VecDeque::new(), local_gen: 0, fade_pos: 0 });
         sink.set_speed(self.rate);
         sink.set_volume(self.volume);
         if self.playing {

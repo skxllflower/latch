@@ -82,6 +82,16 @@ const VIDEO_AV_LEAD_SEC = 0.05;
 const SEEK_DEBOUNCE_PTS_MS = 50;
 const SEEK_DEBOUNCE_RAW_MS = 120;
 
+// How far AHEAD of the clock the decode pipeline can already be, in content
+// seconds: the Rust deck's PCM queue (VA_Q_CAP_SEC = 2s) + this engine's
+// frame buffer (0.6s) + pipe slack. When a live region-drag starts with the
+// playhead within this of the armed loop's out-point, the decoders may have
+// PRE-BUFFERED the wrap (gapless = they decode ahead, wrap included) —
+// disarming alone leaves that stale post-wrap data queued and the OLD loop
+// audibly/visibly replays before the new bounds take. Only a re-cue seek
+// (its markers) flushes both streams.
+const STALE_WRAP_LOOKAHEAD_SEC = 2.75;
+
 const sleep = (ms: number) => new Promise<void>((r) => window.setTimeout(r, ms));
 
 function parseGeomHeader(h: string | null): NativeGeom | null {
@@ -133,6 +143,10 @@ export class NativeVideoEngine {
   // wrap themselves gaplessly and the clock just follows; false = raw-dialect
   // fallback, where present() wraps with a plain seek.
   private decoderLoop = false;
+  // The bounds the decoders are ACTUALLY armed at (set when the arm roundtrip
+  // lands). beginLiveLoop() needs the OLD out-point after setLoopBounds has
+  // already overwritten loopRegion with the live gesture bounds.
+  private decoderLoopRegion: { inSec: number; outSec: number } | null = null;
   // True while a live region-drag is feeding fresh loop bounds every frame
   // (setLoopBounds). The gapless decoder loop can't chase a wall that's still
   // moving, so present() bounces the clock at the LIVE in/out via a re-cue
@@ -311,8 +325,44 @@ export class NativeVideoEngine {
   // re-cue seek per wrap, not per move), so the loop tracks the dragged edges
   // in real time. setLoopRegion re-arms the gapless loop once the drag settles.
   setLoopBounds(inSec: number, outSec: number): void {
+    const prev = this.loopRegion;
+    const wasLive = this.liveLoopActive;
     this.loopRegion = outSec > inSec ? { inSec, outSec } : null;
     this.liveLoopActive = this.loopRegion != null;
+    if (!wasLive && this.liveLoopActive) this.beginLiveLoop(prev);
+  }
+
+  // Gesture-start handoff (the FIRST setLoopBounds of a drag) — one op per
+  // gesture, never per move. The decoders still hold the loop armed at the
+  // grab-time bounds and would keep wrapping there (they OWN gapless
+  // wrapping — the walls present() moves can't overrule what the stream
+  // actually contains: the old out-wrap kept playing right through a
+  // rapid expand). Disarm them once so present()'s live-wall seek-bounce is
+  // the sole wrap authority for the gesture; armDecoderLoop collapses to a
+  // CLEAR while liveLoopActive holds, which also neutralizes any arm still
+  // queued on the chain. And if the decoders may already have PRE-BUFFERED a
+  // wrap at the old out-point (a seam is in the local buffer, or the playhead
+  // is within the pipeline look-ahead of it), re-cue with an in-place seek:
+  // its markers are the only boundary that flushes the stale post-wrap
+  // frames/PCM on BOTH streams (that residue was the "old loop plays 1-2
+  // more wraps after a quick resize-release"). Post-wrap frames already in
+  // the local buffer are dropped either way — with the decoder disarmed the
+  // seam-guarded scans in present() no longer protect against them.
+  private beginLiveLoop(prev: { inSec: number; outSec: number } | null): void {
+    const old = this.decoderLoopRegion ?? prev;
+    this.queueArmLoop(); // liveLoopActive holds → the chain link sends a CLEAR
+    let seam = -1;
+    for (let i = 1; i < this.frames.length; i++) {
+      if (this.frames[i].t < this.frames[i - 1].t) { seam = i; break; }
+    }
+    if (seam > 0) {
+      for (let i = seam; i < this.frames.length; i++) this.frames[i].bmp.close();
+      this.frames.length = seam;
+    }
+    if (old && this._playing && this.dir > 0 &&
+        (seam > 0 || this.clock > old.outSec - STALE_WRAP_LOOKAHEAD_SEC)) {
+      this.seek(this.clock);
+    }
   }
 
   private queueArmLoop(): void {
@@ -320,7 +370,11 @@ export class NativeVideoEngine {
   }
 
   private async armDecoderLoop(): Promise<void> {
-    const r = this.loopRegion;
+    // While a live drag holds, the decoders must stay DISARMED — present()
+    // owns the wrap at the moving walls — so any queued arm collapses to a
+    // CLEAR (an activation's arm still in flight can't re-arm the old cage
+    // behind the gesture's back).
+    const r = this.liveLoopActive ? null : this.loopRegion;
     const params = { in: r ? r.inSec : 0, out: r ? r.outSec : 0 };
     if (this.persistent) {
       // ALWAYS send — out <= in is the decoder-side CLEAR. The old
@@ -334,6 +388,7 @@ export class NativeVideoEngine {
     } else {
       this.decoderLoop = false;
     }
+    this.decoderLoopRegion = this.decoderLoop && r ? { ...r } : null;
     void invoke('set_video_audio_loop', { inSec: params.in, outSec: params.out }).catch(() => {});
   }
 
@@ -528,6 +583,7 @@ export class NativeVideoEngine {
     this.pendingMarkers = 0;
     this.dir = 1; // a fresh stream always starts forward
     this.decoderLoop = false; // re-armed after the headers land
+    this.decoderLoopRegion = null;
     const ac = new AbortController();
     this.ac = ac;
 
