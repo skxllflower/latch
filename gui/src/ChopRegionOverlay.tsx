@@ -7,16 +7,18 @@
 //   • click INSIDE a region        → make it the active loop (swap)
 //   • click OUTSIDE any region     → play the whole file from there, no loop
 //   • drag a region EDGE           → resize that edge
-//   • drag a region's bottom GRIP  → drag the clip OUT as a file (export);
-//                                     video links show TWO grips (audio +
-//                                     video — never an Alt modifier:
-//                                     Windows refuses drops while Alt is
-//                                     held, it forces the link drop-effect)
-//   • drag the region BODY         → move the whole region
+//   • drag a region's bottom STRIP → drag the clip OUT as a file (export);
+//                                     the WHOLE bottom band (full width) is
+//                                     the grip, so narrow / zoomed-out regions
+//                                     are still grabbable. Video links split
+//                                     the strip left(audio)|right(video) —
+//                                     never an Alt modifier: Windows refuses
+//                                     drops while Alt is held (link drop-effect)
+//   • drag the region BODY         → move the whole region (above the strip)
 //   • scroll / middle-drag / trackpad → WaveformView's built-in zoom/pan
 //
 // On hover, a region shows affordances: a resize chevron at each edge and
-// a grip handle in the centre (the drag-out zone). The cursor tracks the
+// a grip strip across the bottom (the drag-out zone). The cursor tracks the
 // zone under the pointer (ew-resize / grab / move / crosshair).
 //
 // The active selection is highlighted and everything outside it is dimmed.
@@ -71,16 +73,25 @@ const EDGE_HIT_PX = 6;
 // the zone, max right at the edge).
 const EDGE_SCROLL_PX = 24;
 const EDGE_SCROLL_MAX_FRAC = 0.05; // up to 5% of the visible span per frame
-// The drag-out "Export" handle: a pill anchored at the BOTTOM-centre of a
-// region. Its hit zone is just the handle box itself (so the rest of the
-// body drags-to-move); the visual + hitbox use the same dimensions.
-const HANDLE_W = 34;
-const HANDLE_W2 = 26;     // each pill when the audio+video pair renders
-const HANDLE_GAP = 4;
-const HANDLE_H = 16;
-const HANDLE_BOTTOM = 5;       // gap from the region's bottom edge
-const HANDLE_HIT_PAD = 3;      // small forgiveness around the box
+// The drag-out grip is the ENTIRE BOTTOM STRIP of a region (full width, a
+// band across the bottom), not a small centre handle — a narrow / zoomed-out
+// region's tiny pill was near-impossible to grab, so users kept landing on
+// move / resize instead. Resize edges (EDGE_HIT_PX) still win in their own
+// bands; the region body ABOVE the strip stays the move zone. A video link
+// splits the strip into two halves (left = audio, right = video) — never an
+// Alt modifier (Windows forces the link drop-effect while Alt is held and most
+// targets then refuse the drop).
+const DRAGOUT_STRIP_FRAC   = 0.2;  // bottom 20% of the region height…
+const DRAGOUT_STRIP_MIN_PX = 14;   // …but always at least this tall (short panes)
+const DRAGOUT_STRIP_MAX_PX = 26;   // …and never a giant band on a tall pane
+// Split the strip into audio | video halves only when the region is at least
+// this wide on screen; below it the whole strip exports audio.
+const DUAL_STRIP_MIN_PX    = 48;
 const DARKEN = 'rgba(0,0,0,0.55)';
+
+// Bottom-strip band height for the current container height.
+const dragoutBandPx = (h: number) =>
+  Math.min(DRAGOUT_STRIP_MAX_PX, Math.max(DRAGOUT_STRIP_MIN_PX, h * DRAGOUT_STRIP_FRAC));
 
 type Zone =
   | { kind: 'create'; anchorSec: number; startX: number; createdId: string | null }
@@ -178,21 +189,16 @@ export const ChopRegionOverlay: React.FC<ChopRegionOverlayProps> = ({
     for (const r of regions) {
       if (sec > r.startSec && sec < r.endSec) {
         const xs = xOf(r.startSec), xe = xOf(r.endSec);
-        const center = (xs + xe) / 2;
-        // Export handle hitboxes at the bottom centre, only when the
-        // region is wide enough to host them clear of the edges. Video
-        // links get a PAIR of grips (audio + video) — never a modifier.
-        const inY = ypx >= h - HANDLE_BOTTOM - HANDLE_H - HANDLE_HIT_PAD && ypx <= h - HANDLE_BOTTOM + HANDLE_HIT_PAD;
-        if (canExportVideo && (xe - xs) >= 2 * HANDLE_W2 + HANDLE_GAP + 2 * EDGE_HIT_PX) {
-          const off = (HANDLE_W2 + HANDLE_GAP) / 2;
-          if (inY && Math.abs(xpx - (center - off)) <= HANDLE_W2 / 2 + HANDLE_HIT_PAD) {
-            return { kind: 'dragout', id: r.id, video: false, startX: clientX, startY: clientY, armed: false };
+        // Drag-out grip = the whole bottom strip (full region width). Resize
+        // edges already returned above, so they still win in their bands; the
+        // body above the strip is the move zone.
+        if (ypx >= h - dragoutBandPx(h)) {
+          // Video links split the strip: left half audio, right half video —
+          // only when the region is wide enough to land each half reliably.
+          if (canExportVideo && (xe - xs) >= DUAL_STRIP_MIN_PX) {
+            const video = xpx >= (xs + xe) / 2;
+            return { kind: 'dragout', id: r.id, video, startX: clientX, startY: clientY, armed: false };
           }
-          if (inY && Math.abs(xpx - (center + off)) <= HANDLE_W2 / 2 + HANDLE_HIT_PAD) {
-            return { kind: 'dragout', id: r.id, video: true, startX: clientX, startY: clientY, armed: false };
-          }
-        } else if ((xe - xs) >= HANDLE_W + 2 * EDGE_HIT_PX
-            && inY && Math.abs(xpx - center) <= HANDLE_W / 2 + HANDLE_HIT_PAD) {
           return { kind: 'dragout', id: r.id, video: false, startX: clientX, startY: clientY, armed: false };
         }
         return { kind: 'move', id: r.id, grabSec: sec, origStart: r.startSec, startX: clientX, moved: false };
@@ -460,16 +466,21 @@ export const ChopRegionOverlay: React.FC<ChopRegionOverlayProps> = ({
         </svg>
       )}
 
-      {/* Hover affordances: resize chevrons at the edges + an Export pill at
-          the bottom centre (the drag-out zone). Pixel-sized, %-positioned so
-          they track zoom/pan; pointer-events:none so hit-testing stays in JS. */}
+      {/* Hover affordances: resize chevrons at the edges + a drag-out GRIP
+          STRIP across the region's bottom (the export zone). Pixel-sized,
+          %-positioned so they track zoom/pan; pointer-events:none so
+          hit-testing stays in JS. */}
       {hover && (() => {
         const sPct = secToPct(hover.startSec);
         const ePct = secToPct(hover.endSec);
         const cPct = (sPct + ePct) / 2;
+        // Clamp for the strip so a region running past the viewport edge still
+        // paints a sane band instead of spilling off-canvas.
+        const sClamp = Math.max(0, Math.min(100, sPct));
+        const eClamp = Math.max(0, Math.min(100, ePct));
         const showStart = hover.startSec > viewportStartSec && hover.startSec < viewportEndSec;
         const showEnd = hover.endSec > viewportStartSec && hover.endSec < viewportEndSec;
-        const showHandle = cPct > 1 && cPct < 99 && (ePct - sPct) > 7;
+        const showHandle = eClamp - sClamp > 1.5;
         const chevron: React.CSSProperties = {
           position: 'absolute', top: '50%',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -489,32 +500,30 @@ export const ChopRegionOverlay: React.FC<ChopRegionOverlayProps> = ({
               </div>
             )}
             {showHandle && (() => {
-              // Video links render a PAIR of grips (audio + video) instead
-              // of an Alt modifier — Windows refuses drops while Alt is
-              // held (link drop-effect), so the modifier could never work.
-              const rectW = rootRef.current?.getBoundingClientRect().width ?? 0;
-              const regionPx = (ePct - sPct) / 100 * rectW;
-              const dual = canExportVideo && regionPx >= 2 * HANDLE_W2 + HANDLE_GAP + 2 * EDGE_HIT_PX;
-              const pill = (video: boolean, leftCalc: string) => (
-                <div key={video ? 'v' : 'a'} style={{
-                  position: 'absolute', left: leftCalc, bottom: HANDLE_BOTTOM,
-                  transform: 'translateX(-50%)', width: dual ? HANDLE_W2 : HANDLE_W, height: HANDLE_H,
-                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 1,
-                  background: hover.color, color: '#0a0a0a', borderRadius: 4,
-                  boxShadow: '0 1px 3px rgba(0,0,0,0.5)',
-                  opacity: hoverHandle === (video ? 'video' : 'audio') ? 1 : 0.55,
-                  transition: 'opacity 120ms ease',
-                }}>
-                  {video ? <Film size={9} strokeWidth={2.5} /> : <Music size={9} strokeWidth={2.5} />}
-                  <GripVertical size={10} strokeWidth={2.5} />
-                </div>
-              );
-              const off = (HANDLE_W2 + HANDLE_GAP) / 2;
+              const rect = rootRef.current?.getBoundingClientRect();
+              const wpx = rect?.width ?? 0;
+              const hpx = rect?.height ?? 0;
+              const bandH = dragoutBandPx(hpx);
+              const regionPx = (eClamp - sClamp) / 100 * wpx;
+              // Split point, clamped into the visible band so a region running
+              // past a viewport edge never yields a negative-width half.
+              const cClamp = Math.max(sClamp, Math.min(eClamp, cPct));
+              // Video links split the strip (audio | video) — never an Alt
+              // modifier (Windows forces the link drop-effect under Alt).
+              const dual = canExportVideo && regionPx >= DUAL_STRIP_MIN_PX;
+              const stripBase: React.CSSProperties = {
+                position: 'absolute', bottom: 0, height: bandH,
+                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 3,
+                background: hover.color, color: '#0a0a0a',
+                boxShadow: '0 -1px 4px rgba(0,0,0,0.35)',
+                transition: 'opacity 120ms ease',
+              };
               return (
                 <>
                   {hoverHandle && (
                     <div style={{
-                      position: 'absolute', left: `${cPct}%`, bottom: HANDLE_BOTTOM + HANDLE_H + 5,
+                      position: 'absolute', left: `${Math.max(sClamp, Math.min(eClamp, cPct))}%`,
+                      bottom: bandH + 4,
                       transform: 'translateX(-50%)', padding: '1px 5px', borderRadius: 3,
                       background: 'rgba(0,0,0,0.8)', color: '#e5e7eb',
                       fontSize: 8, lineHeight: 1.5, whiteSpace: 'nowrap', letterSpacing: '0.02em',
@@ -524,11 +533,32 @@ export const ChopRegionOverlay: React.FC<ChopRegionOverlayProps> = ({
                   )}
                   {dual ? (
                     <>
-                      {pill(false, `calc(${cPct}% - ${off}px)`)}
-                      {pill(true, `calc(${cPct}% + ${off}px)`)}
+                      <div style={{
+                        ...stripBase, left: `${sClamp}%`, width: `${cClamp - sClamp}%`,
+                        borderTopLeftRadius: 3,
+                        opacity: hoverHandle === 'audio' ? 0.92 : 0.5,
+                      }}>
+                        <Music size={10} strokeWidth={2.5} />
+                        <GripVertical size={11} strokeWidth={2.5} />
+                      </div>
+                      <div style={{
+                        ...stripBase, left: `${cClamp}%`, width: `${eClamp - cClamp}%`,
+                        borderTopRightRadius: 3,
+                        opacity: hoverHandle === 'video' ? 0.92 : 0.5,
+                      }}>
+                        <Film size={10} strokeWidth={2.5} />
+                        <GripVertical size={11} strokeWidth={2.5} />
+                      </div>
                     </>
                   ) : (
-                    pill(false, `${cPct}%`)
+                    <div style={{
+                      ...stripBase, left: `${sClamp}%`, width: `${eClamp - sClamp}%`,
+                      borderTopLeftRadius: 3, borderTopRightRadius: 3,
+                      opacity: hoverHandle ? 0.92 : 0.5,
+                    }}>
+                      <Music size={10} strokeWidth={2.5} />
+                      <GripVertical size={11} strokeWidth={2.5} />
+                    </div>
                   )}
                 </>
               );
