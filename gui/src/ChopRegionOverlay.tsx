@@ -64,6 +64,18 @@ interface ChopRegionOverlayProps {
   // keeps the crosshair default; the in-browser visualizer passes 'text'
   // so an armed chop mode reads as an I-beam over the waveform.
   createCursor?: string;
+  // Right-click ON a region → the host opens the windowed region context
+  // menu (Tools / Crop / Export / Delete). Fires ONLY when a region is hit;
+  // a right-click over empty space is left to bubble to the pane's own menu.
+  onContextMenu?: (id: string, clientX: number, clientY: number) => void;
+  // Imperatively claim the host waveform's keyboard focus at the START of every
+  // left-button gesture (draw / click / resize / move / drag-out). The overlay's
+  // stopPropagation on left gestures otherwise let the container's focus claim
+  // ride on event bubbling, which was unreliable (draw-from-unfocused didn't
+  // focus; focus died after the first region play). Calling this directly makes
+  // every chop interaction focus the waveform — see item 4. Undefined = no host
+  // focus model (the standalone Latch chop window).
+  onFocusClaim?: () => void;
 }
 
 const DRAG_THRESH_PX = 4;
@@ -103,6 +115,7 @@ export const ChopRegionOverlay: React.FC<ChopRegionOverlayProps> = ({
   regions, selectedId, viewportStartSec, viewportEndSec, durationSec,
   onChange, onSelect, onSeek, onActivate, onCreateDefault, onDragOut, canExportVideo = false,
   onGestureStart, onGestureEnd, panViewport, onLiveBounds, createCursor = 'crosshair',
+  onContextMenu, onFocusClaim,
 }) => {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const gestureRef = useRef<Zone | null>(null);
@@ -381,6 +394,12 @@ export const ChopRegionOverlay: React.FC<ChopRegionOverlayProps> = ({
 
   const onRootPointerDown = useCallback((e: React.PointerEvent) => {
     if (e.button !== 0) return; // middle/right bubble → WaveformView built-in pan
+    // Claim the host waveform's keyboard focus FIRST, before the stopPropagation
+    // below cuts the event off from the container's own bubbling focus claim.
+    // Every left gesture (draw / click / resize / move / drag-out) runs through
+    // here, so this is the single point that makes a chop interaction reliably
+    // focus the waveform (item 4).
+    onFocusClaim?.();
     // Left gestures are OURS alone. Without this, the event bubbles into the
     // host WaveformView container whose Alt+drag tape-scrub handler would
     // start a scrub UNDER an in-flight region gesture (both fired — the
@@ -388,7 +407,7 @@ export const ChopRegionOverlay: React.FC<ChopRegionOverlayProps> = ({
     e.stopPropagation();
     if (e.ctrlKey || e.metaKey) { beginPan(e); return; } // ctrl/cmd+drag = pan
     beginGesture(e, hitTest(e.clientX, e.clientY));
-  }, [beginGesture, beginPan, hitTest]);
+  }, [beginGesture, beginPan, hitTest, onFocusClaim]);
 
   // Hover: track which region (and zone) the pointer is over so we can show
   // the edit affordances and set a zone-appropriate cursor. Skipped while a
@@ -415,6 +434,20 @@ export const ChopRegionOverlay: React.FC<ChopRegionOverlayProps> = ({
     onCreateDefault(secAtClientX(e.clientX));
   }, [onCreateDefault, secAtClientX]);
 
+  // Right-click hit-test: a click LANDING on a region opens the windowed
+  // region menu (selecting that region first); empty-space right-clicks are
+  // left alone so the pane's own context menu still fires there.
+  const onRootContextMenu = useCallback((e: React.MouseEvent) => {
+    if (!onContextMenu) return;
+    const sec = secAtClientX(e.clientX);
+    const hit = regions.find((r) => sec >= r.startSec && sec <= r.endSec);
+    if (!hit) return;
+    e.preventDefault();
+    e.stopPropagation();
+    onSelect(hit.id);
+    onContextMenu(hit.id, e.clientX, e.clientY);
+  }, [onContextMenu, regions, secAtClientX, onSelect]);
+
   const sel = selectedId ? regions.find((r) => r.id === selectedId) ?? null : null;
   const hover = hoverId ? regions.find((r) => r.id === hoverId) ?? null : null;
 
@@ -426,6 +459,7 @@ export const ChopRegionOverlay: React.FC<ChopRegionOverlayProps> = ({
       onPointerMove={onRootPointerMove}
       onPointerLeave={onRootPointerLeave}
       onDoubleClick={onRootDoubleClick}
+      onContextMenu={onRootContextMenu}
     >
       {durationSec > 0 && (
         <svg
