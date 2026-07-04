@@ -58,6 +58,10 @@ interface ChopRegionOverlayProps {
   // move) so the host can re-arm the audition loop DIRECTLY, ungated by React
   // state — see ChopApp's rAF-coalesced re-arm.
   onLiveBounds?: (id: string, startSec: number, endSec: number) => void;
+  // Cursor shown over empty space (the region-DRAW zone). The chop window
+  // keeps the crosshair default; the in-browser visualizer passes 'text'
+  // so an armed chop mode reads as an I-beam over the waveform.
+  createCursor?: string;
 }
 
 const DRAG_THRESH_PX = 4;
@@ -87,7 +91,7 @@ type Zone =
 export const ChopRegionOverlay: React.FC<ChopRegionOverlayProps> = ({
   regions, selectedId, viewportStartSec, viewportEndSec, durationSec,
   onChange, onSelect, onSeek, onActivate, onCreateDefault, onDragOut, canExportVideo = false,
-  onGestureStart, onGestureEnd, panViewport, onLiveBounds,
+  onGestureStart, onGestureEnd, panViewport, onLiveBounds, createCursor = 'crosshair',
 }) => {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const gestureRef = useRef<Zone | null>(null);
@@ -360,17 +364,22 @@ export const ChopRegionOverlay: React.FC<ChopRegionOverlayProps> = ({
       captureEl.releasePointerCapture?.(pid);
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
-      if (rootRef.current) rootRef.current.style.cursor = prevCursor || 'crosshair';
+      if (rootRef.current) rootRef.current.style.cursor = prevCursor || createCursor;
     };
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
-  }, []);
+  }, [createCursor]);
 
   const cursorFor = (kind: Zone['kind']): string =>
-    kind === 'resize' ? 'ew-resize' : kind === 'dragout' ? 'grab' : kind === 'move' ? 'move' : 'crosshair';
+    kind === 'resize' ? 'ew-resize' : kind === 'dragout' ? 'grab' : kind === 'move' ? 'move' : createCursor;
 
   const onRootPointerDown = useCallback((e: React.PointerEvent) => {
     if (e.button !== 0) return; // middle/right bubble → WaveformView built-in pan
+    // Left gestures are OURS alone. Without this, the event bubbles into the
+    // host WaveformView container whose Alt+drag tape-scrub handler would
+    // start a scrub UNDER an in-flight region gesture (both fired — the
+    // latent chop-window collision, and the visualizer's scrub/chop clash).
+    e.stopPropagation();
     if (e.ctrlKey || e.metaKey) { beginPan(e); return; } // ctrl/cmd+drag = pan
     beginGesture(e, hitTest(e.clientX, e.clientY));
   }, [beginGesture, beginPan, hitTest]);
@@ -406,7 +415,7 @@ export const ChopRegionOverlay: React.FC<ChopRegionOverlayProps> = ({
   return (
     <div
       ref={rootRef}
-      style={{ position: 'absolute', inset: 0, pointerEvents: 'auto', cursor: 'crosshair', zIndex: 2 }}
+      style={{ position: 'absolute', inset: 0, pointerEvents: 'auto', cursor: createCursor, zIndex: 2 }}
       onPointerDown={onRootPointerDown}
       onPointerMove={onRootPointerMove}
       onPointerLeave={onRootPointerLeave}
