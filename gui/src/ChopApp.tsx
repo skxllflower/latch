@@ -21,7 +21,7 @@ import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import {
   Scissors, X, Play, Pause, Square, Loader2,
-  Trash2, Film, Music, FolderOpen, Folder, ListMusic,
+  Trash2, Film, Music, FolderOpen, Folder, ListMusic, Magnet,
 } from 'lucide-react';
 import { useTheme, THEME_BG } from './theme';
 import {
@@ -39,7 +39,7 @@ import { useChopRegions } from './useChopRegions';
 import {
   ChopRegion, regionFileStem, resizeEdge, moveRegion,
   nextRegionId, nextRegionColor, MIN_REGION_SEC,
-  createDragRegion, setRegionBounds,
+  createDragRegion, setRegionBounds, edgeSnapExempt,
 } from './chopRegions';
 import { startOverlayDrag, endOverlayDrag } from './internalDragHandoff';
 import { cropCanvasFractionToDataUrl, videoFrameToChipDataUrl, peaksToChipDataUrl } from './dragChipPng';
@@ -107,6 +107,16 @@ export default function ChopApp() {
   const [hdVideoPath, setHdVideoPath] = useState<string | null>(null); // full-res, for video clip export
   const [hdLoading, setHdLoading] = useState(false);               // background HD download in flight
   const [durationSec, setDurationSec] = useState(0);
+  // Zero-cross snap toggle (magnet). Default ON; persisted per app. A ref mirror
+  // keeps the release snap reading the live value.
+  const [zeroCrossSnap, setZeroCrossSnapState] = useState<boolean>(() => {
+    try { return window.localStorage.getItem('latch-chop-zero-cross-snap') !== '0'; } catch { return true; }
+  });
+  const zeroCrossSnapRef = useRef(zeroCrossSnap); zeroCrossSnapRef.current = zeroCrossSnap;
+  const setZeroCrossSnap = useCallback((on: boolean) => {
+    setZeroCrossSnapState(on);
+    try { window.localStorage.setItem('latch-chop-zero-cross-snap', on ? '1' : '0'); } catch { /* ignore */ }
+  }, []);
   const [exporting, setExporting] = useState(false);
   const [exportMsg, setExportMsg] = useState('');
   const [videoPlaying, setVideoPlaying] = useState(false); // mirrors VideoView play state
@@ -777,7 +787,12 @@ export default function ChopApp() {
   // low-frequency crossing, which is what kills the click. No crossing in
   // the window = keep the raw position. Nudges stay raw on purpose
   // (precision work shouldn't fight the snap).
-  const zeroCross = useCallback(async (sec: number): Promise<number | null> => {
+  const zeroCross = useCallback(async (sec: number, duration: number): Promise<number | null> => {
+    if (!zeroCrossSnapRef.current) return null;   // snap off → keep the exact drag position
+    // File edges stay exactly selectable even with snap on (owner invariant):
+    // a bound at / within the window of 0 / EOF resolves to the exact edge.
+    const edge = edgeSnapExempt(sec, duration);
+    if (edge != null) return edge;
     if (!audioPath) return null;
     try {
       const t = await invoke<number>('wav_nearest_zero_cross', {
@@ -792,19 +807,19 @@ export default function ChopApp() {
     if (!r) return;
     const dur = durationSec;
     if (info.kind === 'resize' && info.edge) {
-      const t = await zeroCross(info.edge === 'start' ? r.startSec : r.endSec);
+      const t = await zeroCross(info.edge === 'start' ? r.startSec : r.endSec, dur);
       if (t != null) setRegions(resizeEdge(regionsRef.current, r.id, info.edge, t, dur));
     } else if (info.kind === 'create') {
-      const s = await zeroCross(r.startSec);
+      const s = await zeroCross(r.startSec, dur);
       if (s != null) setRegions(resizeEdge(regionsRef.current, r.id, 'start', s, dur));
       const cur = regionsRef.current.find((x) => x.id === info.id);
       if (!cur) return;
-      const e = await zeroCross(cur.endSec);
+      const e = await zeroCross(cur.endSec, dur);
       if (e != null) setRegions(resizeEdge(regionsRef.current, r.id, 'end', e, dur));
     } else if (info.kind === 'move') {
       // Shift the whole region so its START lands on a crossing — width
       // (and therefore the end's relation to the start) is preserved.
-      const s = await zeroCross(r.startSec);
+      const s = await zeroCross(r.startSec, dur);
       if (s != null) setRegions(moveRegion(regionsRef.current, r.id, s, dur));
       // Re-anchor the playhead to the moved region's new start. r is the
       // post-drag (pre-snap) region, so newStart = s ?? r.startSec and the
@@ -1290,8 +1305,18 @@ export default function ChopApp() {
     } finally {
       window.removeEventListener('pointerup', onUp);
       window.removeEventListener('pointercancel', onUp);
+      // Re-arm this region as the audition. The drag PAUSED the transport up
+      // front; on a FAILED or aborted drag nothing resumed it, and if the
+      // gesture came from a rail row (select-only, never armed) Space would
+      // then fall back to whole-file playback — the "chop audio died
+      // permanently" field bug. Re-cueing the loop here leaves it paused but
+      // instantly retriggerable, whether the drag succeeded or not.
+      select(r.id);
+      setAuditionId(r.id);
+      setCursorSec(r.startSec);
+      if (hasVideoRef.current) videoRef.current?.setLoop(r.startSec, r.endSec);
     }
-  }, [audioPath, clipInputFor, runClip, setClip, buildDragChip, sourceStem, ensureClipsDir]);
+  }, [audioPath, clipInputFor, runClip, setClip, buildDragChip, sourceStem, ensureClipsDir, select]);
 
   const handleRegionDragOut = useCallback((id: string, opts: { video: boolean }) => {
     const r = regionsRef.current.find((x) => x.id === id);
@@ -1381,6 +1406,21 @@ export default function ChopApp() {
           {seed?.title ? baseName(seed.title) : (seed?.url ?? 'no source')}
           {hasVideo ? ' · video' : ''}
         </span>
+        {audioPath && (
+          <button
+            onClick={() => setZeroCrossSnap(!zeroCrossSnap)}
+            title={zeroCrossSnap
+              ? 'Zero-cross snap (on): region edges snap to the nearest zero crossing. Click for exact placement'
+              : 'Zero-cross snap (off): region edges stay exactly where dropped. Click to snap'}
+            className={`shrink-0 flex items-center justify-center w-[18px] h-[18px] border transition-none ${
+              zeroCrossSnap
+                ? 'bg-[var(--theme-bg-hover)] border-[color:var(--theme-border-strong)] text-[color:var(--theme-text-heading)]'
+                : 'bg-[var(--theme-bg-surface)] border-[color:var(--theme-border)] hover:bg-[var(--theme-bg-elevated)] text-[color:var(--theme-text-secondary)]'
+            }`}
+          >
+            <Magnet size={10} />
+          </button>
+        )}
         <button onClick={() => {
             const w = getCurrentWindow();
             void w.close().catch(() => w.destroy().catch(() => {}));
@@ -1518,6 +1558,16 @@ export default function ChopApp() {
                     <button className={railBtn(false)} onClick={() => void startPipeline(seed)}>Retry</button>
                   )}
                 </>
+              ) : phase === 'ready' ? (
+                // Media is up but the display-only companion WAV is still
+                // deriving in the background — show a small hint instead of the
+                // full loading UI, which reads as if the whole window is stuck.
+                <div className="flex items-center gap-2 select-none">
+                  <Loader2 size={11} className="animate-spin text-[color:var(--theme-text-muted)]" />
+                  <span className="text-[0.5625rem] uppercase tracking-tight text-[color:var(--theme-text-muted)]">
+                    Deriving waveform{progress > 0 ? ` · ${progress}%` : ''}
+                  </span>
+                </div>
               ) : (
                 <div className="w-full max-w-[440px] flex flex-col items-center gap-2 px-6">
                   <div className="self-stretch flex items-center gap-2">

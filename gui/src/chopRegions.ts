@@ -29,6 +29,28 @@ export interface ChopRegion {
 // edge handles would sit on top of each other. ~20ms.
 export const MIN_REGION_SEC = 0.02;
 
+// Zero-crossing snap window (ms). A region edge released within this span of a
+// waveform zero crossing is pulled to it (declick on export); the same window
+// defines the file-edge exemption below. Shared by every chop host's
+// snap-on-release so the search radius and the exemption stay in lockstep.
+export const ZERO_CROSS_WINDOW_MS = 15;
+
+// The file boundaries must ALWAYS be exactly selectable — the very first and
+// very last sample — even with zero-cross snap ON. Without this the snap pulls
+// a near-edge bound inward to the nearest interior crossing, so a file whose
+// tail (or head) isn't at a crossing could never have its last (or first)
+// half-cycle included. So: a bound targeting within the snap window of file
+// start (0) or file end (duration) — or past them — resolves to the exact edge,
+// with NO crossing search and NO backward clamp, ever. Returns the exact edge
+// to snap to (0 or duration), or null when an interior crossing search should
+// run for `sec`.
+export function edgeSnapExempt(sec: number, duration: number): number | null {
+  const win = ZERO_CROSS_WINDOW_MS / 1000;
+  if (sec <= win) return 0;
+  if (duration > 0 && sec >= duration - win) return duration;
+  return null;
+}
+
 let _idSeq = 0;
 export function nextRegionId(): string {
   _idSeq += 1;
