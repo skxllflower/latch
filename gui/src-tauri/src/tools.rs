@@ -853,12 +853,27 @@ fn probe_impl(name: &str, configured: &str) -> ToolBinaryStatus {
     }
 }
 
+// Tauri v2 runs non-async commands INLINE on the main (UI) thread. probe_impl
+// sweeps candidate paths on disk (.exists()) AND, for lathe, spawns the binary
+// and WAITS on `libav-version` (cached, but the first hit blocks) — exactly the
+// stall the round-18 audit flags. Hop to a blocking pool thread; the frontend
+// contract (invoke name/args/return) is unchanged.
 #[tauri::command]
-pub fn tool_binary_probe(name: String, configured: String) -> ToolBinaryStatus {
-    // Settings-aware: an empty caller value falls back to the persisted override
-    // (lathe), so latheStatus reflects what the chop video path would resolve.
-    let configured = effective_configured(&name, &configured);
-    probe_impl(&name, &configured)
+pub async fn tool_binary_probe(name: String, configured: String) -> ToolBinaryStatus {
+    tauri::async_runtime::spawn_blocking(move || {
+        // Settings-aware: an empty caller value falls back to the persisted
+        // override (lathe), so latheStatus reflects what the chop video path
+        // would resolve.
+        let configured = effective_configured(&name, &configured);
+        probe_impl(&name, &configured)
+    })
+    .await
+    .unwrap_or_else(|e| ToolBinaryStatus {
+        resolved: false,
+        path: String::new(),
+        source: "error".into(),
+        message: format!("probe join: {e}"),
+    })
 }
 
 fn core_tool_exe(name: &str) -> &'static str {
@@ -962,11 +977,20 @@ fn resolve_core_tool(name: &str, configured: &str) -> ToolBinaryStatus {
 /// empty value previews the auto resolution. yt-dlp / ffmpeg mirror the C++
 /// core; lathe (and the latch core) use the shared tier chain.
 #[tauri::command]
-pub fn resolve_tool_status(name: String, configured: String) -> ToolBinaryStatus {
-    match name.as_str() {
+pub async fn resolve_tool_status(name: String, configured: String) -> ToolBinaryStatus {
+    // Same reasoning as tool_binary_probe: disk resolution + a possible lathe
+    // spawn, off the UI thread.
+    tauri::async_runtime::spawn_blocking(move || match name.as_str() {
         "yt-dlp" | "ffmpeg" => resolve_core_tool(&name, &configured),
         _ => probe_impl(&name, &configured),
-    }
+    })
+    .await
+    .unwrap_or_else(|e| ToolBinaryStatus {
+        resolved: false,
+        path: String::new(),
+        source: "error".into(),
+        message: format!("resolve join: {e}"),
+    })
 }
 
 /// Tear the whole app down: kill every tracked child, sweep the chop

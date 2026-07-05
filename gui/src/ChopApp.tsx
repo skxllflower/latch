@@ -21,7 +21,7 @@ import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import {
   Scissors, X, Play, Pause, Square, Loader2,
-  Trash2, Film, Music, FolderOpen, Folder, ListMusic, Magnet,
+  Trash2, Film, Music, FolderOpen, Folder, ListMusic, Magnet, Rows2,
 } from 'lucide-react';
 import { useTheme, THEME_BG } from './theme';
 import {
@@ -40,6 +40,7 @@ import {
   ChopRegion, regionFileStem, resizeEdge, moveRegion,
   nextRegionId, nextRegionColor, MIN_REGION_SEC,
   createDragRegion, setRegionBounds, edgeSnapExempt,
+  stampedClipName,
 } from './chopRegions';
 import { startOverlayDrag, endOverlayDrag } from './internalDragHandoff';
 import { cropCanvasFractionToDataUrl, videoFrameToChipDataUrl, peaksToChipDataUrl } from './dragChipPng';
@@ -116,6 +117,15 @@ export default function ChopApp() {
   const setZeroCrossSnap = useCallback((on: boolean) => {
     setZeroCrossSnapState(on);
     try { window.localStorage.setItem('latch-chop-zero-cross-snap', on ? '1' : '0'); } catch { /* ignore */ }
+  }, []);
+  // Channel Split: draw stereo files as two half-height lanes (L top / R
+  // bottom). Persisted; default off. Mono files ignore it (single lane).
+  const [channelSplit, setChannelSplitState] = useState<boolean>(() => {
+    try { return window.localStorage.getItem('latch-chop-channel-split') === '1'; } catch { return false; }
+  });
+  const setChannelSplit = useCallback((on: boolean) => {
+    setChannelSplitState(on);
+    try { window.localStorage.setItem('latch-chop-channel-split', on ? '1' : '0'); } catch { /* ignore */ }
   }, []);
   const [exporting, setExporting] = useState(false);
   const [exportMsg, setExportMsg] = useState('');
@@ -658,7 +668,7 @@ export default function ChopApp() {
     setCursorSec(target);
     if (hasVideo) {
       videoRef.current?.pause();
-      videoRef.current?.seek(target);
+      videoRef.current?.seek(target, true); // freeze the last frame across the park seek (no flash)
       playbackEngine.stop({ fadeMs: 20 }); // Stop kills EVERY source — no WAV may survive it
     } else if (onOurFileRef.current) {
       playbackEngine.pause();
@@ -697,7 +707,7 @@ export default function ChopApp() {
     setAuditionId(id);
     setCursorSec(r.startSec);
     if (hasVideo) {
-      videoRef.current?.seek(r.startSec);
+      videoRef.current?.seek(r.startSec, true); // freeze across the arm seek (no wrong-frame flash)
       videoRef.current?.setLoop(r.startSec, r.endSec);
     } else if (onOurFileRef.current && (playStateRef.current === 'playing' || playStateRef.current === 'paused')) {
       // Already auditioning (playing or paused) another region → move the
@@ -717,7 +727,7 @@ export default function ChopApp() {
       // becomes the transport (a leaked engine play would otherwise run
       // UNDER the video audio with no UI showing it).
       playbackEngine.stop({ fadeMs: 20 });
-      videoRef.current?.seek(r.startSec);
+      videoRef.current?.seek(r.startSec, true); // freeze across the retrigger seek (no flash)
       videoRef.current?.setLoop(r.startSec, r.endSec);
       videoRef.current?.play();
     } else {
@@ -749,7 +759,7 @@ export default function ChopApp() {
       setCursorSec(r.startSec);
       if (hasVideoRef.current) {
         videoRef.current?.pause();
-        videoRef.current?.seek(r.startSec);
+        videoRef.current?.seek(r.startSec, true); // freeze the last frame across the stop-park seek
       }
       playbackEngine.stop({ fadeMs: 20 });
     } else {
@@ -837,11 +847,11 @@ export default function ChopApp() {
           // resume (if it was playing) so the next pass starts cleanly at
           // the new spot instead of finishing the stale loop.
           videoRef.current?.pause();
-          videoRef.current?.seek(newStart);
+          videoRef.current?.seek(newStart, true); // freeze across the re-cue seek (no flash)
           videoRef.current?.setLoop(newStart, newEnd);
           if (wasPlaying) videoRef.current?.play();
         } else if (!wasPlaying) {
-          videoRef.current?.seek(newStart); // not playing → park the frame + playhead
+          videoRef.current?.seek(newStart, true); // not playing → park the frame + playhead
         }
         // playing + moved a different region → leave playback undisturbed
       } else if (onOurFileRef.current && (playStateRef.current === 'playing' || playStateRef.current === 'paused')) {
@@ -996,7 +1006,7 @@ export default function ChopApp() {
     if (hasVideo) {
       videoRef.current?.setLoop(s, e);
       const t = videoRef.current?.getCurrentTime() ?? s;
-      if (t < s - EPS || t > e + EPS) { videoRef.current?.seek(s); setCursorSec(s); }
+      if (t < s - EPS || t > e + EPS) { videoRef.current?.seek(s, true); setCursorSec(s); }
     } else if (onOurFileRef.current) {
       // The audio wrap itself stays owned by RegionLoopWatcher; here we only
       // rescue a playhead the edit pushed out of the (possibly shrunk) span.
@@ -1189,8 +1199,10 @@ export default function ChopApp() {
     const dsep = clipsDir.includes('\\') ? '\\' : '/';
     setClip(id, 'rendering');
     try {
+      // Stamped mint name — see beginRegionDragOut; keeps pre-renders
+      // collision-proof at any later drop destination too.
       const path = await runClip({
-        input, output: `${clipsDir}${dsep}${stem}.${ext}`,
+        input, output: `${clipsDir}${dsep}${stampedClipName(stem, ext)}`,
         startSec: r.startSec, endSec: r.endSec, video, overwrite: false,
         speed: videoRef.current?.getSpeed() ?? 1, pitchMode: pitchModeRef.current,
       });
@@ -1246,7 +1258,11 @@ export default function ChopApp() {
     const { input, video, ext } = clipInputFor(r, forceVideo);
     const idx = regionsRef.current.findIndex((x) => x.id === r.id);
     const stem = regionFileStem(r, idx < 0 ? 0 : idx, sourceStem);
-    const fileName = `${stem}.${ext}`;
+    // Mint-time stamp (collision-proof naming): each render gets a fresh
+    // stamped name, so a name freed by an earlier shell reclaim can never be
+    // re-minted and collide at the next drop's destination (the OS replace
+    // prompt). unique_output stays as the same-second backstop.
+    const fileName = stampedClipName(stem, ext);
     // Render to the persistent clips folder (not the temp dir, which is
     // wiped on close) so a clip dropped into a DAW keeps resolving.
     let clipsDir = tempDirRef.current;
@@ -1421,6 +1437,21 @@ export default function ChopApp() {
             <Magnet size={10} />
           </button>
         )}
+        {audioPath && (
+          <button
+            onClick={() => setChannelSplit(!channelSplit)}
+            title={channelSplit
+              ? 'Channel split (on): stereo files show L / R as separate lanes. Click for a single combined lane'
+              : 'Channel split (off): single combined waveform. Click to split stereo into L / R lanes'}
+            className={`shrink-0 flex items-center justify-center w-[18px] h-[18px] border transition-none ${
+              channelSplit
+                ? 'bg-[var(--theme-bg-hover)] border-[color:var(--theme-border-strong)] text-[color:var(--theme-text-heading)]'
+                : 'bg-[var(--theme-bg-surface)] border-[color:var(--theme-border)] hover:bg-[var(--theme-bg-elevated)] text-[color:var(--theme-text-secondary)]'
+            }`}
+          >
+            <Rows2 size={10} />
+          </button>
+        )}
         <button onClick={() => {
             const w = getCurrentWindow();
             void w.close().catch(() => w.destroy().catch(() => {}));
@@ -1483,6 +1514,7 @@ export default function ChopApp() {
               audioFile={waveAudioFile}
               filePath={audioPath}
               clickMode="seek"
+              channelSplit={channelSplit}
               hideTransport
               playheadGetter={hasVideo
                 ? (() => videoRef.current?.getCurrentTime() ?? cursorSec)

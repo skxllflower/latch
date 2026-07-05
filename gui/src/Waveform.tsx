@@ -36,13 +36,23 @@ interface WaveformViewProps {
   // behind the peaks. Default tint is the chapter amber; pass `color`
   // for distinct marks.
   markers?: { sec: number; label?: string; color?: string }[];
+  // Channel Split: draw each channel as its own half-height lane (L top,
+  // R bottom) when the file is multi-channel. Mono files ignore it (single
+  // lane). Triggers a per-channel data fetch; the combined path is untouched
+  // when false, and the renderer falls back to a single lane if the data
+  // returns < 2 channels. The region overlay + playhead stay full-height.
+  channelSplit?: boolean;
 }
 
 interface WaveData {
   success: boolean;
   duration_sec: number;
+  channels?: number;
   // [min, max, rms] per bin (signed) — matches WAVdesk's peak-bin shape.
   points: [number, number, number][];
+  // Per-channel bins (outer index = channel). Present only when the fetch
+  // asked for perChannel; backs the two-lane channel-split render.
+  channel_points?: [number, number, number][][];
 }
 
 const MIN_SPAN_SEC = 0.02;
@@ -91,8 +101,41 @@ function drawWaveEnvelope(
   ctx.closePath();
 }
 
+// Fold a bin array down to ~one column per device pixel over the visible
+// grid, returning per-column signed min/max (amplitude, -1..1) + x position.
+// Extracted so the single-lane and channel-split paths decimate identically
+// — the split view just runs it once per channel into its own lane.
+interface FoldOut { xs: Float32Array; mns: Float32Array; mxs: Float32Array; visN: number; }
+function foldColumns(
+  pts: [number, number, number][],
+  gFirst: number, iEnd: number, step: number, n: number,
+  pkTStart: number, pkSpan: number, curTStart: number, span: number, w: number,
+): FoldOut {
+  const outLen = Math.max(2, Math.floor((iEnd - gFirst) / step) + 1);
+  const xs = new Float32Array(outLen);
+  const mns = new Float32Array(outLen);
+  const mxs = new Float32Array(outLen);
+  let visN = 0;
+  for (let g0 = gFirst; g0 <= iEnd; g0 += step) {
+    const lo = Math.max(0, g0);
+    const g1 = Math.min(g0 + step, n);
+    let mn = Infinity, mx = -Infinity;
+    for (let i = lo; i < g1; i++) {
+      if (pts[i][0] < mn) mn = pts[i][0];
+      if (pts[i][1] > mx) mx = pts[i][1];
+    }
+    if (!isFinite(mn)) { mn = 0; mx = 0; }
+    const bc = (lo + g1 - 1) / 2;                      // group center bin
+    const tBin = pkTStart + ((bc + 0.5) / n) * pkSpan;
+    xs[visN] = ((tBin - curTStart) / span) * w;
+    mns[visN] = mn; mxs[visN] = mx;
+    visN++;
+  }
+  return { xs, mns, mxs, visN };
+}
+
 export const WaveformView: React.FC<WaveformViewProps> = ({
-  audioFile, filePath, playheadGetter, overlay, markers,
+  audioFile, filePath, playheadGetter, overlay, markers, channelSplit = false,
 }) => {
   const duration = audioFile?.durationSec ?? 0;
   const markersRef = useRef(markers);
@@ -170,7 +213,14 @@ export const WaveformView: React.FC<WaveformViewProps> = ({
     if (duration > 0) commitVp({ tStart: 0, tEnd: duration });
   }, [filePath, duration, commitVp]);
 
-  const peaksRef = useRef<{ points: [number, number, number][]; tStart: number; tEnd: number } | null>(null);
+  const peaksRef = useRef<{
+    points: [number, number, number][];
+    channelPoints: [number, number, number][][] | null;
+    tStart: number; tEnd: number;
+  } | null>(null);
+  // Live-read in draw() so toggling split repaints without a redraw dep churn.
+  const channelSplitRef = useRef(channelSplit);
+  channelSplitRef.current = channelSplit;
 
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
@@ -192,10 +242,38 @@ export const WaveformView: React.FC<WaveformViewProps> = ({
     const pk = peaksRef.current;
     const cur = vpRef.current;
     const span = Math.max(1e-6, cur.tEnd - cur.tStart);
-    // Center line.
+
+    // Channel Split is live only when the toggle asked for it AND per-channel
+    // data actually came back with >= 2 channels (mono falls through to the
+    // single centered lane).
+    const chans = pk?.channelPoints;
+    const splitActive = channelSplitRef.current && !!chans && chans.length >= 2;
+
+    // Two stacked lanes (channel 0 top, channel 1 bottom) separated by a gap +
+    // 1px divider. Without the gap the lanes abut exactly at the mid-line and,
+    // on loud/limited audio (both channels near +/-1), L's bottom envelope
+    // meets R's top there and the two fuse into a single solid full-height mass
+    // — visually identical to the combined view. The gap keeps the seam visible
+    // so the lanes stay plainly separate. amp +/-1 maps to +/-(laneScale) so a
+    // full-scale sample just reaches its lane's inner edge (0.95 headroom, same
+    // as the single lane). (WAVdesk drawSplit geometry.)
+    const laneGap = Math.max(4, Math.round(h * 0.03));
+    const laneH = Math.max(1, (h - laneGap) / 2);
+    const laneScale = (laneH / 2) * 0.95;
+    const laneCx = [laneH / 2, laneH + laneGap + laneH / 2];
+    const dividerY = laneH + laneGap / 2;
+
+    // Center line (single lane) OR the lane divider seam (split).
     ctx.fillStyle = 'rgba(161,161,170,0.25)';
-    ctx.fillRect(0, h / 2 - 0.5, w, 1);
-    // Chapter/marker ticks behind the peaks.
+    if (splitActive) {
+      ctx.fillRect(0, dividerY - 0.5, w, 1);
+      ctx.fillStyle = 'rgba(161,161,170,0.14)';
+      ctx.fillRect(0, laneCx[0] - 0.5, w, 1);
+      ctx.fillRect(0, laneCx[1] - 0.5, w, 1);
+    } else {
+      ctx.fillRect(0, h / 2 - 0.5, w, 1);
+    }
+    // Chapter/marker ticks behind the peaks (always full-height).
     const mks = markersRef.current;
     if (mks?.length) {
       for (const m of mks) {
@@ -207,11 +285,8 @@ export const WaveformView: React.FC<WaveformViewProps> = ({
     }
     if (!pk || pk.points.length === 0) return;
 
-    const pts = pk.points;
-    const n = pts.length;
+    const n = pk.points.length;
     const pkSpan = Math.max(1e-9, pk.tEnd - pk.tStart);
-    const cx = h / 2;
-    const scale = (h / 2) * 0.95;   // small headroom so full-scale doesn't clip the edge
 
     // Bins covering the visible viewport (+/-1 so the quad curve endpoints
     // fall outside the visible area and don't snap at the edges).
@@ -234,38 +309,35 @@ export const WaveformView: React.FC<WaveformViewProps> = ({
     const targetCols = Math.max(2, Math.ceil(w * dpr));
     const step = Math.max(1, Math.round((span * binsPerSec) / targetCols));
     const gFirst = Math.floor(iStart / step) * step;    // grid-aligned start
-    const out = Math.max(2, Math.floor((iEnd - gFirst) / step) + 1);
-    const xs = new Float32Array(out);
-    const tops = new Float32Array(out);
-    const bots = new Float32Array(out);
-    let visN = 0;
-    for (let g0 = gFirst; g0 <= iEnd; g0 += step) {
-      const lo = Math.max(0, g0);
-      const g1 = Math.min(g0 + step, n);
-      let mn = Infinity, mx = -Infinity;
-      for (let i = lo; i < g1; i++) {
-        if (pts[i][0] < mn) mn = pts[i][0];
-        if (pts[i][1] > mx) mx = pts[i][1];
-      }
-      if (!isFinite(mn)) { mn = 0; mx = 0; }
-      const bc = (lo + g1 - 1) / 2;                      // group center bin
-      const tBin = pk.tStart + ((bc + 0.5) / n) * pkSpan;
-      xs[visN] = ((tBin - cur.tStart) / span) * w;
-      tops[visN] = cx - mx * scale; // max (positive) → above center
-      bots[visN] = cx - mn * scale; // min (negative) → below center
-      visN++;
-    }
 
-    // Filled min/max envelope: quad-smoothed closed polygon + round-cap stroke.
     ctx.fillStyle = WAVE_COLOR;
     ctx.strokeStyle = WAVE_COLOR;
     ctx.lineWidth = WAVE_STROKE_PX;
     ctx.lineJoin = 'round';
     ctx.lineCap = 'round';
-    ctx.beginPath();
-    drawWaveEnvelope(ctx, visN, xs, tops, bots);
-    ctx.fill();
-    ctx.stroke();
+
+    // Fold one bin array into a lane centered at `cx`, amp scaled by `scl`,
+    // and paint the filled quad-smoothed min/max envelope.
+    const paintLane = (pts: [number, number, number][], cx: number, scl: number) => {
+      const { xs, mns, mxs, visN } = foldColumns(pts, gFirst, iEnd, step, n, pk.tStart, pkSpan, cur.tStart, span, w);
+      const tops = new Float32Array(visN);
+      const bots = new Float32Array(visN);
+      for (let j = 0; j < visN; j++) {
+        tops[j] = cx - mxs[j] * scl; // max (positive) → above center
+        bots[j] = cx - mns[j] * scl; // min (negative) → below center
+      }
+      ctx.beginPath();
+      drawWaveEnvelope(ctx, visN, xs, tops, bots);
+      ctx.fill();
+      ctx.stroke();
+    };
+
+    if (splitActive && chans) {
+      paintLane(chans[0], laneCx[0], laneScale);
+      paintLane(chans[1], laneCx[1], laneScale);
+    } else {
+      paintLane(pk.points, h / 2, (h / 2) * 0.95);
+    }
   }, []);
 
   // Whole-file peaks, fetched ONCE per file at high density. Drawing any
@@ -279,15 +351,18 @@ export const WaveformView: React.FC<WaveformViewProps> = ({
     let stale = false;
     peaksRef.current = null; // drop the previous file's peaks (no stale flash)
     const bins = Math.min(200_000, Math.max(4000, Math.round(duration * 1000)));
+    // Ask for per-channel bins only while split is on (additive on the backend;
+    // combined `points` still comes back either way). Toggling split re-fetches.
     void invoke<WaveData>('generate_waveform', {
-      path: filePath, points: bins, startSec: 0, endSec: duration,
+      path: filePath, points: bins, startSec: 0, endSec: duration, perChannel: channelSplit,
     }).then((data) => {
       if (stale || !data?.success) return;
-      peaksRef.current = { points: data.points ?? [], tStart: 0, tEnd: duration };
+      const cp = data.channel_points && data.channel_points.length >= 2 ? data.channel_points : null;
+      peaksRef.current = { points: data.points ?? [], channelPoints: cp, tStart: 0, tEnd: duration };
       draw();
     }).catch(() => { /* peaks are cosmetic; the overlay still works */ });
     return () => { stale = true; };
-  }, [filePath, duration, draw]);
+  }, [filePath, duration, channelSplit, draw]);
 
   // Redraw on resize (peaks refetch piggybacks on the next zoom/pan).
   useEffect(() => {

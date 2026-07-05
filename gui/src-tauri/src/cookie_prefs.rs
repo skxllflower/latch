@@ -51,8 +51,18 @@ fn shared_cookies_path() -> Option<PathBuf> {
     }
 }
 
+// Tauri v2 runs non-async commands INLINE on the main (UI) thread, so the
+// file read/write and the profile-directory sweep below all hop to a blocking
+// pool thread — otherwise a cold-disk cookies.json read or a slow browser
+// profile enumeration would stall the window. Frontend contract unchanged.
 #[tauri::command]
-pub fn cookie_prefs_get() -> CookiePrefs {
+pub async fn cookie_prefs_get() -> CookiePrefs {
+    tauri::async_runtime::spawn_blocking(cookie_prefs_get_impl)
+        .await
+        .unwrap_or_default()
+}
+
+fn cookie_prefs_get_impl() -> CookiePrefs {
     shared_cookies_path()
         .and_then(|p| std::fs::read_to_string(p).ok())
         .and_then(|s| serde_json::from_str::<CookiePrefs>(&s).ok())
@@ -60,7 +70,13 @@ pub fn cookie_prefs_get() -> CookiePrefs {
 }
 
 #[tauri::command]
-pub fn cookie_prefs_set(prefs: CookiePrefs) -> Result<(), String> {
+pub async fn cookie_prefs_set(prefs: CookiePrefs) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || cookie_prefs_set_impl(prefs))
+        .await
+        .map_err(|e| format!("cookie_prefs_set join: {e}"))?
+}
+
+fn cookie_prefs_set_impl(prefs: CookiePrefs) -> Result<(), String> {
     let path = shared_cookies_path().ok_or("cookie_prefs: no shared dir")?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("mkdir shared: {e}"))?;
@@ -75,7 +91,13 @@ pub fn cookie_prefs_set(prefs: CookiePrefs) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn detect_cookie_browsers() -> BrowserDetection {
+pub async fn detect_cookie_browsers() -> BrowserDetection {
+    tauri::async_runtime::spawn_blocking(detect_cookie_browsers_impl)
+        .await
+        .unwrap_or_else(|_| BrowserDetection { detected: Vec::new(), recommended: String::new() })
+}
+
+fn detect_cookie_browsers_impl() -> BrowserDetection {
     let mut detected = Vec::new();
     if firefox_has_cookies() {
         detected.push("firefox".to_string());

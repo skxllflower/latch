@@ -28,7 +28,12 @@ rodio = { version = "0.20", default-features = false, features = ["wav"] }
 log = "0.4"
 # Native drag-source for dragging files OUT into Explorer / DAWs —
 # wraps DoDragDrop / NSDraggingSource / XDND (see os_drag.rs).
-drag = "2"
+# Vendored (byte copy of WAVdesk's patched drag 2.1.0): carries the
+# performed drop-effect, and — round 21 — an ASYNC-capable data object
+# (IDataObjectAsyncCapability) so a shell paste's "Replace or Skip Files"
+# prompt can never wedge DoDragDrop (and with it the whole UI thread).
+# Keep byte-identical with wavdesk/gui/src-tauri/vendor/drag.
+drag = { path = "vendor/drag" }
 # OS-level keyboard polling for the drag chip's modifier state —
 # DoDragDrop's modal pump blocks JS keydown during a drag.
 device_query = "2"
@@ -45,6 +50,9 @@ windows = { version = "0.61", features = [
   "Win32_Security",
   "Win32_Graphics_Gdi",
   "Win32_UI_WindowsAndMessaging",
+  # GetAsyncKeyState — the OS-drag stale gate + watchdog read the physical
+  # mouse button state around DoDragDrop (os_drag.rs, ported from WAVdesk).
+  "Win32_UI_Input_KeyboardAndMouse",
   "Win32_System_Com",
   "Win32_System_Ole",
   "Win32_System_Variant",

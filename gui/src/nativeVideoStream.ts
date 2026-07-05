@@ -116,6 +116,20 @@ const LIVE_BOUNCE_MAX_GAP_MS = 120;
 const SEEK_AUDIO_NEAR_SEC = 1.25;
 const SEEK_AUDIO_PENDING_MAX_MS = 4000;
 
+// Freeze-through-seek (retrigger / stop). A seek issued with `freeze` HOLDS the
+// last displayed frame until a frame AT/AFTER the cue point lands, instead of
+// painting whatever arrives first. The decoder emits its keyframe→cue frames on
+// the way to the seek target (they clear the stale-frame gate as legitimate
+// post-seek data), and painting one of those flashes a WRONG frame for a tick —
+// the region-trigger / stop flash. A scrub still shows the earliest arriving
+// frame (responsive); only the chop retrigger/stop paths opt into the freeze.
+// A frame within this tolerance of the target counts as "the cue frame" (covers
+// the decoder landing a hair before the exact target). Time-capped so a wedged
+// decoder can never blank the picture forever — past the cap, paint whatever's
+// there.
+const SEEK_FREEZE_TARGET_TOL_SEC = 0.06;
+const SEEK_FREEZE_MAX_MS = 1500;
+
 const sleep = (ms: number) => new Promise<void>((r) => window.setTimeout(r, ms));
 
 function parseGeomHeader(h: string | null): NativeGeom | null {
@@ -210,6 +224,12 @@ export class NativeVideoEngine {
   // are accepted only when both are clear.
   private holdingForSeek = false;
   private pendingMarkers = 0;
+  // Freeze-through-seek gate (see SEEK_FREEZE_*). While set, present() holds the
+  // last displayed frame and paints nothing until a frame at/after the cue point
+  // is buffered — killing the pre-target keyframe flash on a retrigger/stop seek.
+  private seekFreeze = false;
+  private seekFreezeTarget = 0;
+  private seekFreezeAt = 0;
 
   // Audio-master sync. The daemon plays the video's audio and emits
   // vaudio_pos; when audio is present it drives the clock and the video
@@ -530,7 +550,10 @@ export class NativeVideoEngine {
     }
   }
 
-  seek(t: number): void {
+  // `freeze` holds the last displayed frame through the seek until the cue frame
+  // lands (retrigger / stop) instead of flashing the decoder's pre-cue keyframe
+  // frames. Absent = the responsive scrub behavior (paint the earliest arrival).
+  seek(t: number, freeze = false): void {
     if (this.destroyed) return;
     const tt = Math.max(0, this._duration > 0 ? Math.min(this._duration, t) : Math.max(0, t));
     // Snap clock + scrubber to the target immediately, then HOLD there: empty
@@ -549,6 +572,11 @@ export class NativeVideoEngine {
     this.lastNow = performance.now();
     this.presentedT = -1;
     this.started = false;
+    // Arm (or, on a plain scrub, disarm) the freeze gate. A later non-freeze
+    // seek clears a stale freeze so it never survives past its own cue.
+    this.seekFreeze = freeze;
+    this.seekFreezeTarget = tt;
+    this.seekFreezeAt = performance.now();
     if (this.persistent) {
       // The stream stays OPEN: discard in-flight pre-seek frames until the
       // decoder's marker comes back through the same body.
@@ -672,6 +700,10 @@ export class NativeVideoEngine {
     this.streamId = '';
     this.holdingForSeek = false;
     this.pendingMarkers = 0;
+    // A reconnect streams from `start` (the cue for a seek-fallback), so there
+    // are no pre-cue frames to guard against — drop any freeze so the first
+    // frame paints.
+    this.seekFreeze = false;
     this.dir = 1; // a fresh stream always starts forward
     this.decoderLoop = false; // re-armed after the headers land
     this.decoderLoopRegion = null;
@@ -957,7 +989,16 @@ export class NativeVideoEngine {
       showIdx = Math.max(0, showIdx - idx); // reindex after the splice
     }
     const cur = this.frames[showIdx] ?? this.frames[0];
-    if (cur && cur.t !== this.presentedT) {
+    // Freeze-through-seek: while frozen, hold the last displayed frame (paint
+    // nothing) until a frame AT/AFTER the cue lands — so the decoder's on-the-way
+    // keyframe frames never flash a wrong picture during a retrigger/stop seek.
+    // Released the instant the cue frame is available, or by the time cap so a
+    // wedged decoder can't blank the picture forever.
+    if (this.seekFreeze) {
+      if (now - this.seekFreezeAt > SEEK_FREEZE_MAX_MS) this.seekFreeze = false;
+      else if (cur && cur.t >= this.seekFreezeTarget - SEEK_FREEZE_TARGET_TOL_SEC) this.seekFreeze = false;
+    }
+    if (cur && !this.seekFreeze && cur.t !== this.presentedT) {
       this.presentedT = cur.t;
       this.cb.onFrame(cur.bmp);
     }

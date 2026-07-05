@@ -89,6 +89,21 @@ static std::string tape_chain(double speed) {
   return buf;
 }
 
+// ~1ms boundary declick. A cut rarely lands on a zero crossing, so the first
+// and last samples jump from/to silence and click on playback. A 1ms linear
+// ramp in at the head and out at the tail (48 samples at 48k) removes it
+// without audibly touching the transient. `out_dur` is the OUTPUT length (post
+// speed/tape re-time), so afade's output-timeline `st` lands on the real tail.
+static std::string afade_declick(double out_dur) {
+  const double d = 0.001;
+  double st = out_dur - d;
+  if (st < 0.0) st = 0.0;  // degenerate sub-2ms clip: fades collapse at 0, still valid
+  char buf[128];
+  std::snprintf(buf, sizeof(buf),
+                "afade=t=in:d=%.6f,afade=t=out:st=%.6f:d=%.6f", d, st, d);
+  return buf;
+}
+
 // "HH:MM:SS.uuuuuu" -> seconds, or -1 on garbage / N/A.
 static double parse_ffmpeg_time(const std::string& v) {
   int h = 0, m = 0;
@@ -173,9 +188,17 @@ ClipResult clip(const std::string& input,
     if (speed_changed) {
       char sp_buf[64];
       std::snprintf(sp_buf, sizeof(sp_buf), "%.6f", speed);
+      // Audio: speed chain -> boundary declick, on the re-timed [0:a] stream.
+      // Video ([0:v]) is untouched aside from the setpts re-time.
       std::string fc = std::string("[0:v]setpts=PTS/") + sp_buf + "[v];[0:a]" +
-                       (tape ? tape_chain(speed) : atempo_chain(speed)) + "[a]";
+                       (tape ? tape_chain(speed) : atempo_chain(speed)) + "," +
+                       afade_declick(out_duration) + "[a]";
       argv.insert(argv.end(), {"-filter_complex", fc, "-map", "[v]", "-map", "[a]"});
+    } else {
+      // No re-time, so no filter_complex — still declick the audio track's
+      // boundaries (-af hits the auto-selected audio stream; video passes
+      // through the encoder untouched).
+      argv.insert(argv.end(), {"-af", afade_declick(out_duration)});
     }
     const std::string e = ext_lower(output);
     if (e == "webm") {
@@ -204,9 +227,11 @@ ClipResult clip(const std::string& input,
   } else {
     std::string fmt = opts.audio_format.empty() ? std::string("wav") : opts.audio_format;
     argv.insert(argv.end(), {"-vn", "-map", "0:a:0"});
-    if (speed_changed) {
-      argv.insert(argv.end(), {"-filter:a", tape ? tape_chain(speed) : atempo_chain(speed)});
-    }
+    // Speed chain (if any) then the boundary declick, in one -filter:a chain.
+    std::string af;
+    if (speed_changed) af = (tape ? tape_chain(speed) : atempo_chain(speed)) + ",";
+    af += afade_declick(out_duration);
+    argv.insert(argv.end(), {"-filter:a", af});
     if (fmt == "wav") {
       argv.insert(argv.end(), {"-c:a", "pcm_s24le"});
     } else if (fmt == "flac") {

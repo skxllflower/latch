@@ -276,3 +276,23 @@ export function regionFileStem(r: ChopRegion, index: number, baseName?: string):
   if (base) return `${base}_${num}`;
   return `clip_${num}`;
 }
+
+// Collision-proof mint stamp for clip filenames: yyMMdd-HHmmss, LOCAL time,
+// taken at MINT (render creation). Mint time is monotonic per machine, so a
+// filename freed by a shell reclaim (desktop drop deletes our redundant copy
+// from Latch Clips) can never be re-minted identically by a later render —
+// the destination collision that threw the OS replace prompt when two drags
+// of re-rendered clips reused one name. No persisted ledger needed; the
+// renderer's no-clobber (unique_output) stays as the clock-rollback backstop,
+// and chronological name-sort in DAW browsers comes free. Mirrors WAVdesk's
+// chopRegions.ts helpers — keep in lockstep.
+export function mintChopStamp(d: Date = new Date()): string {
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${p(d.getFullYear() % 100)}${p(d.getMonth() + 1)}${p(d.getDate())}-`
+    + `${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+}
+
+/** The minted clip filename for a region: `<stem>_<yyMMdd-HHmmss>.<ext>`. */
+export function stampedClipName(stem: string, ext: string, stamp?: string): string {
+  return `${stem}_${stamp ?? mintChopStamp()}.${ext}`;
+}

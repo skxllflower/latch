@@ -16,25 +16,39 @@ fn chop_root() -> PathBuf {
 
 /// Fresh temp working dir for one chop session. Swept by cleanup on
 /// window close; the pid in the name keeps two instances apart.
+///
+/// Tauri v2 runs non-async commands INLINE on the main (UI) thread, so the
+/// dir creation / removal / clips-dir resolution in these three commands all
+/// hop to a blocking pool thread — a cold-disk mkdir or a big-session
+/// remove_dir_all would otherwise stall the window. Frontend contract
+/// unchanged (invoke already awaits a Promise).
 #[tauri::command]
-pub fn latch_chop_alloc_dir(_window_label: String) -> Result<String, String> {
-    let n = CHOP_DIR_SEQ.fetch_add(1, Ordering::Relaxed);
-    let dir = chop_root().join(format!("{}-{}", std::process::id(), n));
-    std::fs::create_dir_all(&dir).map_err(|e| format!("alloc chop dir: {e}"))?;
-    Ok(dir.to_string_lossy().into_owned())
+pub async fn latch_chop_alloc_dir(_window_label: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let n = CHOP_DIR_SEQ.fetch_add(1, Ordering::Relaxed);
+        let dir = chop_root().join(format!("{}-{}", std::process::id(), n));
+        std::fs::create_dir_all(&dir).map_err(|e| format!("alloc chop dir: {e}"))?;
+        Ok(dir.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|e| format!("alloc chop dir join: {e}"))?
 }
 
 /// Remove a chop session's temp dir. Only ever pointed at paths
 /// latch_chop_alloc_dir produced — guard on the marker root so a bad
 /// argument can never delete outside it.
 #[tauri::command]
-pub fn latch_chop_cleanup_dir(dir: String) -> Result<(), String> {
-    let p = PathBuf::from(&dir);
-    if !p.starts_with(chop_root()) {
-        return Err("refusing to remove a dir outside the chop temp root".into());
-    }
-    let _ = std::fs::remove_dir_all(&p);
-    Ok(())
+pub async fn latch_chop_cleanup_dir(dir: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = PathBuf::from(&dir);
+        if !p.starts_with(chop_root()) {
+            return Err("refusing to remove a dir outside the chop temp root".into());
+        }
+        let _ = std::fs::remove_dir_all(&p);
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("cleanup chop dir join: {e}"))?
 }
 
 /// Remove the whole chop temp root — app-exit cleanup so cancelled
@@ -50,22 +64,27 @@ pub fn sweep_temp_root() {
 /// through the OS known-folder API (NOT %USERPROFILE%\Documents string
 /// math) so OneDrive-redirected Documents folders land correctly.
 #[tauri::command]
-pub fn latch_clips_dir(app: AppHandle) -> Result<String, String> {
-    use tauri::Manager;
-    // A configured clips folder (Settings) wins; empty falls back to the
-    // Documents default below.
-    let configured = crate::settings::load().clips_dir;
-    let dir = if !configured.trim().is_empty() {
-        PathBuf::from(configured.trim())
-    } else {
-        let docs = app
-            .path()
-            .document_dir()
-            .map_err(|e| format!("no Documents dir: {e}"))?;
-        docs.join("Vacant Systems").join("Latch Clips")
-    };
-    std::fs::create_dir_all(&dir).map_err(|e| format!("clips dir: {e}"))?;
-    Ok(dir.to_string_lossy().into_owned())
+pub async fn latch_clips_dir(app: AppHandle) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        use tauri::Manager;
+        // A configured clips folder (Settings) wins; empty falls back to the
+        // Documents default below. settings::load() + create_dir_all are disk
+        // touches, so the whole resolution runs off the UI thread.
+        let configured = crate::settings::load().clips_dir;
+        let dir = if !configured.trim().is_empty() {
+            PathBuf::from(configured.trim())
+        } else {
+            let docs = app
+                .path()
+                .document_dir()
+                .map_err(|e| format!("no Documents dir: {e}"))?;
+            docs.join("Vacant Systems").join("Latch Clips")
+        };
+        std::fs::create_dir_all(&dir).map_err(|e| format!("clips dir: {e}"))?;
+        Ok(dir.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|e| format!("clips dir join: {e}"))?
 }
 
 // Pick a non-colliding output path: "<stem> (2).<ext>", … on collision, and

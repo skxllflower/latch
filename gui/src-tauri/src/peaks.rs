@@ -73,11 +73,21 @@ fn open_wav(path: &str) -> Result<(std::fs::File, WavInfo), String> {
 pub struct WaveformData {
     pub success: bool,
     pub duration_sec: f64,
+    // Source channel count (1 = mono). Lets the GUI decide mono-single-lane
+    // vs stereo-split without a second probe.
+    pub channels: u16,
     // [min, max, rms] per bin (signed, -1..1; rms 0..1). min/max are the
     // channel-extreme signed samples in the bin, so the GUI can paint the
     // asymmetric min/max envelope (the DAW look) instead of a symmetric bar;
     // rms backs an optional crest line. Matches WAVdesk's peak-bin shape.
+    // ALWAYS the combined (all-channels-folded) envelope for back-compat.
     pub points: Vec<[f32; 3]>,
+    // Per-channel bins, same [min,max,rms] shape, outer index = channel.
+    // Populated ONLY when `per_channel` is requested (additive — the combined
+    // `points` above is unchanged); empty otherwise. Backs the Chop window's
+    // two-lane channel-split view. Mirrors WAVdesk's `channel_points`.
+    #[serde(default)]
+    pub channel_points: Vec<Vec<[f32; 3]>>,
 }
 
 /// Max-abs peak bins over [start_sec, end_sec) (whole file when absent).
@@ -89,7 +99,11 @@ pub async fn generate_waveform(
     points: u32,
     start_sec: Option<f64>,
     end_sec: Option<f64>,
+    // When true, ALSO emit per-channel bins in `channel_points` (the combined
+    // `points` is unchanged). Off = combined-only, the original behavior.
+    per_channel: Option<bool>,
 ) -> Result<WaveformData, String> {
+    let want_channels = per_channel.unwrap_or(false);
     tauri::async_runtime::spawn_blocking(move || -> Result<WaveformData, String> {
         let (mut f, info) = open_wav(&path)?;
         let sr = info.sample_rate as f64;
@@ -106,7 +120,18 @@ pub async fn generate_waveform(
         };
         let span = hi_frame.saturating_sub(lo_frame);
         if span == 0 {
-            return Ok(WaveformData { success: true, duration_sec, points: vec![[0.0, 0.0, 0.0]; bins] });
+            let channel_points = if want_channels {
+                vec![vec![[0.0, 0.0, 0.0]; bins]; info.channels as usize]
+            } else {
+                Vec::new()
+            };
+            return Ok(WaveformData {
+                success: true,
+                duration_sec,
+                channels: info.channels,
+                points: vec![[0.0, 0.0, 0.0]; bins],
+                channel_points,
+            });
         }
 
         // Per-bin signed min / max + running sum-of-squares for RMS. min/max
@@ -121,6 +146,14 @@ pub async fn generate_waveform(
             .map_err(|e| e.to_string())?;
         let frame_bytes = info.frame_bytes as usize;
         let chans = info.channels as usize;
+
+        // Per-channel accumulators — only allocated when a split view is asked
+        // for (a stereo whole-file scan at 200k bins is 2 extra Vecs; skip it
+        // for the common combined path). Same neutral-extreme seeding.
+        let mut ch_mins: Vec<Vec<f32>> = if want_channels { vec![vec![f32::INFINITY; bins]; chans] } else { Vec::new() };
+        let mut ch_maxs: Vec<Vec<f32>> = if want_channels { vec![vec![f32::NEG_INFINITY; bins]; chans] } else { Vec::new() };
+        let mut ch_sumsq: Vec<Vec<f64>> = if want_channels { vec![vec![0f64; bins]; chans] } else { Vec::new() };
+        let mut ch_counts: Vec<Vec<u64>> = if want_channels { vec![vec![0u64; bins]; chans] } else { Vec::new() };
         const SLAB: usize = 1 << 20;
         let frames_per_slab = (SLAB / frame_bytes).max(1);
         let mut buf = vec![0u8; frames_per_slab * frame_bytes];
@@ -150,6 +183,12 @@ pub async fn generate_waveform(
                     if s > maxs[bin] { maxs[bin] = s; }
                     sumsq[bin] += (s as f64) * (s as f64);
                     counts[bin] += 1;
+                    if want_channels {
+                        if s < ch_mins[c][bin] { ch_mins[c][bin] = s; }
+                        if s > ch_maxs[c][bin] { ch_maxs[c][bin] = s; }
+                        ch_sumsq[c][bin] += (s as f64) * (s as f64);
+                        ch_counts[c][bin] += 1;
+                    }
                 }
             }
             frame_idx += frames as u64;
@@ -163,7 +202,28 @@ pub async fn generate_waveform(
                 }
             })
             .collect();
-        Ok(WaveformData { success: true, duration_sec, points })
+        let channel_points: Vec<Vec<[f32; 3]>> = if want_channels {
+            (0..chans)
+                .map(|c| {
+                    (0..bins)
+                        .map(|b| {
+                            if ch_counts[c][b] == 0 {
+                                [0.0, 0.0, 0.0]
+                            } else {
+                                [
+                                    ch_mins[c][b],
+                                    ch_maxs[c][b],
+                                    (ch_sumsq[c][b] / ch_counts[c][b] as f64).sqrt() as f32,
+                                ]
+                            }
+                        })
+                        .collect()
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        Ok(WaveformData { success: true, duration_sec, channels: info.channels, points, channel_points })
     })
     .await
     .map_err(|e| format!("waveform join: {e}"))?

@@ -65,7 +65,10 @@ function fmtTime(t: number): string {
 }
 
 export interface VideoViewHandle {
-  seek: (sec: number) => void;
+  // `freeze` (native engine only): hold the last displayed frame through the
+  // seek until the cue frame lands, instead of flashing the decoder's pre-cue
+  // keyframe frames — used by the chop window's retrigger / stop / re-cue seeks.
+  seek: (sec: number, freeze?: boolean) => void;
   togglePlay: () => void;
   shuttle: (dir: number) => void;
   stepFrame: (dir: number) => void;
@@ -667,9 +670,9 @@ export const VideoView = forwardRef<VideoViewHandle, VideoViewProps>(function Vi
   }, []);
 
   // ---- transport actions ----
-  const seek = useCallback((t: number) => {
+  const seek = useCallback((t: number, freeze = false) => {
     if (nativeEngineRef.current) {
-      nativeEngineRef.current.seek(t);
+      nativeEngineRef.current.seek(t, freeze);
       setCurrentTime(nativeEngineRef.current.currentTime);
       return;
     }

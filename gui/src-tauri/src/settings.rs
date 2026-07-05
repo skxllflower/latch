@@ -105,13 +105,24 @@ pub fn apply_tool_env(cmd: &mut Command) {
     }
 }
 
+// Tauri v2 runs a non-async command INLINE on the main (UI) thread inside
+// WebMessageReceived, so any disk touch here would stall the window. Both
+// settings commands read/write JSON on disk — hop to a blocking pool thread.
+// The frontend contract (invoke name, args, return) is unchanged; invoke
+// already awaits a Promise either way.
 #[tauri::command]
-pub fn settings_get() -> LatchSettings {
-    load()
+pub async fn settings_get() -> LatchSettings {
+    tauri::async_runtime::spawn_blocking(load).await.unwrap_or_default()
 }
 
 #[tauri::command]
-pub fn settings_set(patch: Value) -> Result<(), String> {
+pub async fn settings_set(patch: Value) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || settings_set_impl(patch))
+        .await
+        .map_err(|e| format!("settings_set join: {e}"))?
+}
+
+fn settings_set_impl(patch: Value) -> Result<(), String> {
     let path = settings_path().ok_or("settings: no vendor dir")?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("mkdir settings: {e}"))?;
