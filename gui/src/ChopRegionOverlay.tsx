@@ -107,7 +107,7 @@ const dragoutBandPx = (h: number) =>
 
 type Zone =
   | { kind: 'create'; anchorSec: number; startX: number; createdId: string | null }
-  | { kind: 'resize'; id: string; edge: 'start' | 'end' }
+  | { kind: 'resize'; id: string; edge: 'start' | 'end'; startX: number; moved: boolean }
   | { kind: 'move'; id: string; grabSec: number; origStart: number; startX: number; moved: boolean }
   | { kind: 'dragout'; id: string; video: boolean; startX: number; startY: number; armed: boolean };
 
@@ -192,10 +192,10 @@ export const ChopRegionOverlay: React.FC<ChopRegionOverlayProps> = ({
     const xOf = (sec: number) => ((sec - viewportStartSec) / span) * w;
     for (const r of regions) {
       if (r.startSec > viewportStartSec && r.startSec < viewportEndSec && Math.abs(xpx - xOf(r.startSec)) <= EDGE_HIT_PX) {
-        return { kind: 'resize', id: r.id, edge: 'start' };
+        return { kind: 'resize', id: r.id, edge: 'start', startX: clientX, moved: false };
       }
       if (r.endSec > viewportStartSec && r.endSec < viewportEndSec && Math.abs(xpx - xOf(r.endSec)) <= EDGE_HIT_PX) {
-        return { kind: 'resize', id: r.id, edge: 'end' };
+        return { kind: 'resize', id: r.id, edge: 'end', startX: clientX, moved: false };
       }
     }
     const sec = secAtClientX(clientX);
@@ -258,6 +258,10 @@ export const ChopRegionOverlay: React.FC<ChopRegionOverlayProps> = ({
           onChange(workingRef.current);
         }
       } else if (cur.kind === 'resize') {
+        // Require real movement before resizing so a plain click on an edge band
+        // stays a click (→ retrigger), not a zero-delta resize (item 2).
+        if (!cur.moved && Math.abs(clientX - cur.startX) < DRAG_THRESH_PX) return;
+        cur.moved = true;
         workingRef.current = resizeEdge(workingRef.current, cur.id, cur.edge, sec, durationSec);
         onChange(workingRef.current);
       } else if (cur.kind === 'move') {
@@ -345,9 +349,15 @@ export const ChopRegionOverlay: React.FC<ChopRegionOverlayProps> = ({
           onSelect(null);
           onSeek(secAtClientX(ev.clientX));     // empty click → park + (Space plays whole)
         }
-      } else if ((cur.kind === 'move' && !cur.moved) || (cur.kind === 'dragout' && !cur.armed)) {
-        onActivate(cur.id);                     // click inside a region → swap loop
-      } else if (cur.kind === 'resize') {
+      } else if ((cur.kind === 'move' && !cur.moved) ||
+                 (cur.kind === 'resize' && !cur.moved) ||
+                 (cur.kind === 'dragout' && !cur.armed)) {
+        // A click (no drag) anywhere on a region — body, edge band, or grip —
+        // retriggers it. Making the edge band retrigger too is the item-2 fix:
+        // a click that landed within EDGE_HIT_PX of an edge used to fire a
+        // zero-movement resize (a re-snap that clicked but never replayed).
+        onActivate(cur.id);
+      } else if (cur.kind === 'resize' && cur.moved) {
         onGestureEnd?.({ id: cur.id, kind: 'resize', edge: cur.edge });
       } else if (cur.kind === 'move' && cur.moved) {
         onGestureEnd?.({ id: cur.id, kind: 'move' });
