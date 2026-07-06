@@ -25,7 +25,8 @@ import {
 } from 'lucide-react';
 import { useTheme, THEME_BG } from './theme';
 import { playbackEngine } from './playbackEngine';
-import { usePlaybackState, usePlaybackCurrentPath } from './PlaybackContext';
+import { usePlaybackState, usePlaybackCurrentPath, usePlaybackPosition } from './PlaybackContext';
+import { peaksToChipDataUrl } from './dragChipPng';
 import { startOverlayDrag, endOverlayDrag } from './internalDragHandoff';
 import { confirmInWindow, infoInWindow } from './dialogs';
 import { open as openFileDialog } from '@tauri-apps/plugin-dialog';
@@ -237,6 +238,88 @@ const formatBytes = (n: number) => {
 };
 
 const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
+
+interface IpcWaveformData {
+  success: boolean;
+  duration_sec: number;
+  points: [number, number, number][]; // [min, max, rms] per bin (signed)
+}
+
+// Inline audition fold-out — a compact waveform strip that slides in UNDER a
+// finished output row (pushing the rows below down) with play/pause + a live
+// playhead. Reuses the shared generate_waveform peaks + peaksToChipDataUrl
+// renderer and the WAV-only rodio engine the whole app plays through. Only one
+// is mounted at a time (the parent tracks a single open row id), so the peaks
+// fetch is paid once per open, not per row.
+const AuditionFoldout: React.FC<{ path: string }> = ({ path }) => {
+  const [peaksUrl, setPeaksUrl] = useState<string | null>(null);
+  const [bg, setBg] = useState('#0c0c0d');
+  const [durationSec, setDurationSec] = useState(0);
+  const playState = usePlaybackState();
+  const playPath  = usePlaybackCurrentPath();
+  const position  = usePlaybackPosition();
+  const isThis  = playPath === path && playState !== 'stopped';
+  const playing = isThis && playState === 'playing';
+
+  useEffect(() => {
+    let cancelled = false;
+    setPeaksUrl(null);
+    void invoke<IpcWaveformData>('generate_waveform', { path, points: 600 })
+      .then(data => {
+        if (cancelled) return;
+        setDurationSec(data.duration_sec || 0);
+        const r = peaksToChipDataUrl(data.points, '#7dd3fc');
+        if (r) { setPeaksUrl(r.url); setBg(r.bg); }
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [path]);
+
+  const frac = isThis && durationSec > 0
+    ? Math.min(1, Math.max(0, position / durationSec)) : 0;
+
+  const togglePlay = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (playing) { playbackEngine.pause(); return; }
+    if (isThis && playState === 'paused') { void playbackEngine.resume(); return; }
+    void playbackEngine.play(path, 'full', { startSec: 0 });
+  };
+  const seek = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (durationSec <= 0) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const f = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+    void playbackEngine.play(path, 'full', { startSec: f * durationSec });
+  };
+
+  return (
+    <div className="flex items-center gap-1.5 pl-6 pr-2 py-1 bg-zinc-950/50 border-b border-zinc-900/80">
+      <button
+        onClick={togglePlay}
+        className="shrink-0 p-1 -m-0.5 flex items-center justify-center text-zinc-400 hover:text-zinc-100 transition-none"
+        title={playing ? 'Pause' : 'Play'}
+      >
+        {playing ? <Pause size={11} /> : <Play size={11} />}
+      </button>
+      <div
+        className="relative flex-1 h-9 overflow-hidden cursor-pointer"
+        style={{ background: bg }}
+        onClick={seek}
+        title="Click to seek"
+      >
+        {peaksUrl
+          ? <img src={peaksUrl} alt="" className="w-full h-full object-fill pointer-events-none" draggable={false} />
+          : <div className="absolute inset-0 flex items-center justify-center text-[0.5rem] text-zinc-700 pointer-events-none">loading…</div>}
+        {isThis && (
+          <div
+            className="absolute top-0 bottom-0 w-px bg-emerald-400 pointer-events-none"
+            style={{ left: `${frac * 100}%`, boxShadow: '0 0 4px rgba(16,185,129,0.9)' }}
+          />
+        )}
+      </div>
+    </div>
+  );
+};
 
 export default function ExtractApp() {
   const { theme } = useTheme();
@@ -1389,21 +1472,27 @@ export default function ExtractApp() {
 
   // In-place audition of a finished output. The standalone engine is rodio
   // built WAV-only (Cargo: features = ["wav"]), so the toggle is offered only
-  // for .wav outputs — everything else can't be decoded here. Position/state
-  // arrive via the `audio-pos` broadcast (audio.rs emits app-wide, not just to
-  // the chop window) so this row reflects play/pause live.
-  const playState = usePlaybackState();
+  // for .wav outputs — everything else can't be decoded here. The row's button
+  // no longer plays directly — it folds out a compact waveform strip UNDER the
+  // row (AuditionFoldout) with its own play/pause + playhead. One open fold-out
+  // at a time; opening auto-plays, folding back stops it.
   const playPath = usePlaybackCurrentPath();
+  const playPathRef = useRef(playPath); playPathRef.current = playPath;
   const canAudition = useCallback(
     (p: string | undefined): p is string => !!p && /\.wav$/i.test(p),
     [],
   );
-  const toggleAudition = useCallback((path: string) => {
-    const isThis = playPath === path && playState !== 'stopped';
-    if (isThis && playState === 'playing') { playbackEngine.pause(); return; }
-    if (isThis && playState === 'paused') { void playbackEngine.resume(); return; }
-    void playbackEngine.play(path, 'full', { startSec: 0 });
-  }, [playPath, playState]);
+  const [auditionOpenId, setAuditionOpenId] = useState<string | null>(null);
+  const toggleFoldout = useCallback((id: string, output: string) => {
+    setAuditionOpenId(cur => {
+      if (cur === id) {
+        if (playPathRef.current === output) playbackEngine.stop();
+        return null;
+      }
+      void playbackEngine.play(output, 'full', { startSec: 0 });
+      return id;
+    });
+  }, []);
   // Batch-aware progress: finished/total + summed percent over the items
   // of the CURRENT batch only, so old session rows don't skew the bar.
   const batchProgress = useMemo(() => {
@@ -2177,8 +2266,8 @@ export default function ExtractApp() {
               items.map(it => {
                 const dragOK = it.status === 'done' && !!it.output;
                 return (
+                <React.Fragment key={it.id}>
                 <div
-                  key={it.id}
                   className={`group flex items-start gap-1.5 px-1.5 py-1 text-[0.625rem] ${
                     it.selected
                       ? 'bg-zinc-800/70 text-zinc-100'
@@ -2290,17 +2379,18 @@ export default function ExtractApp() {
                       </>
                     )}
                   </div>
-                  {/* Audition — play/pause the finished WAV in place (the
-                      only format the WAV-only rodio engine can decode). */}
+                  {/* Audition — folds out a compact waveform strip under the
+                      row (play/pause + playhead); click again to fold back.
+                      WAV-only (the rodio engine can't decode other formats). */}
                   {it.status === 'done' && canAudition(it.output) && (() => {
-                    const playing = playPath === it.output && playState === 'playing';
+                    const open = auditionOpenId === it.id;
                     return (
                       <button
-                        onClick={(e) => { e.stopPropagation(); toggleAudition(it.output!); }}
-                        className={`shrink-0 p-1 -m-1 flex items-center justify-center transition-none ${playing ? 'text-emerald-400 hover:text-emerald-300' : 'text-zinc-600 hover:text-zinc-300'}`}
-                        title={playing ? 'Pause' : 'Play'}
+                        onClick={(e) => { e.stopPropagation(); toggleFoldout(it.id, it.output!); }}
+                        className={`shrink-0 p-1 -m-1 flex items-center justify-center transition-none ${open ? 'text-emerald-400 hover:text-emerald-300' : 'text-zinc-600 hover:text-zinc-300'}`}
+                        title={open ? 'Close audition' : 'Audition'}
                       >
-                        {playing ? <Pause size={10} /> : <Play size={10} />}
+                        <Play size={10} />
                       </button>
                     );
                   })()}
@@ -2337,6 +2427,10 @@ export default function ExtractApp() {
                     </button>
                   )}
                 </div>
+                {auditionOpenId === it.id && it.output && (
+                  <AuditionFoldout path={it.output} />
+                )}
+                </React.Fragment>
                 );
               })
             )}

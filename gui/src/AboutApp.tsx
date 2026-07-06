@@ -4,13 +4,12 @@
 // titlebar X or Esc. URLs render as selectable text — there's no URL-opener
 // plugin wired up, and copy-to-clipboard is enough for a notices panel.
 
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { getVersion } from '@tauri-apps/api/app';
 import { X } from 'lucide-react';
 import appIcon from './assets/app-icon.svg';
-
-const VERSION = '1.0';
 
 const close = () => { void getCurrentWindow().close().catch(() => {}); };
 
@@ -35,6 +34,8 @@ function Url({ href }: { href: string }) {
 }
 
 export default function AboutApp() {
+  // Runtime version off tauri.conf.json, never a hardcoded constant.
+  const [version, setVersion] = useState('');
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') { e.preventDefault(); close(); }
@@ -42,6 +43,7 @@ export default function AboutApp() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, []);
+  useEffect(() => { let live = true; getVersion().then(v => { if (live) setVersion(v); }).catch(() => {}); return () => { live = false; }; }, []);
 
   return (
     <div className="h-screen flex flex-col font-mono select-none text-zinc-300 bg-[#09090b] overflow-hidden">
@@ -70,7 +72,7 @@ export default function AboutApp() {
         <img src={appIcon} alt="" draggable={false} className="w-14 h-14 mb-2" />
         <span className="text-[1.125rem] font-bold tracking-[0.3em] text-zinc-100 pl-[0.3em]">LATCH</span>
         <span className="text-[0.5625rem] uppercase tracking-wider text-zinc-500">by Vacant Systems</span>
-        <span className="text-[0.5625rem] tabular-nums text-zinc-600">Version {VERSION}</span>
+        <span className="text-[0.5625rem] tabular-nums text-zinc-600">{version ? `Version ${version}` : ' '}</span>
       </div>
 
       {/* Notices — scrollable */}
