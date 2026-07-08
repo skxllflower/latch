@@ -239,9 +239,16 @@ pub async fn generate_waveform(
 /// Whole-file, no range: the fold-out draws one fixed strip per open.
 #[tauri::command]
 pub async fn generate_waveform_any(path: String, points: u32) -> Result<WaveformData, String> {
-    tauri::async_runtime::spawn_blocking(move || decode_waveform_any(&path, points))
-        .await
-        .map_err(|e| format!("waveform join: {e}"))?
+    let p = path.clone();
+    let joined = tauri::async_runtime::spawn_blocking(move || decode_waveform_any(&path, points)).await;
+    let result = match joined {
+        Ok(r) => r,
+        Err(e) => Err(format!("waveform join: {e}")),
+    };
+    if let Err(ref e) = result {
+        crate::logger::log(&format!("audition: waveform decode FAILED for {p}: {e}"));
+    }
+    result
 }
 
 /// Pure decode + bin fold behind `generate_waveform_any`, split out so it can be
@@ -251,19 +258,55 @@ pub async fn generate_waveform_any(path: String, points: u32) -> Result<Waveform
 /// fold-out reads as a path bug (file not found) or a format bug (unsupported
 /// codec) at a glance.
 fn decode_waveform_any(path: &str, points: u32) -> Result<WaveformData, String> {
+    let bins = points.clamp(1, 200_000) as usize;
+
+    // Containers rodio's symphonia build can't hand off (mp4/m4a PANIC on init;
+    // webm + ogg Opus fail) go straight to ffmpeg — never let rodio touch them.
+    if crate::audio_decode::prefers_ffmpeg(path) {
+        let (samples, ch, sr) = crate::audio_decode::ffmpeg_decode_pcm(path, 0.0)?;
+        return Ok(fold_pcm_i16(&samples, ch as usize, sr, bins));
+    }
+
+    // Fast native path for WAV / MP3 / FLAC. On any decode error fall back to
+    // ffmpeg (covers a mislabeled extension or a codec sniffing missed).
+    match decode_waveform_rodio(path, bins) {
+        Ok(wf) => Ok(wf),
+        Err(e) => {
+            // A missing file is a path bug, not a codec problem — surface the
+            // original open error instead of masking it with an ffmpeg retry.
+            if !std::path::Path::new(path).exists() {
+                return Err(e);
+            }
+            crate::logger::log(&format!(
+                "audition: rodio decode failed for {path} ({e}); retrying via ffmpeg"
+            ));
+            let (samples, ch, sr) = crate::audio_decode::ffmpeg_decode_pcm(path, 0.0)?;
+            Ok(fold_pcm_i16(&samples, ch as usize, sr, bins))
+        }
+    }
+}
+
+/// Native rodio decode (WAV / MP3 / FLAC / Vorbis). Split out so the ffmpeg
+/// fallback can wrap it. Errors name the failing step (open vs decode) + path.
+fn decode_waveform_rodio(path: &str, bins: usize) -> Result<WaveformData, String> {
     use rodio::Source;
     let file = std::fs::File::open(path).map_err(|e| format!("open {path}: {e}"))?;
     let decoder = rodio::Decoder::new(std::io::BufReader::new(file))
         .map_err(|e| format!("decode {path}: {e}"))?;
     let ch = decoder.channels().max(1) as usize;
     let sr = decoder.sample_rate().max(1);
-    let bins = points.clamp(1, 200_000) as usize;
+    // rodio's Decoder yields interleaved i16 samples. Collect them (a finished
+    // download track is a bounded one-shot cost on a blocking thread).
+    let samples: Vec<i16> = decoder.collect();
+    Ok(fold_pcm_i16(&samples, ch, sr, bins))
+}
 
-    // rodio's Decoder yields interleaved i16 samples. Collect them (a
-    // finished download track is a bounded one-shot cost on a blocking
-    // thread), then fold into bins. Per-bin signed min / max carry the
-    // asymmetric envelope; sum-of-squares backs the rms crest line.
-    let samples: Vec<f32> = decoder.map(|s| s as f32 / 32768.0).collect();
+/// Fold interleaved i16 PCM into `bins` [min, max, rms] triplets (the shared
+/// chip renderer's shape). Per-bin signed min / max carry the asymmetric
+/// envelope; sum-of-squares backs the rms crest line.
+fn fold_pcm_i16(samples: &[i16], ch: usize, sr: u32, bins: usize) -> WaveformData {
+    let ch = ch.max(1);
+    let sr = sr.max(1);
     let total_frames = samples.len() / ch;
     let duration_sec = total_frames as f64 / sr as f64;
 
@@ -276,7 +319,7 @@ fn decode_waveform_any(path: &str, points: u32) -> Result<WaveformData, String> 
             let bin = ((f as u64 * bins as u64) / total_frames as u64) as usize;
             let bin = bin.min(bins - 1);
             for c in 0..ch {
-                let v = samples[f * ch + c];
+                let v = samples[f * ch + c] as f32 / 32768.0;
                 if v < mins[bin] { mins[bin] = v; }
                 if v > maxs[bin] { maxs[bin] = v; }
                 sumsq[bin] += (v as f64) * (v as f64);
@@ -293,13 +336,13 @@ fn decode_waveform_any(path: &str, points: u32) -> Result<WaveformData, String> 
             }
         })
         .collect();
-    Ok(WaveformData {
+    WaveformData {
         success: true,
         duration_sec,
         channels: ch as u16,
         points: points_out,
         channel_points: Vec::new(),
-    })
+    }
 }
 
 /// Nearest zero crossing around `time_sec` (±window_ms, first channel).
@@ -415,5 +458,30 @@ mod tests {
         };
         // The step + path are named, so a wrong landing path is self-evident.
         assert!(err.starts_with("open "), "expected an open-step error, got: {err}");
+    }
+
+    // Forensics harness: runs the REAL audition decode (decode_waveform_any —
+    // the exact path generate_waveform_any and open_sink share) against the
+    // user's ACTUAL Latch outputs, so a codec the download served but rodio /
+    // symphonia can't decode surfaces as the same error the fold-out would show.
+    // Ignored by default (needs real files); point it at them and run:
+    //   set LATCH_DECODE_FILES=C:\a.mp3|C:\b.webm  (paths joined by '|')
+    //   cargo test -p latch-gui decode_real_latch_outputs -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn decode_real_latch_outputs() {
+        let list = std::env::var("LATCH_DECODE_FILES").unwrap_or_default();
+        assert!(!list.is_empty(), "set LATCH_DECODE_FILES=path1|path2|...");
+        let mut fails = 0;
+        for path in list.split('|').filter(|s| !s.is_empty()) {
+            match decode_waveform_any(path, 600) {
+                Ok(wf) => println!(
+                    "PASS  {path}\n        dur={:.2}s ch={} points={}",
+                    wf.duration_sec, wf.channels, wf.points.len()
+                ),
+                Err(e) => { fails += 1; println!("FAIL  {path}\n        {e}"); }
+            }
+        }
+        println!("--- {fails} decode failure(s) ---");
     }
 }

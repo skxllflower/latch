@@ -73,6 +73,13 @@ export default function AboutApp() {
         <span className="text-[1.125rem] font-bold tracking-[0.3em] text-zinc-100 pl-[0.3em]">LATCH</span>
         <span className="text-[0.5625rem] uppercase tracking-wider text-zinc-500">by Vacant Systems</span>
         <span className="text-[0.5625rem] tabular-nums text-zinc-600">{version ? `Version ${version}` : ' '}</span>
+        <button
+          onClick={() => { void invoke('open_log_file').catch(() => {}); }}
+          className="mt-1.5 text-[0.5625rem] uppercase tracking-wider text-zinc-500 hover:text-zinc-200 hover:underline cursor-pointer transition-none"
+          title="Open the Latch diagnostics log file"
+        >
+          Open Log File
+        </button>
       </div>
 
       {/* Notices — scrollable */}
