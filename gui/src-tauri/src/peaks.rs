@@ -239,59 +239,67 @@ pub async fn generate_waveform(
 /// Whole-file, no range: the fold-out draws one fixed strip per open.
 #[tauri::command]
 pub async fn generate_waveform_any(path: String, points: u32) -> Result<WaveformData, String> {
-    tauri::async_runtime::spawn_blocking(move || -> Result<WaveformData, String> {
-        use rodio::Source;
-        let file = std::fs::File::open(&path).map_err(|e| format!("open {path}: {e}"))?;
-        let decoder = rodio::Decoder::new(std::io::BufReader::new(file))
-            .map_err(|e| format!("decode {path}: {e}"))?;
-        let ch = decoder.channels().max(1) as usize;
-        let sr = decoder.sample_rate().max(1);
-        let bins = points.clamp(1, 200_000) as usize;
+    tauri::async_runtime::spawn_blocking(move || decode_waveform_any(&path, points))
+        .await
+        .map_err(|e| format!("waveform join: {e}"))?
+}
 
-        // rodio's Decoder yields interleaved i16 samples. Collect them (a
-        // finished download track is a bounded one-shot cost on a blocking
-        // thread), then fold into bins. Per-bin signed min / max carry the
-        // asymmetric envelope; sum-of-squares backs the rms crest line.
-        let samples: Vec<f32> = decoder.map(|s| s as f32 / 32768.0).collect();
-        let total_frames = samples.len() / ch;
-        let duration_sec = total_frames as f64 / sr as f64;
+/// Pure decode + bin fold behind `generate_waveform_any`, split out so it can be
+/// exercised headlessly (no Tauri runtime) — a unit test decodes a generated
+/// file straight through this. The error strings name the failing STEP (open vs
+/// decode) with the path, so a swallowed-then-surfaced failure in the audition
+/// fold-out reads as a path bug (file not found) or a format bug (unsupported
+/// codec) at a glance.
+fn decode_waveform_any(path: &str, points: u32) -> Result<WaveformData, String> {
+    use rodio::Source;
+    let file = std::fs::File::open(path).map_err(|e| format!("open {path}: {e}"))?;
+    let decoder = rodio::Decoder::new(std::io::BufReader::new(file))
+        .map_err(|e| format!("decode {path}: {e}"))?;
+    let ch = decoder.channels().max(1) as usize;
+    let sr = decoder.sample_rate().max(1);
+    let bins = points.clamp(1, 200_000) as usize;
 
-        let mut mins = vec![f32::INFINITY; bins];
-        let mut maxs = vec![f32::NEG_INFINITY; bins];
-        let mut sumsq = vec![0f64; bins];
-        let mut counts = vec![0u64; bins];
-        if total_frames > 0 {
-            for f in 0..total_frames {
-                let bin = ((f as u64 * bins as u64) / total_frames as u64) as usize;
-                let bin = bin.min(bins - 1);
-                for c in 0..ch {
-                    let v = samples[f * ch + c];
-                    if v < mins[bin] { mins[bin] = v; }
-                    if v > maxs[bin] { maxs[bin] = v; }
-                    sumsq[bin] += (v as f64) * (v as f64);
-                    counts[bin] += 1;
-                }
+    // rodio's Decoder yields interleaved i16 samples. Collect them (a
+    // finished download track is a bounded one-shot cost on a blocking
+    // thread), then fold into bins. Per-bin signed min / max carry the
+    // asymmetric envelope; sum-of-squares backs the rms crest line.
+    let samples: Vec<f32> = decoder.map(|s| s as f32 / 32768.0).collect();
+    let total_frames = samples.len() / ch;
+    let duration_sec = total_frames as f64 / sr as f64;
+
+    let mut mins = vec![f32::INFINITY; bins];
+    let mut maxs = vec![f32::NEG_INFINITY; bins];
+    let mut sumsq = vec![0f64; bins];
+    let mut counts = vec![0u64; bins];
+    if total_frames > 0 {
+        for f in 0..total_frames {
+            let bin = ((f as u64 * bins as u64) / total_frames as u64) as usize;
+            let bin = bin.min(bins - 1);
+            for c in 0..ch {
+                let v = samples[f * ch + c];
+                if v < mins[bin] { mins[bin] = v; }
+                if v > maxs[bin] { maxs[bin] = v; }
+                sumsq[bin] += (v as f64) * (v as f64);
+                counts[bin] += 1;
             }
         }
-        let points_out: Vec<[f32; 3]> = (0..bins)
-            .map(|b| {
-                if counts[b] == 0 {
-                    [0.0, 0.0, 0.0]
-                } else {
-                    [mins[b], maxs[b], (sumsq[b] / counts[b] as f64).sqrt() as f32]
-                }
-            })
-            .collect();
-        Ok(WaveformData {
-            success: true,
-            duration_sec,
-            channels: ch as u16,
-            points: points_out,
-            channel_points: Vec::new(),
+    }
+    let points_out: Vec<[f32; 3]> = (0..bins)
+        .map(|b| {
+            if counts[b] == 0 {
+                [0.0, 0.0, 0.0]
+            } else {
+                [mins[b], maxs[b], (sumsq[b] / counts[b] as f64).sqrt() as f32]
+            }
         })
+        .collect();
+    Ok(WaveformData {
+        success: true,
+        duration_sec,
+        channels: ch as u16,
+        points: points_out,
+        channel_points: Vec::new(),
     })
-    .await
-    .map_err(|e| format!("waveform join: {e}"))?
 }
 
 /// Nearest zero crossing around `time_sec` (±window_ms, first channel).
@@ -348,4 +356,64 @@ pub async fn wav_nearest_zero_cross(
     })
     .await
     .map_err(|e| format!("zero-cross join: {e}"))?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    // Write a minimal 16-bit PCM mono WAV of a 440 Hz sine, so the audition
+    // fold-out's decode path (decode_waveform_any) can be exercised end to end
+    // without a network download or a Tauri runtime.
+    fn write_sine_wav(path: &std::path::Path, secs: f64, sr: u32) {
+        let frames = (secs * sr as f64) as u32;
+        let data_len = frames * 2; // mono, 2 bytes/sample
+        let mut f = std::fs::File::create(path).expect("create wav");
+        f.write_all(b"RIFF").unwrap();
+        f.write_all(&(36 + data_len).to_le_bytes()).unwrap();
+        f.write_all(b"WAVE").unwrap();
+        f.write_all(b"fmt ").unwrap();
+        f.write_all(&16u32.to_le_bytes()).unwrap();      // fmt chunk size
+        f.write_all(&1u16.to_le_bytes()).unwrap();       // PCM
+        f.write_all(&1u16.to_le_bytes()).unwrap();       // mono
+        f.write_all(&sr.to_le_bytes()).unwrap();         // sample rate
+        f.write_all(&(sr * 2).to_le_bytes()).unwrap();   // byte rate
+        f.write_all(&2u16.to_le_bytes()).unwrap();       // block align
+        f.write_all(&16u16.to_le_bytes()).unwrap();      // bits/sample
+        f.write_all(b"data").unwrap();
+        f.write_all(&data_len.to_le_bytes()).unwrap();
+        for n in 0..frames {
+            let t = n as f64 / sr as f64;
+            let v = (t * 440.0 * std::f64::consts::TAU).sin() * 0.8;
+            let s = (v * i16::MAX as f64) as i16;
+            f.write_all(&s.to_le_bytes()).unwrap();
+        }
+    }
+
+    #[test]
+    fn decode_waveform_any_decodes_a_generated_wav() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("latch_peaks_test_{}.wav", std::process::id()));
+        write_sine_wav(&path, 1.0, 44_100);
+        let out = decode_waveform_any(path.to_str().unwrap(), 600);
+        let _ = std::fs::remove_file(&path);
+        let wf = out.expect("decode should succeed");
+        assert!(wf.success);
+        assert_eq!(wf.points.len(), 600);
+        assert!((wf.duration_sec - 1.0).abs() < 0.05, "duration ~1s, got {}", wf.duration_sec);
+        // A real signal produces non-zero envelope somewhere.
+        assert!(wf.points.iter().any(|p| p[1] > 0.1), "expected a non-zero peak");
+    }
+
+    #[test]
+    fn decode_waveform_any_reports_missing_file_as_open_error() {
+        let missing = std::env::temp_dir().join("latch_peaks_does_not_exist_zzz.wav");
+        let err = match decode_waveform_any(missing.to_str().unwrap(), 600) {
+            Ok(_) => panic!("expected an error for a missing file"),
+            Err(e) => e,
+        };
+        // The step + path are named, so a wrong landing path is self-evident.
+        assert!(err.starts_with("open "), "expected an open-step error, got: {err}");
+    }
 }
