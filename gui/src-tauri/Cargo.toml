@@ -22,9 +22,12 @@ tauri-plugin-single-instance = "2"
 # Chop-window audition engine: cpal output + wav decode + resampling +
 # seek/position, owned by a dedicated thread (see src/audio.rs). WAV-only
 # decode — the chop pipeline always auditions a WAV it produced itself.
-# WAV decode for the chop audition deck; the video deck takes PCM from
+# Audition decode: symphonia gives the chop deck AND the Extract output
+# fold-out all-format decode (mp3 / m4a-aac / flac / ogg-vorbis / wav / …),
+# not just WAV — the fold-out audition was dead for the compressed formats
+# Latch actually outputs. The video deck still takes PCM from
 # `lathe stream-audio` instead of decoding containers itself.
-rodio = { version = "0.20", default-features = false, features = ["wav"] }
+rodio = { version = "0.20", default-features = false, features = ["symphonia-all"] }
 log = "0.4"
 # Native drag-source for dragging files OUT into Explorer / DAWs —
 # wraps DoDragDrop / NSDraggingSource / XDND (see os_drag.rs).

@@ -229,6 +229,71 @@ pub async fn generate_waveform(
     .map_err(|e| format!("waveform join: {e}"))?
 }
 
+/// Format-agnostic peaks for the Extract output audition fold-out. The
+/// Chop window's `generate_waveform` above is a WAV-only RIFF parser (it
+/// only ever sees latch's own WAV clips + wants range/zoom re-fetch); the
+/// audition fold-out plays finished DOWNLOADS, which are mp3 / m4a / opus /
+/// flac — anything but WAV. Decode the whole file through rodio's
+/// symphonia decoder (so every format Latch outputs works) and fold it
+/// into the same [min, max, rms] bins the shared chip renderer expects.
+/// Whole-file, no range: the fold-out draws one fixed strip per open.
+#[tauri::command]
+pub async fn generate_waveform_any(path: String, points: u32) -> Result<WaveformData, String> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<WaveformData, String> {
+        use rodio::Source;
+        let file = std::fs::File::open(&path).map_err(|e| format!("open {path}: {e}"))?;
+        let decoder = rodio::Decoder::new(std::io::BufReader::new(file))
+            .map_err(|e| format!("decode {path}: {e}"))?;
+        let ch = decoder.channels().max(1) as usize;
+        let sr = decoder.sample_rate().max(1);
+        let bins = points.clamp(1, 200_000) as usize;
+
+        // rodio's Decoder yields interleaved i16 samples. Collect them (a
+        // finished download track is a bounded one-shot cost on a blocking
+        // thread), then fold into bins. Per-bin signed min / max carry the
+        // asymmetric envelope; sum-of-squares backs the rms crest line.
+        let samples: Vec<f32> = decoder.map(|s| s as f32 / 32768.0).collect();
+        let total_frames = samples.len() / ch;
+        let duration_sec = total_frames as f64 / sr as f64;
+
+        let mut mins = vec![f32::INFINITY; bins];
+        let mut maxs = vec![f32::NEG_INFINITY; bins];
+        let mut sumsq = vec![0f64; bins];
+        let mut counts = vec![0u64; bins];
+        if total_frames > 0 {
+            for f in 0..total_frames {
+                let bin = ((f as u64 * bins as u64) / total_frames as u64) as usize;
+                let bin = bin.min(bins - 1);
+                for c in 0..ch {
+                    let v = samples[f * ch + c];
+                    if v < mins[bin] { mins[bin] = v; }
+                    if v > maxs[bin] { maxs[bin] = v; }
+                    sumsq[bin] += (v as f64) * (v as f64);
+                    counts[bin] += 1;
+                }
+            }
+        }
+        let points_out: Vec<[f32; 3]> = (0..bins)
+            .map(|b| {
+                if counts[b] == 0 {
+                    [0.0, 0.0, 0.0]
+                } else {
+                    [mins[b], maxs[b], (sumsq[b] / counts[b] as f64).sqrt() as f32]
+                }
+            })
+            .collect();
+        Ok(WaveformData {
+            success: true,
+            duration_sec,
+            channels: ch as u16,
+            points: points_out,
+            channel_points: Vec::new(),
+        })
+    })
+    .await
+    .map_err(|e| format!("waveform join: {e}"))?
+}
+
 /// Nearest zero crossing around `time_sec` (±window_ms, first channel).
 /// Fork of WAVdesk's wav_nearest_zero_cross — backs snap-on-release.
 /// Returns -1.0 when no crossing lies inside the window.
