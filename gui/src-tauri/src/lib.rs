@@ -1,4 +1,5 @@
 mod audio;
+mod audio_decode;
 #[cfg(target_os = "windows")]
 mod chip_bitmap_server;
 mod chop;
@@ -7,6 +8,7 @@ mod drag_overlay;
 #[cfg(target_os = "windows")]
 mod explorer_folder;
 mod job_object;
+mod logger;
 #[cfg(target_os = "windows")]
 mod native_drag_chip;
 mod cursor;
@@ -54,6 +56,45 @@ fn register_taskbar_window(app: tauri::AppHandle, label: String) {
     let _ = window.set_skip_taskbar(false);
 }
 
+/// Shell-open the standalone Latch log file (About window → Open Log File).
+/// Ensures the file exists first so the OS always has something to open.
+#[tauri::command]
+fn open_log_file() -> Result<(), String> {
+    let path = logger::log_path().ok_or_else(|| "log path unavailable".to_string())?;
+    if !path.exists() {
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(&path, b"");
+    }
+    let p = path.to_string_lossy().to_string();
+    #[cfg(target_os = "windows")]
+    {
+        // notepad opens any .log reliably (no file-association prompt).
+        std::process::Command::new("notepad")
+            .arg(&p)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("open log: {e}"))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&p)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("open log: {e}"))
+    }
+    #[cfg(all(not(windows), not(target_os = "macos")))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&p)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("open log: {e}"))
+    }
+}
+
 pub fn run() {
     // Kill-on-close job from the very start, so latch.exe + its yt-dlp/
     // ffmpeg children (and the WebView2 tree) can never outlive a crash.
@@ -83,6 +124,9 @@ pub fn run() {
         })
         .setup(|app| {
             use tauri::Manager;
+            // Always-on file log (About → Open Log File). Init first so any
+            // setup-phase failure below is captured.
+            logger::init();
             // Startup sweep of the chop temp root: a crash or hard-kill never
             // runs the window-destroy / app-exit sweeps, so downloaded previews
             // and HD files can strand in %TEMP%\latch-chop across launches.
@@ -182,6 +226,7 @@ pub fn run() {
             tools::video_audio_peaks,
             cursor::set_native_cursor_position,
             register_taskbar_window,
+            open_log_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Latch");

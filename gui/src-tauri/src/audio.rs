@@ -619,6 +619,34 @@ fn open_sink(
     path: &str,
     start_sec: f64,
 ) -> Result<rodio::Sink, String> {
+    // Containers rodio's symphonia build can't hand off (mp4/m4a PANIC on init;
+    // webm + ogg Opus fail) are decoded through ffmpeg to PCM and played from a
+    // buffer — the audition fold-out otherwise silently did nothing for every
+    // Opus / AAC download. WAV / MP3 / FLAC stay on the fast streaming path.
+    if crate::audio_decode::prefers_ffmpeg(path) {
+        return open_sink_ffmpeg(handle, path, start_sec);
+    }
+    match open_sink_rodio(handle, path, start_sec) {
+        Ok(sink) => Ok(sink),
+        Err(e) => {
+            // A missing file is a path bug — surface it, don't mask with ffmpeg.
+            if !std::path::Path::new(path).exists() {
+                return Err(e);
+            }
+            crate::logger::log(&format!(
+                "audition play: rodio failed for {path} ({e}); retrying via ffmpeg"
+            ));
+            open_sink_ffmpeg(handle, path, start_sec)
+        }
+    }
+}
+
+/// Native streaming playback for WAV / MP3 / FLAC. Seek is a sink try_seek.
+fn open_sink_rodio(
+    handle: &rodio::OutputStreamHandle,
+    path: &str,
+    start_sec: f64,
+) -> Result<rodio::Sink, String> {
     let file = std::fs::File::open(path).map_err(|e| format!("open {path}: {e}"))?;
     let decoder = rodio::Decoder::new(std::io::BufReader::new(file))
         .map_err(|e| format!("decode {path}: {e}"))?;
@@ -627,6 +655,23 @@ fn open_sink(
     if start_sec > 0.0 {
         let _ = sink.try_seek(Duration::from_secs_f64(start_sec.max(0.0)));
     }
+    sink.play();
+    Ok(sink)
+}
+
+/// ffmpeg-decoded playback for Opus / AAC / WebM etc. The whole track (a bounded
+/// download) is decoded to 48k stereo PCM and played from a SamplesBuffer;
+/// `start_sec` is applied by ffmpeg's input seek, so no sink seek is needed. The
+/// fold-out's own seek re-invokes play() with a new start, so in-sink seeking
+/// isn't required for this path.
+fn open_sink_ffmpeg(
+    handle: &rodio::OutputStreamHandle,
+    path: &str,
+    start_sec: f64,
+) -> Result<rodio::Sink, String> {
+    let (samples, ch, sr) = crate::audio_decode::ffmpeg_decode_pcm(path, start_sec)?;
+    let sink = rodio::Sink::try_new(handle).map_err(|e| format!("sink: {e}"))?;
+    sink.append(rodio::buffer::SamplesBuffer::new(ch, sr, samples));
     sink.play();
     Ok(sink)
 }
@@ -669,6 +714,7 @@ fn audio_thread(app: AppHandle, rx: Receiver<Cmd>) {
                         }
                         Err(e) => {
                             st.path = String::new();
+                            crate::logger::log(&format!("audition play: FAILED for {path}: {e}"));
                             let _ = app.emit("audio-pos", serde_json::json!({
                                 "path": path, "posSec": 0.0, "state": "error", "message": e,
                             }));

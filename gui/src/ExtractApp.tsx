@@ -1533,11 +1533,14 @@ export default function ExtractApp() {
   const playPath = usePlaybackCurrentPath();
   const playPathRef = useRef(playPath); playPathRef.current = playPath;
   const canAudition = useCallback(
-    // Formats the symphonia-all rodio build actually decodes. Opus / WMA /
-    // ALAC / AIFF aren't in symphonia-all, so they stay gated out rather than
-    // offer a button that silently fails.
+    // Formats the audition path can decode. WAV / MP3 / FLAC / Vorbis go
+    // through rodio's symphonia-all build directly; Opus (.opus / .webm /
+    // .weba — YouTube's default bestaudio) and AAC/m4a route through the
+    // bundled ffmpeg (symphonia has no Opus decoder and PANICS on m4a), so
+    // they're offered too now that the backend falls back to ffmpeg. Anything
+    // outside this list stays gated rather than offer a button that fails.
     (p: string | undefined): p is string =>
-      !!p && /\.(wav|mp3|m4a|aac|flac|ogg|oga)$/i.test(p),
+      !!p && /\.(wav|mp3|m4a|aac|flac|ogg|oga|opus|webm|weba)$/i.test(p),
     [],
   );
   const [auditionOpenId, setAuditionOpenId] = useState<string | null>(null);
