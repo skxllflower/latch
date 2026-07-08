@@ -255,6 +255,15 @@ const AuditionFoldout: React.FC<{ path: string }> = ({ path }) => {
   const [peaksUrl, setPeaksUrl] = useState<string | null>(null);
   const [bg, setBg] = useState('#0c0c0d');
   const [durationSec, setDurationSec] = useState(0);
+  // Surface a load / play failure instead of an eternal "loading…" spinner.
+  // Both generate_waveform_any (waveform) and the audio engine (open_sink)
+  // decode the SAME path through rodio/symphonia, so a wrong landing path or an
+  // undecodable format fails both — and both errors used to be swallowed
+  // (.catch(()=>{}) / a console.warn), leaving the strip stuck on "loading…"
+  // and the play button inert with no reason shown. Naming the reason (file not
+  // found → path bug; unsupported codec → format) is what lets the next field
+  // run pinpoint the residual cause.
+  const [loadError, setLoadError] = useState<string | null>(null);
   const playState = usePlaybackState();
   const playPath  = usePlaybackCurrentPath();
   const position  = usePlaybackPosition();
@@ -264,20 +273,50 @@ const AuditionFoldout: React.FC<{ path: string }> = ({ path }) => {
   useEffect(() => {
     let cancelled = false;
     setPeaksUrl(null);
+    setLoadError(null);
     // generate_waveform_any decodes ANY format (symphonia) — the plain
     // generate_waveform is a WAV-only parser and returned an error for the
     // compressed downloads this fold-out auditions (blank waveform).
+    console.info('[latch:audition] load waveform for', path);
     void invoke<IpcWaveformData>('generate_waveform_any', { path, points: 600 })
       .then(data => {
         if (cancelled) return;
+        console.info('[latch:audition] waveform ok', {
+          path, durationSec: data.duration_sec, points: data.points?.length ?? 0,
+        });
         setDurationSec(data.duration_sec || 0);
         // Brand off-white to match the Chop window's primary Waveform
         // (WAVE_COLOR), instead of the old off-brand light blue.
         const r = peaksToChipDataUrl(data.points, '#a1a1aa');
         if (r) { setPeaksUrl(r.url); setBg(r.bg); }
+        else setLoadError('waveform render failed');
       })
-      .catch(() => {});
+      .catch(err => {
+        if (cancelled) return;
+        const reason = err instanceof Error ? err.message : String(err);
+        console.warn('[latch:audition] generate_waveform_any failed for', path, '—', reason);
+        setLoadError(reason);
+      });
     return () => { cancelled = true; };
+  }, [path]);
+
+  // Also surface a PLAYBACK failure. The engine plays fire-and-forget: an
+  // open_sink error comes back asynchronously as an `audio-pos` {state:'error'}
+  // event, which the engine only console.warns — so a broken landing path made
+  // the play button silently do nothing. Listen for our own path's error here
+  // and show it too. (The engine's event carries an empty path for the
+  // no-output-device case; accept that so device failures still surface.)
+  useEffect(() => {
+    let un: UnlistenFn | undefined;
+    void listen<{ path?: string; state?: string; message?: string }>('audio-pos', (e) => {
+      const p = e.payload;
+      if (p?.state !== 'error') return;
+      if (p.path && p.path !== path) return;
+      const reason = p.message || 'playback failed';
+      console.warn('[latch:audition] audio engine error for', path, '—', reason);
+      setLoadError(prev => prev ?? reason);
+    }).then(fn => { un = fn; });
+    return () => { try { un?.(); } catch {} };
   }, [path]);
 
   const frac = isThis && durationSec > 0
@@ -287,6 +326,11 @@ const AuditionFoldout: React.FC<{ path: string }> = ({ path }) => {
     e.stopPropagation();
     if (playing) { playbackEngine.pause(); return; }
     if (isThis && playState === 'paused') { void playbackEngine.resume(); return; }
+    // A fresh play attempt clears any prior surfaced error (e.g. the user
+    // retries after the file finished writing) and logs the exact path handed
+    // to the engine's open_sink so a residual path mismatch is legible.
+    setLoadError(null);
+    console.info('[latch:audition] play', path);
     void playbackEngine.play(path, 'full', { startSec: 0 });
   };
   const seek = (e: React.MouseEvent) => {
@@ -314,7 +358,12 @@ const AuditionFoldout: React.FC<{ path: string }> = ({ path }) => {
       >
         {peaksUrl
           ? <img src={peaksUrl} alt="" className="w-full h-full object-fill pointer-events-none" draggable={false} />
-          : <div className="absolute inset-0 flex items-center justify-center text-[0.5rem] text-zinc-700 pointer-events-none">loading…</div>}
+          : loadError
+            ? <div className="absolute inset-0 flex items-center gap-1 justify-center px-2 text-[0.5rem] text-red-400/80 pointer-events-none text-center leading-tight" title={loadError}>
+                <AlertTriangle size={9} className="shrink-0" />
+                <span className="truncate">couldn't load audio: {loadError}</span>
+              </div>
+            : <div className="absolute inset-0 flex items-center justify-center text-[0.5rem] text-zinc-700 pointer-events-none">loading…</div>}
         {isThis && (
           <div
             className="absolute top-0 bottom-0 w-px bg-emerald-400 pointer-events-none"
