@@ -264,11 +264,16 @@ const AuditionFoldout: React.FC<{ path: string }> = ({ path }) => {
   useEffect(() => {
     let cancelled = false;
     setPeaksUrl(null);
-    void invoke<IpcWaveformData>('generate_waveform', { path, points: 600 })
+    // generate_waveform_any decodes ANY format (symphonia) — the plain
+    // generate_waveform is a WAV-only parser and returned an error for the
+    // compressed downloads this fold-out auditions (blank waveform).
+    void invoke<IpcWaveformData>('generate_waveform_any', { path, points: 600 })
       .then(data => {
         if (cancelled) return;
         setDurationSec(data.duration_sec || 0);
-        const r = peaksToChipDataUrl(data.points, '#7dd3fc');
+        // Brand off-white to match the Chop window's primary Waveform
+        // (WAVE_COLOR), instead of the old off-brand light blue.
+        const r = peaksToChipDataUrl(data.points, '#a1a1aa');
         if (r) { setPeaksUrl(r.url); setBg(r.bg); }
       })
       .catch(() => {});
@@ -1470,16 +1475,20 @@ export default function ExtractApp() {
     [items]
   );
 
-  // In-place audition of a finished output. The standalone engine is rodio
-  // built WAV-only (Cargo: features = ["wav"]), so the toggle is offered only
-  // for .wav outputs — everything else can't be decoded here. The row's button
-  // no longer plays directly — it folds out a compact waveform strip UNDER the
-  // row (AuditionFoldout) with its own play/pause + playhead. One open fold-out
-  // at a time; opening auto-plays, folding back stops it.
+  // In-place audition of a finished output. The standalone rodio engine now
+  // decodes all common formats via symphonia (Cargo: rodio symphonia-all), so
+  // the toggle is offered for every audio output Latch produces, not just WAV.
+  // The row's button no longer plays directly — it folds out a compact waveform
+  // strip UNDER the row (AuditionFoldout) with its own play/pause + playhead.
+  // One open fold-out at a time; opening auto-plays, folding back stops it.
   const playPath = usePlaybackCurrentPath();
   const playPathRef = useRef(playPath); playPathRef.current = playPath;
   const canAudition = useCallback(
-    (p: string | undefined): p is string => !!p && /\.wav$/i.test(p),
+    // Formats the symphonia-all rodio build actually decodes. Opus / WMA /
+    // ALAC / AIFF aren't in symphonia-all, so they stay gated out rather than
+    // offer a button that silently fails.
+    (p: string | undefined): p is string =>
+      !!p && /\.(wav|mp3|m4a|aac|flac|ogg|oga)$/i.test(p),
     [],
   );
   const [auditionOpenId, setAuditionOpenId] = useState<string | null>(null);
@@ -2381,7 +2390,7 @@ export default function ExtractApp() {
                   </div>
                   {/* Audition — folds out a compact waveform strip under the
                       row (play/pause + playhead); click again to fold back.
-                      WAV-only (the rodio engine can't decode other formats). */}
+                      All common audio formats (symphonia-backed rodio decode). */}
                   {it.status === 'done' && canAudition(it.output) && (() => {
                     const open = auditionOpenId === it.id;
                     return (

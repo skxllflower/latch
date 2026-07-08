@@ -161,6 +161,7 @@ pub fn run() {
             chop::latch_clip,
             audio::audio_cmd,
             peaks::generate_waveform,
+            peaks::generate_waveform_any,
             peaks::wav_nearest_zero_cross,
             drag_overlay::drag_overlay_start,
             drag_overlay::drag_overlay_stop,
