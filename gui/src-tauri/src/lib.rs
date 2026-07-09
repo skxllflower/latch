@@ -58,41 +58,49 @@ fn register_taskbar_window(app: tauri::AppHandle, label: String) {
 
 /// Shell-open the standalone Latch log file (About window → Open Log File).
 /// Ensures the file exists first so the OS always has something to open.
+/// async + spawn_blocking: touches disk (exists probe, create_dir_all + write
+/// of the seed file) before the launch. As a sync command Tauri v2 ran that
+/// I/O INLINE on the main thread inside WebMessageReceived — a stalled disk
+/// would freeze the pump. spawn_blocking keeps main flowing.
 #[tauri::command]
-fn open_log_file() -> Result<(), String> {
-    let path = logger::log_path().ok_or_else(|| "log path unavailable".to_string())?;
-    if !path.exists() {
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
+async fn open_log_file() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let path = logger::log_path().ok_or_else(|| "log path unavailable".to_string())?;
+        if !path.exists() {
+            if let Some(dir) = path.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            let _ = std::fs::write(&path, b"");
         }
-        let _ = std::fs::write(&path, b"");
-    }
-    let p = path.to_string_lossy().to_string();
-    #[cfg(target_os = "windows")]
-    {
-        // notepad opens any .log reliably (no file-association prompt).
-        std::process::Command::new("notepad")
-            .arg(&p)
-            .spawn()
-            .map(|_| ())
-            .map_err(|e| format!("open log: {e}"))
-    }
-    #[cfg(target_os = "macos")]
-    {
-        std::process::Command::new("open")
-            .arg(&p)
-            .spawn()
-            .map(|_| ())
-            .map_err(|e| format!("open log: {e}"))
-    }
-    #[cfg(all(not(windows), not(target_os = "macos")))]
-    {
-        std::process::Command::new("xdg-open")
-            .arg(&p)
-            .spawn()
-            .map(|_| ())
-            .map_err(|e| format!("open log: {e}"))
-    }
+        let p = path.to_string_lossy().to_string();
+        #[cfg(target_os = "windows")]
+        {
+            // notepad opens any .log reliably (no file-association prompt).
+            std::process::Command::new("notepad")
+                .arg(&p)
+                .spawn()
+                .map(|_| ())
+                .map_err(|e| format!("open log: {e}"))
+        }
+        #[cfg(target_os = "macos")]
+        {
+            std::process::Command::new("open")
+                .arg(&p)
+                .spawn()
+                .map(|_| ())
+                .map_err(|e| format!("open log: {e}"))
+        }
+        #[cfg(all(not(windows), not(target_os = "macos")))]
+        {
+            std::process::Command::new("xdg-open")
+                .arg(&p)
+                .spawn()
+                .map(|_| ())
+                .map_err(|e| format!("open log: {e}"))
+        }
+    })
+    .await
+    .map_err(|e| format!("open log join: {e}"))?
 }
 
 pub fn run() {
