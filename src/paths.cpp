@@ -186,6 +186,13 @@ std::string ytdlp_cache_dir() {
   return path_to_utf8(vendor_root() / kLatchDir / "ytdlp-cache");
 }
 
+std::string latch_temp_dir() {
+  fs::path p = vendor_root() / kLatchDir / "tmp";
+  std::error_code ec;
+  fs::create_directories(p, ec);
+  return path_to_utf8(p);
+}
+
 std::string resolved_ffmpeg() {
   return resolve_binary("LATCH_FFMPEG", ffmpeg_name(), shared_bin_path());
 }

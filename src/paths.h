@@ -23,6 +23,12 @@ std::string latch_bin_dir();
 // Not pre-created; yt-dlp creates it on first use.
 std::string ytdlp_cache_dir();
 
+// %LOCALAPPDATA%\Vacant Systems\Latch\tmp (created on demand) — scratch
+// space for the download resilience ladder's last rung, which fetches a
+// muxed video here before extracting its audio locally with ffmpeg. The
+// caller sweeps its own per-run subdir on success, failure, and cancel.
+std::string latch_temp_dir();
+
 // The ffmpeg binary to use. Resolution order:
 //   1. LATCH_FFMPEG env var (explicit override)
 //   2. ffmpeg.exe next to latch.exe (portable override)
