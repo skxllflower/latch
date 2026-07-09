@@ -166,7 +166,7 @@ pub async fn latch_clip(
     if video {
         args.push("--video".to_string());
     } else if preview.unwrap_or(false) {
-        // Display-only companion track: tiny mono low-rate WAV.
+        // Display-only companion track: small low-rate stereo WAV.
         args.push("--audio-only".to_string());
         args.push("--preview".to_string());
     } else {

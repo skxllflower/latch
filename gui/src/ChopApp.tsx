@@ -92,6 +92,11 @@ interface ChopChapter { title: string; startSec: number; endSec: number }
 const NUDGE_FINE_SEC   = 0.01;
 const NUDGE_COARSE_SEC = 0.1;
 
+// Video pane shrink floor (item 8): as the region list grows the PICTURE gives
+// up height first, down to this, so the waveform holds its user / 50%-default
+// level instead of being squeezed small.
+const MIN_VIDEO_PANE = 80;
+
 export default function ChopApp() {
   const { theme } = useTheme();
   const bg = THEME_BG[theme];
@@ -138,6 +143,10 @@ export default function ChopApp() {
   // Set by dragging the row-resize handle; reset to null on any structural
   // change (video shown/hidden, aspect) by the fit effect.
   const [userVideoPaneH, setUserVideoPaneH] = useState<number | null>(null);
+  // User-set waveform height (item 8): captured on splitter release. The
+  // waveform never shrinks below max(this, 50% of its default) as the region
+  // list grows — the video pane gives up its height first instead.
+  const [userWaveH, setUserWaveH] = useState<number | null>(null);
   const [cursorSec, setCursorSec] = useState(0);       // click position → playhead when audio isn't playing
   // Speed→pitch mode for exports, PER chop session (reset when a new video
   // loads). 'tape' lets pitch follow speed (asetrate varispeed, like a tape
@@ -353,8 +362,8 @@ export default function ChopApp() {
     setProgress(0);
     const end = (dur && dur > 0) ? dur : (infoDurationRef.current || 24 * 3600);
     const wavOut = `${dir}${dir.includes('\\') ? '\\' : '/'}__chop_audio.wav`;
-    // Display-only: a tiny mono low-rate WAV just to draw the waveform. Clips
-    // are cut from the video file (full quality), never from this.
+    // A small low-rate but STEREO WAV to draw the waveform (channel-split shows
+    // real L / R lanes). Clips are cut from the full-quality source, never this.
     // Retry with backoff: a just-downloaded file can be momentarily
     // unreadable on Windows (AV scan / flush), which ffmpeg reports as
     // "No such file or directory". Idempotent (overwrite), so retrying is safe.
@@ -572,6 +581,7 @@ export default function ChopApp() {
     // userVideoPaneH is deliberately NOT a dep, so a splitter drag doesn't
     // re-run this and snap the window back.
     setUserVideoPaneH(null);
+    setUserWaveH(null);
     const W = Math.max(360, Math.round(window.innerWidth));
     const showV = hasVideo && showVideo;
     const paneH = showV ? Math.round(W / Math.max(0.1, videoAspect)) : 0;
@@ -1387,16 +1397,20 @@ export default function ChopApp() {
   const onSplitPointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     const d = splitDragRef.current;
     if (!d) return;
-    const MIN_VIDEO = 80;
     const bodyH = Math.max(0, window.innerHeight - 26);
     const RESERVED = 90 /* waveform min */ + 92 /* rail */ + 14 /* hint */ + 31 /* bottom */;
-    const maxVideo = Math.max(MIN_VIDEO, bodyH - RESERVED);
-    const next = Math.round(Math.max(MIN_VIDEO, Math.min(maxVideo, d.h + (e.clientY - d.y))));
+    const maxVideo = Math.max(MIN_VIDEO_PANE, bodyH - RESERVED);
+    const next = Math.round(Math.max(MIN_VIDEO_PANE, Math.min(maxVideo, d.h + (e.clientY - d.y))));
     setUserVideoPaneH(next);
   }, []);
   const onSplitPointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     splitDragRef.current = null;
     e.currentTarget.releasePointerCapture?.(e.pointerId);
+    // Pin the resulting waveform height as its floor (item 8): once the user
+    // sets the split, the region list can shrink the video pane but never the
+    // waveform below this.
+    const h = waveContainerRef.current?.clientHeight;
+    if (h && h > 0) setUserWaveH(h);
   }, []);
 
   // ---- Render -------------------------------------------------------------
@@ -1409,6 +1423,18 @@ export default function ChopApp() {
   // shadow so they read over any waveform bg). pointer-events set inline.
   const floatBtn = 'h-6 w-6 flex items-center justify-center transition-none bg-[var(--theme-bg-surface)] border border-[color:var(--theme-border-strong)] hover:bg-[var(--theme-bg-elevated)] text-[color:var(--theme-text-secondary)] hover:text-[color:var(--theme-text-heading)] shadow-md';
   const mutedLabel = 'text-[0.5625rem] uppercase tracking-tight text-[color:var(--theme-text-muted)]';
+
+  // Audio/video mode is presentational only (item 6): the video engine is the
+  // single playback source for a video session whether or not the picture is
+  // shown. showVideo just hides the pane + the video-clip export affordances.
+  const videoShown = hasVideo && showVideo;
+  // Waveform floor (item 8): the user-set level, else 50% of the default slot
+  // height. The waveform holds here while the video pane shrinks first.
+  const defaultWaveH = videoShown ? 150 : 300;
+  const waveFloor = Math.max(userWaveH ?? 0, Math.round(defaultWaveH * 0.5));
+  // Video-clip export UI is hidden in audio mode (item 6): the per-region
+  // video/audio toggle and the overlay's video grip only show with the picture.
+  const videoExportUi = canExportVideo && showVideo;
 
   return (
     <div className="font-mono text-[color:var(--theme-text-primary)] select-none"
@@ -1466,8 +1492,17 @@ export default function ChopApp() {
         {/* Video preview — muted follower of the audio clock. Pane height
             is sized to the video's aspect (see the fit effect) so a 16:9
             clip fills it with no letterbox deadspace. */}
-        {hasVideo && showVideo && videoPath && phase === 'ready' && (
-          <div className="w-full shrink-0 border-b border-[color:var(--theme-border)] bg-black" style={{ height: (userVideoPaneH ?? videoPaneH) || undefined }}>
+        {hasVideo && videoPath && phase === 'ready' && (
+          <div
+            className="w-full border-b border-[color:var(--theme-border)] bg-black"
+            style={showVideo
+              // Shown: sized to the video aspect (or the user split), and able
+              // to shrink to MIN_VIDEO_PANE first as the region list grows.
+              ? { height: (userVideoPaneH ?? videoPaneH) || undefined, minHeight: MIN_VIDEO_PANE, flexGrow: 0, flexShrink: 1 }
+              // Audio mode: collapse the pane to zero but KEEP VideoView mounted
+              // (item 6) so the one video engine stays the playback source.
+              : { height: 0, minHeight: 0, overflow: 'hidden', borderBottomWidth: 0, flexGrow: 0, flexShrink: 0 }}
+          >
             {/* The real visualizer video player: rich transport, J/K/L
                 shuttle, zoom/pan, frame-step. It owns playback (audio) for
                 video links, so the WAV transport below is hidden then. */}
@@ -1504,7 +1539,7 @@ export default function ChopApp() {
           />
         )}
         {/* Waveform + region overlay */}
-        <div ref={waveContainerRef} className="relative w-full flex-1 min-h-0 border-b border-[color:var(--theme-border)]">
+        <div ref={waveContainerRef} className="relative w-full flex-1 border-b border-[color:var(--theme-border)]" style={{ minHeight: waveFloor }}>
           {phase === 'ready' && audioPath ? (
             <WaveformView
               markers={[
@@ -1538,7 +1573,7 @@ export default function ChopApp() {
                         Math.min(Math.max((vp.tEnd - vp.tStart) * 0.05, 0.1), 5));
                     }}
                     onDragOut={handleRegionDragOut}
-                    canExportVideo={canExportVideo}
+                    canExportVideo={videoExportUi}
                     onGestureStart={() => { draggingRef.current = true; pushHistory(); }}
                     onGestureEnd={(info) => {
                       draggingRef.current = false;
@@ -1698,7 +1733,7 @@ export default function ChopApp() {
                       <Loader2 size={10} className="animate-spin text-[color:var(--theme-text-muted)]" />
                     </span>
                   )}
-                  {canExportVideo && (
+                  {videoExportUi && (
                     <button
                       className={railBtn(r.exportVideo ?? false)}
                       onClick={(e) => { e.stopPropagation(); setExportVideo(r.id, !(r.exportVideo ?? false)); }}
