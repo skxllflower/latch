@@ -220,10 +220,13 @@ ClipResult clip(const std::string& input,
       argv.insert(argv.end(), std::begin(a), std::end(a));
     }
   } else if (opts.preview) {
-    // Display-only companion track: drop video, downmix to mono at a low
-    // sample rate, 16-bit PCM. A fraction of the size / time of a full
-    // pcm_s24le decode, and plenty to render a waveform from.
-    argv.insert(argv.end(), {"-vn", "-map", "0:a:0", "-ac", "1", "-ar", "22050", "-c:a", "pcm_s16le"});
+    // Display-only companion track: drop video, low sample rate, 16-bit PCM.
+    // A fraction of the size / time of a full pcm_s24le decode, and plenty to
+    // render a waveform from. STEREO is preserved (2 channels): besides the
+    // waveform this companion is also the wavdesk MIDI sampler's slice source
+    // for video/local chop sessions, and a mono downmix there made region MIDI
+    // playback mono. 22050 stereo 16-bit is still tiny.
+    argv.insert(argv.end(), {"-vn", "-map", "0:a:0", "-ac", "2", "-ar", "22050", "-c:a", "pcm_s16le"});
   } else {
     std::string fmt = opts.audio_format.empty() ? std::string("wav") : opts.audio_format;
     argv.insert(argv.end(), {"-vn", "-map", "0:a:0"});
