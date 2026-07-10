@@ -32,7 +32,7 @@ interface WaveformViewProps {
   // When provided, the playhead renders at this position; when absent it
   // follows the engine while OUR file is playing.
   playheadGetter?: () => number;
-  overlay?: (vp: { tStart: number; tEnd: number; durationSec: number; panViewport: (deltaSec: number) => void }) => React.ReactNode;
+  overlay?: (vp: { tStart: number; tEnd: number; durationSec: number; panViewport: (deltaSec: number) => void; setViewportSec: (startSec: number, endSec: number) => void }) => React.ReactNode;
   // Vertical tick marks (e.g. chapter starts, the armed I point) drawn
   // behind the peaks. Default tint is the chapter amber; pass `color`
   // for distinct marks.
@@ -199,6 +199,18 @@ export const WaveformView: React.FC<WaveformViewProps> = ({
     if (s < 0) { t -= s; s = 0; }
     if (t > duration) { s -= t - duration; t = duration; }
     commitTarget({ tStart: Math.max(0, s), tEnd: Math.min(duration, t) });
+  }, [duration, commitTarget]);
+  // Absolute viewport set (width preserved, clamped to [0, duration]) — backs
+  // the chop window's Shift+arrow region switching (viewport-follow). Tweens
+  // like a pan so the follow reads buttery, not teleported.
+  const setViewportSec = useCallback((startSec: number, endSec: number) => {
+    if (duration <= 0) return;
+    const w = Math.max(1e-6, endSec - startSec);
+    let s = startSec;
+    let t = endSec;
+    if (s < 0) { s = 0; t = Math.min(duration, w); }
+    if (t > duration) { t = duration; s = Math.max(0, duration - w); }
+    commitTarget({ tStart: s, tEnd: t });
   }, [duration, commitTarget]);
   // Immediate commit (file reset) — snap with no tween.
   const commitVp = useCallback((next: { tStart: number; tEnd: number }) => {
@@ -517,11 +529,16 @@ export const WaveformView: React.FC<WaveformViewProps> = ({
     window.addEventListener('pointerup', onUp);
   }, [duration]);
 
-  // Playhead — rAF-driven ref mutation, no React state churn.
+  // Playhead — ref mutation per frame, no React state churn. Primary tick is
+  // rAF, but macOS WKWebView PARKS rAF for this satellite window (same reason
+  // ChopApp's reveal needs a timer fallback), which froze the playhead solid
+  // even while audio/video played. A setTimeout fallback keeps it moving there;
+  // whichever fires first paints and cancels the other. Windows/WebView2 rAF is
+  // reliable, so the timer is mac-only and leaves that path untouched.
   useEffect(() => {
     let raf = 0;
-    const tick = () => {
-      raf = requestAnimationFrame(tick);
+    let timer = 0;
+    const paint = () => {
       const el = playheadRef.current;
       const rect = containerRef.current?.getBoundingClientRect();
       if (!el || !rect || rect.width <= 0) return;
@@ -541,13 +558,20 @@ export const WaveformView: React.FC<WaveformViewProps> = ({
       el.style.opacity = '1';
       el.style.transform = `translateX(${((pos - cur.tStart) / span) * rect.width}px)`;
     };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
+    const tick = () => {
+      if (raf) { cancelAnimationFrame(raf); raf = 0; }
+      if (timer) { window.clearTimeout(timer); timer = 0; }
+      paint();
+      raf = requestAnimationFrame(tick);
+      if (isMac) timer = window.setTimeout(tick, 24);
+    };
+    tick();
+    return () => { if (raf) cancelAnimationFrame(raf); if (timer) window.clearTimeout(timer); };
   }, [filePath, playheadGetter]);
 
   const vpForOverlay = useMemo(
-    () => ({ tStart: vp.tStart, tEnd: vp.tEnd, durationSec: duration, panViewport: panBySec }),
-    [vp, duration, panBySec],
+    () => ({ tStart: vp.tStart, tEnd: vp.tEnd, durationSec: duration, panViewport: panBySec, setViewportSec }),
+    [vp, duration, panBySec, setViewportSec],
   );
 
   return (
