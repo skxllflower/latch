@@ -265,6 +265,19 @@ pub fn start_os_file_drag(
         0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x49,
         0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
     ];
+    // macOS: AppKit renders whatever Image the drag session is given as the
+    // NSDraggingItem's drag image. When the frontend supplied a composed chip
+    // PNG (`preview_png`), hand THAT to the session so Latch's own custom chip
+    // (the waveform strip / pill) renders natively (an empty/transparent image
+    // makes AppKit fall back to the OS default file icon). Windows keeps the
+    // transparent placeholder — its native layered chip window draws the visual
+    // there and `preview_png` is not sent, so this path is byte-identical.
+    #[cfg(target_os = "macos")]
+    let image_bytes: Vec<u8> = match preview_png {
+        Some(ref p) if !p.is_empty() => p.clone(),
+        _ => TRANSPARENT_PNG.to_vec(),
+    };
+    #[cfg(not(target_os = "macos"))]
     let image_bytes: Vec<u8> = TRANSPARENT_PNG.to_vec();
     let app_for_cleanup: AppHandle = app.clone();
     let cleanup_temp = cleanup_temp_on_shell_drop.unwrap_or(false);

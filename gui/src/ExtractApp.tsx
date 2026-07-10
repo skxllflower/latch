@@ -27,7 +27,7 @@ import { useTheme, THEME_BG } from './theme';
 import { playbackEngine } from './playbackEngine';
 import { usePlaybackState, usePlaybackCurrentPath, usePlaybackPosition } from './PlaybackContext';
 import { peaksToChipDataUrl } from './dragChipPng';
-import { startOverlayDrag, endOverlayDrag } from './internalDragHandoff';
+import { startOverlayDrag, endOverlayDrag, macChipPngForCurrentDrag } from './internalDragHandoff';
 import { confirmInWindow, infoInWindow } from './dialogs';
 import { open as openFileDialog } from '@tauri-apps/plugin-dialog';
 import { openChopWindow } from './chopWindow';
@@ -2368,7 +2368,7 @@ export default function ExtractApp() {
                       try {
                         await invoke('start_os_file_drag', {
                           paths,
-                          previewPng:  null,
+                          previewPng:  macChipPngForCurrentDrag(),
                           transparent: true,
                         });
                       } catch (err) {

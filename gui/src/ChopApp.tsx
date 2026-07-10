@@ -42,7 +42,7 @@ import {
   createDragRegion, setRegionBounds, edgeSnapExempt,
   stampedClipName,
 } from './chopRegions';
-import { startOverlayDrag, endOverlayDrag } from './internalDragHandoff';
+import { startOverlayDrag, endOverlayDrag, macChipPngForCurrentDrag } from './internalDragHandoff';
 import { cropCanvasFractionToDataUrl, videoFrameToChipDataUrl, peaksToChipDataUrl } from './dragChipPng';
 import type { ChopSeed } from './chopWindow';
 import { modAccel } from './modKey';
@@ -1385,7 +1385,7 @@ export default function ChopApp() {
         // a folder/desktop the OS copies it there and the native side deletes
         // our now-redundant copy (app drops that reference the path keep it).
         handedOff = true;
-        await invoke('start_os_file_drag', { paths: [path], previewPng: null, transparent: true, cleanupTempOnShellDrop: true });
+        await invoke('start_os_file_drag', { paths: [path], previewPng: macChipPngForCurrentDrag(), transparent: true, cleanupTempOnShellDrop: true });
         void endOverlayDrag(); // DoDragDrop finished — ensure the chip is gone
       }
     } catch (err) {
