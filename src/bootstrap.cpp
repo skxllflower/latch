@@ -120,6 +120,41 @@ fs::path find_recursive(const fs::path& root, const std::string& filename) {
   return fs::path();
 }
 
+#if defined(__APPLE__)
+// Extract a .zip on macOS via `ditto -x -k` (ships on every macOS, unlike a
+// guaranteed `unzip`). The evermeet archives hold a single binary at the root.
+bool extract_zip_mac(const fs::path& zip, const fs::path& dest) {
+  std::error_code ec;
+  fs::create_directories(dest, ec);
+  std::vector<std::string> argv = {
+    "ditto", "-x", "-k", zip.string(), dest.string(),
+  };
+  std::string err;
+  int rc = run_subprocess(argv, [&](const std::string& line) {
+    if (!line.empty()) { if (!err.empty()) err += "\n"; err += line; }
+  });
+  if (rc != 0 && !err.empty()) emit_bootstrap("info", "ditto", 0, 0, err);
+  return rc == 0;
+}
+
+// Make a freshly downloaded binary runnable: chmod 0755 and strip the
+// com.apple.quarantine xattr so Gatekeeper doesn't block the spawned tool.
+// Both best-effort — a missing quarantine attr makes xattr exit non-zero,
+// which we ignore.
+void make_executable_mac(const fs::path& bin) {
+  std::error_code ec;
+  fs::permissions(bin,
+    fs::perms::owner_all |
+    fs::perms::group_read | fs::perms::group_exec |
+    fs::perms::others_read | fs::perms::others_exec,
+    fs::perm_options::replace, ec);
+  std::vector<std::string> argv = {
+    "xattr", "-d", "com.apple.quarantine", bin.string(),
+  };
+  run_subprocess(argv, [](const std::string&) {});
+}
+#endif
+
 }
 
 bool ffmpeg_present() {
@@ -186,6 +221,7 @@ bool ensure_ffmpeg() {
   // Files. Staging lives in the same dir so the final rename is
   // same-volume (atomic).
   fs::path bin_dir   = path_from_utf8(shared_bin_dir());
+#ifdef _WIN32
   fs::path zip_path  = bin_dir / "_ffmpeg_download.zip";
   fs::path extract_d = bin_dir / "_ffmpeg_extract";
   fs::path target    = bin_dir / "ffmpeg.exe";
@@ -237,6 +273,84 @@ bool ensure_ffmpeg() {
 
   emit_bootstrap("done", "ffmpeg");
   return true;
+#elif defined(__APPLE__)
+  // evermeet.cx publishes static, standalone ffmpeg/ffprobe CLI builds for
+  // macOS — each a zip holding one binary at the root. Two downloads (separate
+  // archives), unlike Windows' single BtbN bundle. GPL is fine here: these are
+  // spawned as subprocesses, same as the Windows gpl build.
+  fs::path ff_zip    = bin_dir / "_ffmpeg_download.zip";
+  fs::path fp_zip    = bin_dir / "_ffprobe_download.zip";
+  fs::path ff_ex     = bin_dir / "_ffmpeg_extract";
+  fs::path fp_ex     = bin_dir / "_ffprobe_extract";
+  fs::path target    = bin_dir / "ffmpeg";
+  fs::path probe_tgt = bin_dir / "ffprobe";
+
+  std::error_code ec;
+  fs::remove(ff_zip, ec);
+  fs::remove(fp_zip, ec);
+  fs::remove_all(ff_ex, ec);
+  fs::remove_all(fp_ex, ec);
+
+  const std::string ff_url = "https://evermeet.cx/ffmpeg/getrelease/zip";
+  const std::string fp_url = "https://evermeet.cx/ffmpeg/getrelease/ffprobe/zip";
+
+  bool ok = download_with_progress(ff_url, ff_zip,
+    [&](uint64_t bytes, uint64_t total) {
+      emit_bootstrap("download", "ffmpeg", bytes, total);
+    });
+  if (ok) {
+    ok = download_with_progress(fp_url, fp_zip,
+      [&](uint64_t bytes, uint64_t total) {
+        emit_bootstrap("download", "ffprobe", bytes, total);
+      });
+  }
+  if (!ok) {
+    emit_bootstrap("failed", "ffmpeg", 0, 0, "download failed");
+    fs::remove(ff_zip, ec);
+    fs::remove(fp_zip, ec);
+    return false;
+  }
+
+  emit_bootstrap("extracting", "ffmpeg");
+  if (!extract_zip_mac(ff_zip, ff_ex) || !extract_zip_mac(fp_zip, fp_ex)) {
+    emit_bootstrap("failed", "ffmpeg", 0, 0, "archive extraction failed");
+    fs::remove(ff_zip, ec);
+    fs::remove(fp_zip, ec);
+    fs::remove_all(ff_ex, ec);
+    fs::remove_all(fp_ex, ec);
+    return false;
+  }
+
+  std::string install_err;
+  bool installed_ffmpeg  = install_from_extract(ff_ex, "ffmpeg",  target,    &install_err);
+  bool installed_ffprobe = installed_ffmpeg &&
+                           install_from_extract(fp_ex, "ffprobe", probe_tgt, &install_err);
+  if (!installed_ffmpeg || !installed_ffprobe) {
+    emit_bootstrap("failed", "ffmpeg", 0, 0, install_err);
+    fs::remove(ff_zip, ec);
+    fs::remove(fp_zip, ec);
+    fs::remove_all(ff_ex, ec);
+    fs::remove_all(fp_ex, ec);
+    return false;
+  }
+
+  make_executable_mac(target);
+  make_executable_mac(probe_tgt);
+
+  fs::remove(ff_zip, ec);
+  fs::remove(fp_zip, ec);
+  fs::remove_all(ff_ex, ec);
+  fs::remove_all(fp_ex, ec);
+
+  write_binary_manifest(path_to_utf8(target),    ff_url, "-version");
+  write_binary_manifest(path_to_utf8(probe_tgt), fp_url, "-version");
+
+  emit_bootstrap("done", "ffmpeg");
+  return true;
+#else
+  emit_bootstrap("failed", "ffmpeg", 0, 0, "unsupported platform");
+  return false;
+#endif
 }
 
 bool ensure_ytdlp() {
@@ -248,6 +362,7 @@ bool ensure_ytdlp() {
   // guaranteed-writable home) — Latch\bin, not the shared dir. Download
   // to a staging name + rename so a half-finished download never sits at
   // the real path looking installed.
+#ifdef _WIN32
   fs::path target  = path_from_utf8(latch_bin_dir()) / "yt-dlp.exe";
   fs::path staging = target;
   staging += ".download";
@@ -283,6 +398,50 @@ bool ensure_ytdlp() {
 
   emit_bootstrap("done", "yt-dlp");
   return true;
+#elif defined(__APPLE__)
+  // The macOS build ships as a single standalone binary (yt-dlp_macos); save it
+  // under the managed name, chmod + dequarantine, install via staging + rename.
+  fs::path target  = path_from_utf8(latch_bin_dir()) / "yt-dlp";
+  fs::path staging = target;
+  staging += ".download";
+  std::error_code ec;
+  fs::remove(staging, ec);
+
+  const std::string url =
+    "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos";
+
+  bool ok = download_with_progress(url, staging,
+    [&](uint64_t bytes, uint64_t total) {
+      emit_bootstrap("download", "yt-dlp", bytes, total);
+    });
+
+  if (!ok) {
+    emit_bootstrap("failed", "yt-dlp", 0, 0, "download failed");
+    fs::remove(staging, ec);
+    return false;
+  }
+
+  make_executable_mac(staging);
+
+  std::error_code rename_ec;
+  fs::rename(staging, target, rename_ec);
+  std::error_code exists_ec;
+  if (!fs::exists(target, exists_ec)) {
+    emit_bootstrap("failed", "yt-dlp", 0, 0,
+                   "could not install yt-dlp: " + rename_ec.message());
+    fs::remove(staging, ec);
+    return false;
+  }
+  fs::remove(staging, ec);
+
+  write_binary_manifest(path_to_utf8(target), url, "--version");
+
+  emit_bootstrap("done", "yt-dlp");
+  return true;
+#else
+  emit_bootstrap("failed", "yt-dlp", 0, 0, "unsupported platform");
+  return false;
+#endif
 }
 
 bool ensure_required() {
