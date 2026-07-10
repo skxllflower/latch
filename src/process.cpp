@@ -90,6 +90,22 @@ std::string utf16_to_utf8(const std::wstring& s) {
   return out;
 }
 
+std::string to_valid_utf8(const std::string& s) {
+  if (s.empty()) return s;
+  // Already valid UTF-8? MB_ERR_INVALID_CHARS makes the decode fail (returns 0)
+  // on any malformed sequence, so a positive result means "leave it alone".
+  int ok = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+                               s.data(), (int)s.size(), nullptr, 0);
+  if (ok > 0) return s;
+  // Not valid UTF-8: treat the bytes as the active ANSI codepage (what a piped
+  // Python/ffmpeg child emits on Windows) and re-encode to UTF-8.
+  int wn = MultiByteToWideChar(CP_ACP, 0, s.data(), (int)s.size(), nullptr, 0);
+  if (wn <= 0) return s;
+  std::wstring w(static_cast<size_t>(wn), L'\0');
+  MultiByteToWideChar(CP_ACP, 0, s.data(), (int)s.size(), &w[0], wn);
+  return utf16_to_utf8(w);
+}
+
 int run_subprocess(const std::vector<std::string>& argv,
                    const std::function<void(const std::string&)>& on_line,
                    const std::function<void()>& on_idle) {
@@ -191,7 +207,7 @@ int run_subprocess(const std::vector<std::string>& argv,
       char c = buf[i];
       if (c == '\n' || c == '\r') {
         if (!line.empty()) {
-          if (on_line) on_line(line);
+          if (on_line) on_line(to_valid_utf8(line));
           line.clear();
         }
       } else {
@@ -199,7 +215,7 @@ int run_subprocess(const std::vector<std::string>& argv,
       }
     }
   }
-  if (!line.empty() && on_line) on_line(line);
+  if (!line.empty() && on_line) on_line(to_valid_utf8(line));
 
   WaitForSingleObject(pi.hProcess, INFINITE);
   DWORD exit_code = 0;
@@ -270,6 +286,9 @@ std::string exe_dir() {
   auto slash = s.find_last_of('/');
   return slash == std::string::npos ? std::string(".") : s.substr(0, slash);
 }
+
+// POSIX tools already emit UTF-8; nothing to recover.
+std::string to_valid_utf8(const std::string& s) { return s; }
 
 #endif
 
