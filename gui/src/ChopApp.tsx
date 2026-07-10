@@ -557,17 +557,25 @@ export default function ChopApp() {
   // Reveal after first paint (created hidden → no white flash). Also pin a
   // usable minimum size so the dynamic fit + user resize can't shrink the UI
   // into uselessness.
+  // WKWebView parks rAF while the window has never been shown, so an
+  // rAF-only reveal deadlocks on macOS: a timer fallback breaks the tie
+  // (idempotent; whichever fires first wins, the other no-ops).
   useEffect(() => {
     void getCurrentWindow().setMinSize(new LogicalSize(560, 440)).catch(() => {});
-    const id = requestAnimationFrame(() => {
+    let revealed = false;
+    const reveal = () => {
+      if (revealed) return;
+      revealed = true;
       void (async () => {
         try { await getCurrentWindow().show(); } catch { /* ignore */ }
         // Register the chop window as a real taskbar + alt-tab window (it's a
         // full editor, not a transient popup). See register_taskbar_window.
         try { await invoke('register_taskbar_window', { label: getCurrentWindow().label }); } catch { /* ignore */ }
       })();
-    });
-    return () => cancelAnimationFrame(id);
+    };
+    const id = requestAnimationFrame(reveal);
+    const t = window.setTimeout(reveal, 120);
+    return () => { cancelAnimationFrame(id); window.clearTimeout(t); };
   }, []);
 
   // Title sync.

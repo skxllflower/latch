@@ -625,8 +625,14 @@ export default function ExtractApp() {
 
   // Created hidden (tauri.conf visible:false) — reveal after the first
   // paint so the user never sees the transparent shell fill in.
+  // WKWebView parks rAF while the window has never been shown, so the
+  // rAF-only reveal deadlocks on macOS: a timer fallback breaks the tie
+  // (idempotent show; whichever fires first wins).
   useEffect(() => {
-    requestAnimationFrame(() => { void getCurrentWindow().show(); });
+    const reveal = () => { void getCurrentWindow().show(); };
+    requestAnimationFrame(reveal);
+    const t = window.setTimeout(reveal, 120);
+    return () => window.clearTimeout(t);
   }, []);
 
   // Main-window close owns full app teardown: the satellite windows
