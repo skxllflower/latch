@@ -164,6 +164,12 @@ export default function ChopApp() {
   // playhead (and resumes if it was playing) instead of jumping to 0.
   const pendingSeekRef = useRef<number | null>(null);
   const pendingPlayRef = useRef(false);
+  // The native video engine autoplays on open (nativeVideoStream: _playing =
+  // true in its constructor). A chop session should open PAUSED at the start so
+  // the user draws cuts before anything moves. This latches the first ready per
+  // session so we pause+park once, without a later re-stream (fullscreen /
+  // resize re-fires onReady) yanking an already-playing clip back to 0.
+  const initialPauseDoneRef = useRef(false);
   // The waveform's wrapper (to snapshot its canvas for the drag chip) and
   // the live viewport from the overlay render-prop (to crop the chip to
   // just the dragged region's slice).
@@ -405,6 +411,7 @@ export default function ChopApp() {
     setDurationSec(0); setRegions([]); select(null); setAuditionId(null); setExportMsg('');
     setChapters([]); historyRef.current = []; redoRef.current = [];
     lastPushRef.current = { tag: '', at: 0 };
+    initialPauseDoneRef.current = false; // new session opens paused at 0
     // Fresh pitch-mode session for the new clip — back to the 'tape'
     // default, ask again on its first speed-changed export.
     setPitchMode('tape'); pitchModeRef.current = 'tape'; pitchAskedRef.current = false;
@@ -1521,6 +1528,15 @@ export default function ChopApp() {
                   if (pendingPlayRef.current) videoRef.current?.play();
                   else videoRef.current?.pause();
                   pendingPlayRef.current = false;
+                } else if (!initialPauseDoneRef.current) {
+                  // Initial open: cancel the engine's autoplay so the session
+                  // starts PAUSED with the playhead parked at 0 (transport
+                  // ready, nothing moving). Latched so a later re-stream can't
+                  // interrupt playback the user has since started.
+                  initialPauseDoneRef.current = true;
+                  videoRef.current?.pause();
+                  videoRef.current?.seek(0, true);
+                  setCursorSec(0);
                 }
               }} />
           </div>

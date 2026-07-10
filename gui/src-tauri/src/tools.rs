@@ -403,6 +403,73 @@ pub(crate) fn resolve_self_core() -> Option<PathBuf> {
     find_tool_binary("latch", "").ok()
 }
 
+// --version output cached per (path, size, mtime) so a receipt at every job
+// start doesn't respawn the binary — a reinstall changes size/mtime and forces
+// a re-read. The version string alone does NOT distinguish a stale binary from
+// a fresh one (both can report the same CARGO/compiled version across a rebuild
+// that changed behaviour), which is exactly why the receipt also carries size +
+// mtime — the fields that actually prove which build ran.
+fn latch_version_cache() -> &'static Mutex<HashMap<ProbeKey, String>> {
+    static CACHE: OnceLock<Mutex<HashMap<ProbeKey, String>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn tool_version(bin: &std::path::Path) -> String {
+    let mut cmd = Command::new(bin);
+    cmd.arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    #[cfg(target_os = "windows")]
+    {
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    match cmd.output() {
+        Ok(o) => {
+            let s = String::from_utf8_lossy(&o.stdout);
+            s.lines().next().unwrap_or("").trim().to_string()
+        }
+        Err(_) => "unknown".to_string(),
+    }
+}
+
+/// Write a binary-identity receipt to the always-on log: the ABSOLUTE resolved
+/// path, file size, mtime (unix secs), and `--version` of the latch core about
+/// to run. `context` names the caller ("chop/extract", "chop/probe", ...). This
+/// makes a stale-install situation provable from any future owner log — path +
+/// size + mtime pin down exactly which build handled the job, where the version
+/// string alone cannot. Cheap: one metadata stat + a cached version read.
+pub(crate) fn log_binary_receipt(bin: &std::path::Path, context: &str) {
+    let (size, mtime) = match probe_key(bin) {
+        Some((_, size, mtime)) => (size, mtime),
+        None => (0, 0),
+    };
+    let version = {
+        let key = (bin.to_string_lossy().into_owned(), size, mtime);
+        let cached = latch_version_cache()
+            .lock()
+            .ok()
+            .and_then(|c| c.get(&key).cloned());
+        match cached {
+            Some(v) => v,
+            None => {
+                let v = tool_version(bin);
+                if let Ok(mut c) = latch_version_cache().lock() {
+                    c.insert(key, v.clone());
+                }
+                v
+            }
+        }
+    };
+    crate::logger::log(&format!(
+        "[binary] {context}: latch core = {} (version \"{}\", size {}, mtime {})",
+        bin.display(),
+        version,
+        size,
+        mtime
+    ));
+}
+
 pub(crate) fn spawn_tool(
     binary: PathBuf,
     args: Vec<String>,
@@ -464,12 +531,31 @@ pub(crate) fn run_reader(
     let jobs = latch_jobs();
     std::thread::spawn(move || {
         let event_name = format!("{}-event", tool);
-        let reader = BufReader::new(stdout);
-        for line in reader.lines() {
-            let Ok(line) = line else { break };
-            if line.is_empty() {
+        // Read raw bytes, not `.lines()`: a single line of invalid UTF-8 (a
+        // Windows child relaying a title in the ANSI codepage) makes
+        // BufRead::lines() yield Err, which used to BREAK this loop and drop
+        // every event after it — including the terminal `done`, so the session
+        // saw only the later `exit` and reported "download exited (code 0)" on
+        // a download that actually succeeded. from_utf8_lossy keeps the stream
+        // alive: a bad line degrades to replacement chars instead of killing
+        // the reader. (latch.exe now also emits valid UTF-8 at the source; this
+        // is the belt-and-braces half, and it covers lathe.exe too.)
+        let mut reader = BufReader::new(stdout);
+        let mut raw: Vec<u8> = Vec::new();
+        loop {
+            raw.clear();
+            match reader.read_until(b'\n', &mut raw) {
+                Ok(0) => break, // EOF
+                Ok(_) => {}
+                Err(_) => break,
+            }
+            while matches!(raw.last(), Some(b'\n') | Some(b'\r')) {
+                raw.pop();
+            }
+            if raw.is_empty() {
                 continue;
             }
+            let line = String::from_utf8_lossy(&raw);
             let payload = match serde_json::from_str::<Value>(&line) {
                 Ok(v) => serde_json::json!({
                     "tool": tool,
@@ -541,6 +627,7 @@ pub async fn latch_extract(
     options: LatchOptions,
 ) -> Result<(), String> {
     let bin = find_tool_binary("latch", &binary_path)?;
+    log_binary_receipt(&bin, if options.video { "chop/extract-video" } else { "chop/extract-audio" });
     let mut args = vec!["extract".to_string(), url, output_dir];
     let fmt = if options.audio_format.is_empty() {
         "mp3".to_string()
@@ -635,6 +722,7 @@ pub async fn latch_probe(
     cookies_file: Option<String>,
 ) -> Result<LatchProbeResult, String> {
     let bin = find_tool_binary("latch", &binary_path)?;
+    log_binary_receipt(&bin, "chop/probe");
     let mut args = vec!["probe".to_string(), url];
     if !cookies_from_browser.trim().is_empty() {
         args.push(format!("--cookies-from-browser={}", cookies_from_browser.trim()));
