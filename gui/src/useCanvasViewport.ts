@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
+import { isMac } from './platform';
 
 // Shared zoom/pan/pinch engine for canvas content viewers (ImageView,
 // VideoView). Extracted from the image viewer so both get the exact same
@@ -273,7 +274,6 @@ export function useCanvasViewport({ containerRef, contentW, contentH, enabled = 
 
   // ---- wheel (native, non-passive) ----
   useEffect(() => {
-    const isMac = typeof navigator !== 'undefined' && /Mac|iPad|iPhone/.test(navigator.platform || navigator.userAgent || '');
     const el = containerRef.current;
     if (!el) return;
     const onWheel = (e: WheelEvent) => {
@@ -286,7 +286,10 @@ export function useCanvasViewport({ containerRef, contentW, contentH, enabled = 
       const cx = e.clientX - rect.left, cy = e.clientY - rect.top;
       const isMouseWheel = !isMac || e.deltaMode === 1
         || (e.deltaX === 0 && Number.isInteger(e.deltaY) && Math.abs(e.deltaY) >= 30);
-      if (!isMouseWheel && !e.ctrlKey) { panSmoothBy(-e.deltaX, -e.deltaY); return; }
+      // Image/video are true 2D canvases, so plain trackpad scroll keeps
+      // panning both axes; ctrlKey is trackpad pinch and Cmd+wheel is the mac
+      // opt-in zoom (both fall through to the cursor-anchored zoom below).
+      if (!isMouseWheel && !e.ctrlKey && !(isMac && e.metaKey)) { panSmoothBy(-e.deltaX, -e.deltaY); return; }
       const base = isMouseWheel ? viewRef.current : (targetRef.current ?? viewRef.current);
       const k = isMouseWheel ? WHEEL_K : PINCH_WHEEL_K;
       easeTo(zoomAround(base, base.s * Math.exp(-e.deltaY * k), cx, cy));

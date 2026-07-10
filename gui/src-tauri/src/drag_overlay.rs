@@ -21,7 +21,12 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use device_query::{DeviceQuery, DeviceState, Keycode};
-use tauri::{AppHandle, Manager, PhysicalPosition};
+use tauri::{AppHandle, Manager};
+// Referenced only from the Windows (offscreen park) and Linux (overlay follow)
+// position paths — all cfg-gated below. macOS shows no overlay chip, so a plain
+// `use` would be an unused import there; gate it to the non-macOS platforms.
+#[cfg(not(target_os = "macos"))]
+use tauri::PhysicalPosition;
 
 const OVERLAY_LABEL: &str = "drag-overlay";
 
@@ -104,9 +109,12 @@ pub fn drag_overlay_start(app: AppHandle) -> Result<(), String> {
             let y = cursor.y.round() as i32;
             LAST_CURSOR_X.store(x, Ordering::SeqCst);
             LAST_CURSOR_Y.store(y, Ordering::SeqCst);
-            // Non-Windows: the Tauri overlay IS the visible chip,
-            // so we position it at the cursor for show().
-            #[cfg(not(target_os = "windows"))]
+            // Linux (XDND): the Tauri overlay IS the visible chip, so we
+            // position it at the cursor for show(). macOS suppresses the
+            // overlay chip entirely — the native NSDraggingSession image (from
+            // ipc::start_os_file_drag's drag::Image) is the sole chip; showing
+            // + following the overlay too is the field "double chip".
+            #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
             let _ = overlay.set_position(PhysicalPosition::new(
                 x + CHIP_OFFSET_X as i32,
                 y + CHIP_OFFSET_Y as i32,
@@ -127,7 +135,12 @@ pub fn drag_overlay_start(app: AppHandle) -> Result<(), String> {
             let _ = overlay.set_position(PhysicalPosition::new(-32000, -32000));
             let _ = overlay.show();
         }
-        #[cfg(not(target_os = "windows"))]
+        // Linux (XDND): the overlay webview IS the chip — show it and re-pin
+        // it to the top of the AOT tier. macOS leaves the overlay HIDDEN: the
+        // native NSDraggingSession image is the sole chip, so a shown overlay
+        // double-renders it (the field "double chip"). The hide/cleanup paths
+        // below stay unconditional, so a stray-shown overlay still tears down.
+        #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
         {
             let _ = overlay.show();
             let _ = overlay.set_always_on_top(false);
@@ -287,11 +300,12 @@ fn spawn_poll_thread(app: AppHandle) {
                 // update LAST_CURSOR_X/Y for any caller that wants
                 // the last cursor sample.
                 //
-                // Non-Windows: fall back to set_position on the
-                // Tauri overlay. macOS NSDraggingSession + Linux
-                // XDND don't have the same modal-pump issue, so
-                // the Tauri overlay still works smoothly there.
-                #[cfg(not(target_os = "windows"))]
+                // Linux (XDND): follow the cursor by repositioning the Tauri
+                // overlay chip each tick (no modal-pump stall there). macOS is
+                // excluded: its chip is the native NSDraggingSession image
+                // (compositor-followed), and the overlay is never shown, so
+                // positioning it here would be dead work on a hidden window.
+                #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
                 {
                     if let Some(overlay) = app.get_webview_window(OVERLAY_LABEL) {
                         let _ = overlay.set_position(PhysicalPosition::new(next_x, next_y));
