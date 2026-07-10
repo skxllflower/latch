@@ -634,8 +634,9 @@ int run_cli(const std::vector<std::string>& args) {
 
 }
 
-int main(int /*argc*/, char** /*argv*/) {
+int main(int argc, char** argv) {
 #ifdef _WIN32
+  (void)argc; (void)argv;  // rebuilt from GetCommandLineW for UTF-16 fidelity
   int wargc = 0;
   LPWSTR* wargv = CommandLineToArgvW(GetCommandLineW(), &wargc);
   if (!wargv) return 1;
