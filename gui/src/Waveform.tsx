@@ -17,6 +17,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { playbackEngine } from './playbackEngine';
+import { isMac } from './platform';
 
 export interface WaveAudioFile {
   path: string;
@@ -387,7 +388,12 @@ export const WaveformView: React.FC<WaveformViewProps> = ({
     const cur = baseVp();
     const span = Math.max(1e-6, cur.tEnd - cur.tStart);
     const frac = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-    const pan = e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY);
+    // Vertical-dominant scroll already zooms and horizontal-dominant pans (the
+    // waveform has no Y axis) — that IS the mac trackpad convention, since the
+    // Windows raw-HID path never fires on macOS. Cmd+wheel is the mac
+    // accelerator equivalent of a pinch: force the zoom path regardless of the
+    // dominant axis (Cmd has no OS wheel meaning on mac, so it's collision-free).
+    const pan = !(isMac && e.metaKey) && (e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY));
     if (pan) {
       const delta = (pan && Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY)
         / rect.width * span;

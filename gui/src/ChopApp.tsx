@@ -45,6 +45,7 @@ import {
 import { startOverlayDrag, endOverlayDrag } from './internalDragHandoff';
 import { cropCanvasFractionToDataUrl, videoFrameToChipDataUrl, peaksToChipDataUrl } from './dragChipPng';
 import type { ChopSeed } from './chopWindow';
+import { modAccel } from './modKey';
 
 interface IpcWaveformData {
   success: boolean;
@@ -1787,7 +1788,7 @@ export default function ChopApp() {
         <div
           className="flex items-center px-2 border-t border-[color:var(--theme-border)] shrink-0 overflow-hidden"
           style={{ height: '14px' }}
-          title="space: retrigger / stop the selected region (whole file if none) · K: play / pause · J/L: shuttle (video) · double-click or drag: add region · I then O: mark a region · arrows: nudge selected region (Shift: coarse, Ctrl: start edge, Alt: end edge) · Delete: remove region · Ctrl+Z / Ctrl+Y: undo / redo · region grips: drag out the audio / video clip"
+          title={modAccel("space: retrigger / stop the selected region (whole file if none) · K: play / pause · J/L: shuttle (video) · double-click or drag: add region · I then O: mark a region · arrows: nudge selected region (Shift: coarse, Ctrl: start edge, Alt: end edge) · Delete: remove region · Ctrl+Z / Ctrl+Y: undo / redo · region grips: drag out the audio / video clip")}
         >
           <span className="truncate text-[0.5rem] text-[color:var(--theme-text-muted)] select-none tabular-nums">
             space retrigger/stop · K play/pause{hasVideo ? ' · J/L shuttle' : ''} · dbl-click add · I/O mark region · arrows nudge (shift coarse · ctrl start · alt end) · del remove · ctrl+Z undo · grips drag out audio{hasVideo ? '/video' : ''}

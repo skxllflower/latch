@@ -15,6 +15,7 @@ import {
   type ImageChannel, type Swatch, type Histogram, CHANNEL_OPTIONS, EYEDROPPER_CURSOR,
   buildHistogram, extractPalette, drawHistogram, swatchHex,
 } from './imageAnalysis';
+import { isMac } from './platform';
 
 const HUD_BOTTOM = 72;   // clears the transport (scrubber + controls row)
 
@@ -966,7 +967,7 @@ export const VideoView = forwardRef<VideoViewHandle, VideoViewProps>(function Vi
       if (Math.abs(s.preDy) < 3) return;
       s.passed = true; setVolDragging(true);
     }
-    const sens = (e.ctrlKey || e.metaKey) ? 0.25 : 0.5;   // Ctrl = precision
+    const sens = (e.ctrlKey || e.metaKey || (isMac && e.altKey)) ? 0.25 : 0.5;   // Ctrl / Cmd / Option (mac) = precision
     const track = volTrackRef.current; if (!track) return;
     const rect = track.getBoundingClientRect();
     s.accumPct += (e.movementY / rect.height) * 100 * sens;

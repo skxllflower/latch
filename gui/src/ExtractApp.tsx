@@ -35,6 +35,7 @@ import { openAboutWindow } from './aboutWindow';
 import { openSettingsWindow } from './settingsWindow';
 import { getSettings } from './settings';
 import { WdSelect, type WdSelectOption } from './WdSelect';
+import { modAccel } from './modKey';
 
 interface LatchOptionsPayload {
   // Empty = highest quality (no conversion, leave source codec).
@@ -1862,7 +1863,7 @@ export default function ExtractApp() {
                 onChange={(e) => setInputBuffer(e.target.value)}
                 onKeyDown={onPromptKeyDown}
                 onPaste={onPromptPaste}
-                placeholder="url or search: Enter to queue, Ctrl+Enter to extract"
+                placeholder={modAccel("url or search: Enter to queue, Ctrl+Enter to extract")}
                 spellCheck={false}
                 autoCorrect="off"
                 autoCapitalize="off"
@@ -2525,7 +2526,7 @@ export default function ExtractApp() {
                   : parsedUrls.length === 0
                     ? 'Paste a URL or type a search'
                     : parsedUrls.length === 1
-                      ? '1 URL · Ctrl+Enter to extract'
+                      ? modAccel('1 URL · Ctrl+Enter to extract')
                       : `${parsedUrls.length} URLs queued`}
               </span>
             )}
