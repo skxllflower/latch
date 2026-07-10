@@ -12,6 +12,11 @@
   #include <signal.h>
   #include <sys/wait.h>
   #include <unistd.h>
+  #if defined(__APPLE__)
+    #include <cstdint>
+    #include <filesystem>
+    #include <mach-o/dyld.h>
+  #endif
 #endif
 
 namespace latch {
@@ -279,12 +284,28 @@ int run_subprocess(const std::vector<std::string>& argv,
 }
 
 std::string exe_dir() {
+#if defined(__APPLE__)
+  // macOS has no /proc; ask dyld for our own image path. First call with a null
+  // buffer reports the needed size, then we fill it. The result can contain
+  // symlinks or ".." components, so canonicalize before taking the parent.
+  uint32_t size = 0;
+  _NSGetExecutablePath(nullptr, &size);
+  std::string buf(size, '\0');
+  if (_NSGetExecutablePath(&buf[0], &size) != 0) return ".";
+  if (!buf.empty() && buf.back() == '\0') buf.pop_back();
+  std::error_code ec;
+  std::filesystem::path p = std::filesystem::canonical(buf, ec);
+  if (ec) p = std::filesystem::path(buf);
+  std::filesystem::path dir = p.parent_path();
+  return dir.empty() ? std::string(".") : dir.string();
+#else
   char buf[4096];
   ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
   if (n <= 0) return ".";
   std::string s(buf, n);
   auto slash = s.find_last_of('/');
   return slash == std::string::npos ? std::string(".") : s.substr(0, slash);
+#endif
 }
 
 // POSIX tools already emit UTF-8; nothing to recover.

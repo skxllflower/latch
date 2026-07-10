@@ -153,13 +153,45 @@ bool download_with_progress(
   return true;
 }
 
-#else
+#else  // POSIX
 
+// No WinHTTP off Windows; drive curl through the existing run_subprocess
+// plumbing (no new deps). curl is present on every macOS. We can't cheaply
+// stream byte-level progress out of a blocking popen, so we mirror the WinHTTP
+// path's *shape*: an opening on_progress(0, total) so the UI leaves the idle
+// state, then a closing on_progress(size, size) at 100%. Callers only consume
+// these to emit bootstrap NDJSON events, so the contract (bool return + the
+// two callback bookends) is preserved.
 bool download_with_progress(
-    const std::string& /*url*/,
-    const std::filesystem::path& /*dest*/,
-    const std::function<void(uint64_t, uint64_t)>& /*on_progress*/) {
-  return false;
+    const std::string& url,
+    const std::filesystem::path& dest,
+    const std::function<void(uint64_t, uint64_t)>& on_progress) {
+
+  if (on_progress) on_progress(0, 0);
+
+  std::error_code ec;
+  std::filesystem::remove(dest, ec);
+
+  // -f fails the transfer on HTTP >= 400 (no half-written error pages),
+  // -L follows redirects (GitHub releases -> CDN, evermeet -> its host),
+  // --retry 3 rides out transient blips.
+  std::vector<std::string> argv = {
+    "curl", "-fL", "--retry", "3",
+    "-o", dest.string(),
+    url,
+  };
+  int rc = run_subprocess(argv, [](const std::string&) {});
+
+  std::error_code size_ec;
+  std::uintmax_t size = std::filesystem::file_size(dest, size_ec);
+  bool ok = (rc == 0) && !size_ec && size > 0;
+  if (!ok) {
+    std::filesystem::remove(dest, ec);
+    return false;
+  }
+
+  if (on_progress) on_progress(size, size);
+  return true;
 }
 
 #endif

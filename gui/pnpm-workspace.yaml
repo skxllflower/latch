@@ -1,0 +1,12 @@
+# Native/tooling packages permitted to run install scripts (esbuild + tailwind
+# oxide platform binaries, the Tauri CLI). pnpm 10 reads onlyBuiltDependencies;
+# pnpm 11 reads allowBuilds. Both listed so the build works across pnpm versions
+# (the package.json "pnpm" field is no longer honored by pnpm >= 10).
+onlyBuiltDependencies:
+  - '@tailwindcss/oxide'
+  - esbuild
+  - '@tauri-apps/cli'
+allowBuilds:
+  '@tailwindcss/oxide': true
+  esbuild: true
+  '@tauri-apps/cli': true
