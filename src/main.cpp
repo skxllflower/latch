@@ -515,6 +515,13 @@ int run_cli(const std::vector<std::string>& args) {
   // help query never triggers a migration move or a -version subprocess.
   latch::migrate_legacy_binaries();
 
+  // Same chokepoint reclaims ladder scratch (rungc-*) orphaned by a hard
+  // crash/kill that skipped the DirSweeper. Both the CLI and the GUI reach
+  // here on every real command, so a stray parallel instance never has to be
+  // the one that started a download to get the cleanup. Age-guarded (1h) so an
+  // in-flight rung is untouched.
+  latch::sweep_stale_temp();
+
   if (cmd == "bootstrap") {
     return latch::ensure_required() ? 0 : 1;
   }

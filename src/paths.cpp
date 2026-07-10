@@ -2,6 +2,7 @@
 
 #include "process.h"
 
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
@@ -191,6 +192,32 @@ std::string latch_temp_dir() {
   std::error_code ec;
   fs::create_directories(p, ec);
   return path_to_utf8(p);
+}
+
+void sweep_stale_temp() {
+  namespace ch = std::chrono;
+  std::error_code ec;
+  fs::path tmp = vendor_root() / kLatchDir / "tmp";
+  if (!fs::exists(tmp, ec)) return;  // nothing ever created it: nothing to sweep
+
+  // Latch\tmp is exclusively the ladder's rung-3 scratch; nothing else writes
+  // here. An entry older than the cutoff can only be a crash orphan (a live
+  // rung finishes in seconds and bumps the dir's mtime as it downloads), so an
+  // age guard cleanly separates dead orphans from a parallel instance's
+  // in-flight rung. Prefix-gated so a future deliberate tmp entry is spared.
+  const auto cutoff = ch::hours(1);
+  const auto now = fs::file_time_type::clock::now();
+  for (auto& e : fs::directory_iterator(tmp, ec)) {
+    if (ec) break;
+    const std::string name = path_to_utf8(e.path().filename());
+    if (name.rfind("rungc-", 0) != 0) continue;
+    std::error_code age_ec;
+    const auto mtime = fs::last_write_time(e.path(), age_ec);
+    if (age_ec) continue;                 // can't age it: leave it
+    if (now - mtime < cutoff) continue;   // young: a live rung may own it
+    std::error_code rm_ec;
+    fs::remove_all(e.path(), rm_ec);      // best-effort; a locked dir waits for next run
+  }
 }
 
 std::string resolved_ffmpeg() {

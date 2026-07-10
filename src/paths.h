@@ -29,6 +29,13 @@ std::string ytdlp_cache_dir();
 // caller sweeps its own per-run subdir on success, failure, and cancel.
 std::string latch_temp_dir();
 
+// Reclaim orphaned ladder scratch (rungc-* under Latch\tmp) left by a hard
+// crash / SIGKILL that skipped the per-run scope-guard sweep. Only entries
+// older than one hour are removed, so a rung a parallel latch.exe is actively
+// writing is never touched. Called once at CLI startup (the chokepoint every
+// real command reaches). Best-effort and silent.
+void sweep_stale_temp();
+
 // The ffmpeg binary to use. Resolution order:
 //   1. LATCH_FFMPEG env var (explicit override)
 //   2. ffmpeg.exe next to latch.exe (portable override)
