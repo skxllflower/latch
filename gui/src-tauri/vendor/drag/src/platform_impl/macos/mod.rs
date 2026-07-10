@@ -85,11 +85,31 @@ pub fn start_drag<W: HasWindowHandle, F: Fn(DragResult, CursorPosition) + Send +
                     NSImage::initWithData_(NSImage::alloc(nil), data)
                 }
             };
-            let image_size: NSSize = img.size();
+            // WAVdesk: the app composes its custom drag chip as a PNG encoded at
+            // the display's devicePixelRatio (physical px) so it stays crisp on
+            // Retina. But NSImage.size reports a 72-dpi PNG's PIXEL dimensions as
+            // POINTS, so a 2x bitmap would draw at 2x its intended logical size.
+            // Divide the natural size by the window's backing scale so the chip
+            // renders at its logical size, pixel-crisp. (The 1x1 transparent
+            // placeholder used when no chip is supplied is unaffected in practice.)
+            let mut image_size: NSSize = img.size();
+            let backing: f64 = msg_send![window, backingScaleFactor];
+            if backing > 1.0 && image_size.width > 1. && image_size.height > 1. {
+                image_size = NSSize::new(image_size.width / backing, image_size.height / backing);
+                let _: () = msg_send![img, setSize: image_size];
+            }
+            // WAVdesk: sit the chip DOWN-RIGHT of the cursor (cursor near its
+            // top-left) rather than centered on the pointer, matching the Windows
+            // chip's placement so the visual doesn't sit under and obscure the
+            // cursor. Window coords are y-up and the image origin is its
+            // bottom-left, so a top edge just below the cursor means
+            // origin.y = cursor.y - height - gap.
+            const CHIP_GAP_X: f64 = 12.;
+            const CHIP_GAP_Y: f64 = 12.;
             let image_rect = NSRect::new(
                 NSPoint::new(
-                    current_position.x - image_size.width / 2.,
-                    current_position.y - image_size.height / 2.,
+                    current_position.x + CHIP_GAP_X,
+                    current_position.y - image_size.height - CHIP_GAP_Y,
                 ),
                 image_size,
             );

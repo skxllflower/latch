@@ -30,6 +30,7 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
+import { composeMacDragChipPng } from './macDragChipPng';
 
 export const DRAG_STARTED_EVENT = 'wd-drag-started';
 export const DRAG_ENDED_EVENT   = 'wd-drag-ended';
@@ -59,6 +60,21 @@ export interface DragMetadata {
   initialCopyMode?: boolean;
 }
 
+// macOS-only: the chip PNG (Vec<u8> as number[]) composed for the drag armed by
+// the most recent startOverlayDrag. On macOS AppKit renders the OS drag image
+// itself (no follow-window), so start_os_file_drag callers forward this as
+// `preview_png` to have Latch's own chip drawn natively. null on non-macOS
+// (Windows keeps its transparent placeholder — byte-identical) and on
+// composition failure. Set on EVERY startOverlayDrag (to null when not
+// applicable) so a previous drag's chip can never leak into a later one.
+let lastMacChipPng: number[] | null = null;
+
+/// The composed macOS chip PNG for the current drag (null on Windows/Linux and
+/// on composition failure). start_os_file_drag callers pass this as previewPng.
+export function macChipPngForCurrentDrag(): number[] | null {
+  return lastMacChipPng;
+}
+
 /// Show the floating chip + start the cursor-poll thread. Idempotent.
 /// Note: this does NOT initiate the OS drag — the caller invokes
 /// start_os_file_drag separately so it can pass paths + transparency
@@ -66,6 +82,11 @@ export interface DragMetadata {
 /// Lathe outputs row dragging out to Explorer) reuse the same chip
 /// machinery without coupling.
 export async function startOverlayDrag(meta: DragMetadata): Promise<void> {
+  // Compose the macOS native drag-chip PNG in parallel with the chip-show +
+  // overlay IPC below (single-digit-ms compose; overlaps the round-trips so it
+  // adds no serial latency). No-op fast-returns null off macOS. Awaited before
+  // this function resolves so the caller's start_os_file_drag reads it ready.
+  const macChipPromise = composeMacDragChipPng(meta);
   try { await emit(DRAG_STARTED_EVENT, meta); } catch (err) {
     console.warn('[overlay-drag] start broadcast failed:', err);
   }
@@ -93,6 +114,11 @@ export async function startOverlayDrag(meta: DragMetadata): Promise<void> {
   try { await invoke('drag_overlay_start'); } catch (err) {
     console.warn('[overlay-drag] drag_overlay_start failed:', err);
   }
+  // Land the composed macOS chip before returning — the caller invokes
+  // start_os_file_drag right after this resolves and reads it via
+  // macChipPngForCurrentDrag(). Always assigned (null off macOS / on failure)
+  // so no prior drag's chip can leak into this one.
+  try { lastMacChipPng = await macChipPromise; } catch { lastMacChipPng = null; }
 }
 
 /// Hide the chip + stop the cursor-poll thread + broadcast
