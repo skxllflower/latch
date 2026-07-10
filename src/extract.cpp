@@ -65,6 +65,13 @@ std::string essence_of(const Attempt& at) {
   return "exit " + std::to_string(at.rc);
 }
 
+// One rung of a resilience ladder: a human label for the log and the yt-dlp
+// -f selector it tries. Shared by the audio and video ladders below.
+struct Rung {
+  std::string label;
+  std::string selector;
+};
+
 // Target container + ffmpeg encoder for a rung-3 local extraction. `codec_args`
 // empty means "let the muxer pick the default encoder for the extension".
 struct AudioTarget {
@@ -344,50 +351,29 @@ ExtractResult extract(const std::string& url,
     return at;
   };
 
-  // ---- Video mode: single attempt (its selector already chains to /best) ---
-  if (opts.video) {
+  // Build argv for one VIDEO rung: a muxed/merged download yt-dlp writes
+  // straight to out_template. This IS the media a chop session wants (its
+  // audio companion is pulled later by `latch clip --preview`), so unlike the
+  // audio ladder there is no local re-extract step — the rungs just relax the
+  // format selector.
+  auto build_video_argv = [&](const std::string& selector) {
     std::vector<std::string> argv = base;
     argv.insert(argv.end(), extras.begin(), extras.end());
     argv.push_back("-o");
     argv.push_back(out_template);
     argv.push_back("-f");
-    if (opts.video_max_height > 0) {
-      char fmt[160];
-      std::snprintf(fmt, sizeof(fmt),
-        "bestvideo[height<=%d]+bestaudio/best[height<=%d]/bestvideo*+bestaudio/best",
-        opts.video_max_height, opts.video_max_height);
-      argv.push_back(fmt);
-    } else {
-      argv.push_back("bestvideo*+bestaudio/best");
-    }
+    argv.push_back(selector);
     if (!opts.video_format.empty()) {
       argv.push_back("--merge-output-format");
       argv.push_back(opts.video_format);
     }
     argv.push_back(url);
+    return argv;
+  };
 
-    Attempt at = run_ytdlp(argv);
-    if (at.cancelled) { progress_cancelled(); return ExtractResult::Cancelled; }
-    if (!at.had_error && !at.final_path.empty()) {
-      progress_done(at.final_path);
-      return ExtractResult::Ok;
-    }
-    progress_error(at.final_path.empty() && !at.had_error
-      ? std::string("yt-dlp finished but no output path was reported")
-      : std::string("download failed: ") + essence_of(at));
-    return ExtractResult::DownloadFailed;
-  }
-
-  // ---- Audio mode: resilience ladder, first success wins -------------------
-  // Rung 1: -f bestaudio               (audio-only; the historical default)
-  // Rung 2: -f bestaudio/best          (fall back to a muxed stream, still -x)
-  // Rung 3: -f best, no -x; download a muxed file and extract audio locally
-  //         with the shared-bin ffmpeg. Covers the case where yt-dlp's own
-  //         audio post-processor is what's failing, or where nothing but a
-  //         progressive stream is offered at all.
-  std::string last_essence;
-
-  auto run_ytdlp_rung = [&](const char* selector) -> Attempt {
+  // Build argv for one AUDIO rung: yt-dlp extracts the audio track (-x) to
+  // out_template.
+  auto build_audio_argv = [&](const std::string& selector) {
     std::vector<std::string> argv = base;
     argv.insert(argv.end(), extras.begin(), extras.end());
     argv.push_back("-o");
@@ -400,25 +386,80 @@ ExtractResult extract(const std::string& url,
       argv.push_back(opts.audio_format);
     }
     argv.push_back(url);
-    return run_ytdlp(argv);
+    return argv;
   };
 
-  struct Rung { const char* label; const char* selector; };
-  const Rung rungs[] = {
-    {"1/3 bestaudio (audio-only)",  "bestaudio"},
-    {"2/3 bestaudio/best (fallback chain)", "bestaudio/best"},
-  };
-
-  for (const auto& r : rungs) {
-    progress_log("rung", std::string(r.label) + ": -f " + r.selector);
-    Attempt at = run_ytdlp_rung(r.selector);
-    if (at.cancelled) { progress_cancelled(); return ExtractResult::Cancelled; }
-    if (!at.had_error && !at.final_path.empty()) {
-      progress_done(at.final_path);
-      return ExtractResult::Ok;
+  // Try each selector rung in turn; first success wins. Every rung is its OWN
+  // yt-dlp invocation with its own receipts, so an extractor error that aborts
+  // one selector (not merely a format-unavailable) still lets the next rung
+  // recover — yt-dlp's in-selector `A/B/C` chaining can't do that. Returns:
+  //    1  a rung landed a file (progress_done already emitted)
+  //    0  every rung failed (last_essence holds the cause to surface)
+  //   -1  the user cancelled mid-rung
+  auto run_ladder = [&](const std::vector<Rung>& rungs,
+                        const std::function<std::vector<std::string>(const std::string&)>& build,
+                        std::string& last_essence) -> int {
+    for (const auto& r : rungs) {
+      progress_log("rung", r.label + ": -f " + r.selector);
+      Attempt at = run_ytdlp(build(r.selector));
+      if (at.cancelled) return -1;
+      if (!at.had_error && !at.final_path.empty()) {
+        progress_done(at.final_path);
+        return 1;
+      }
+      last_essence = essence_of(at);
+      progress_log("rung", r.label + " failed: " + last_essence);
     }
-    last_essence = essence_of(at);
-    progress_log("rung", std::string(r.label) + " failed: " + last_essence);
+    return 0;
+  };
+
+  // ---- Video mode: resilience ladder (mirrors audio, first success wins) ---
+  // Chop was failing here: the old video path was a SINGLE yt-dlp attempt, so
+  // one aborted extraction sank the whole session with no recovery — while the
+  // audio path already laddered. Each rung below is a fresh invocation that
+  // relaxes the selector: the quality target first, then any merge, then a
+  // bare `best` single muxed stream as the last resort.
+  if (opts.video) {
+    std::vector<Rung> vrungs;
+    if (opts.video_max_height > 0) {
+      char cap[48];
+      std::snprintf(cap, sizeof(cap), "[height<=%d]", opts.video_max_height);
+      vrungs.push_back({std::string("1/3 ") + std::to_string(opts.video_max_height) +
+                          "p (bestvideo+bestaudio)",
+                        std::string("bestvideo") + cap + "+bestaudio/best" + cap});
+      vrungs.push_back({"2/3 uncapped bestvideo+bestaudio", "bestvideo*+bestaudio/best"});
+      vrungs.push_back({"3/3 best (any single muxed stream)", "best"});
+    } else {
+      vrungs.push_back({"1/2 bestvideo+bestaudio", "bestvideo*+bestaudio/best"});
+      vrungs.push_back({"2/2 best (any single muxed stream)", "best"});
+    }
+
+    std::string last_essence;
+    int rc = run_ladder(vrungs, build_video_argv, last_essence);
+    if (rc < 0) { progress_cancelled(); return ExtractResult::Cancelled; }
+    if (rc == 1) return ExtractResult::Ok;
+    progress_error("all video download methods failed. last error: " +
+      (last_essence.empty() ? std::string("no video stream could be downloaded")
+                            : last_essence));
+    return ExtractResult::DownloadFailed;
+  }
+
+  // ---- Audio mode: resilience ladder, first success wins -------------------
+  // Rung 1: -f bestaudio               (audio-only; the historical default)
+  // Rung 2: -f bestaudio/best          (fall back to a muxed stream, still -x)
+  // Rung 3: -f best, no -x; download a muxed file and extract audio locally
+  //         with the shared-bin ffmpeg. Covers the case where yt-dlp's own
+  //         audio post-processor is what's failing, or where nothing but a
+  //         progressive stream is offered at all.
+  std::string last_essence;
+  {
+    const std::vector<Rung> rungs = {
+      {"1/3 bestaudio (audio-only)", "bestaudio"},
+      {"2/3 bestaudio/best (fallback chain)", "bestaudio/best"},
+    };
+    int rc = run_ladder(rungs, build_audio_argv, last_essence);
+    if (rc < 0) { progress_cancelled(); return ExtractResult::Cancelled; }
+    if (rc == 1) return ExtractResult::Ok;
   }
 
   // Rung 3: download a muxed video into our own temp area, then extract the
