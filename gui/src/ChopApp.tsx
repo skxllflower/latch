@@ -176,6 +176,10 @@ export default function ChopApp() {
   // just the dragged region's slice).
   const waveContainerRef = useRef<HTMLDivElement>(null);
   const vpRef = useRef<{ tStart: number; tEnd: number } | null>(null);
+  // Absolute viewport setter captured from the waveform's overlay render prop
+  // (span-preserving, clamped) — drives Shift+arrow region-switch viewport
+  // follow. Null until the first overlay render.
+  const setViewportSecRef = useRef<((startSec: number, endSec: number) => void) | null>(null);
 
   const {
     regions, selectedId, setRegions, select, createDefault, remove,
@@ -743,6 +747,40 @@ export default function ChopApp() {
     }
   }, [hasVideo, select]);
 
+  // Shift+Left/Right: switch selection to the previous/next region by start
+  // time, wrapping, arming it (same path as any other activation), then follow
+  // it with the viewport. Ported from WAVdesk's LatchChopApp region-switch.
+  // Viewport rule: fully visible = don't move; fully off-screen = center;
+  // partially visible = the minimal scroll that brings it fully on-screen (a
+  // region wider than the viewport pins its start edge).
+  const cycleRegionSelection = useCallback((dir: 1 | -1) => {
+    const sorted = [...regionsRef.current].sort((a, b) => a.startSec - b.startSec);
+    if (sorted.length === 0) return;
+    const cur = selectedIdRef.current;
+    const idx = sorted.findIndex((x) => x.id === cur);
+    const pick = sorted[idx < 0
+      ? (dir === 1 ? 0 : sorted.length - 1)
+      : (idx + dir + sorted.length) % sorted.length];
+    onActivate(pick.id);
+    const vp = vpRef.current;
+    const setVp = setViewportSecRef.current;
+    if (!vp || !setVp) return;
+    const span = Math.max(1e-3, vp.tEnd - vp.tStart);
+    if (pick.startSec >= vp.tStart && pick.endSec <= vp.tEnd) return; // fully visible
+    if (pick.endSec <= vp.tStart || pick.startSec >= vp.tEnd) {       // fully off-screen → center
+      const mid = (pick.startSec + pick.endSec) / 2;
+      setVp(mid - span / 2, mid + span / 2);
+      return;
+    }
+    // Partially visible: minimal shift (a region wider than the viewport, or
+    // hanging off the left, pins its start edge; otherwise pin the end edge).
+    if (pick.endSec - pick.startSec >= span || pick.startSec < vp.tStart) {
+      setVp(pick.startSec, pick.startSec + span);
+    } else {
+      setVp(pick.endSec - span, pick.endSec);
+    }
+  }, [onActivate]);
+
   // Explicit "play this region looped" — the per-row ▶ button.
   const playRegionLooped = useCallback((r: ChopRegion) => {
     select(r.id);
@@ -931,6 +969,16 @@ export default function ChopApp() {
         return;
       }
       if (phase !== 'ready') return;
+      // Shift+Left/Right (bare): switch selection to the previous/next region
+      // by start time, wrapping, with the minimal-move viewport follow. Takes
+      // priority over the coarse nudge — Shift stays the coarse step modifier
+      // ONLY on the edge nudges (Ctrl/Alt) below.
+      if (e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey
+          && (e.code === 'ArrowLeft' || e.code === 'ArrowRight') && tag !== 'SELECT') {
+        e.preventDefault();
+        cycleRegionSelection(e.code === 'ArrowRight' ? 1 : -1);
+        return;
+      }
       // Region nudge: with a region selected, arrows move it (Shift =
       // coarse 100ms, plain = 10ms; Ctrl = start edge only, Alt = end edge
       // only). Playhead / frame-step arrows still apply with no selection.
@@ -1005,7 +1053,7 @@ export default function ChopApp() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [selectedId, phase, hasVideo, playPause, retriggerSelected, nudge, removeAndAdvance,
-      undo, redo, pushHistory, setRegions, durationSec, cursorSec]);
+      undo, redo, pushHistory, setRegions, durationSec, cursorSec, cycleRegionSelection]);
 
   const auditionRegion = auditionId ? regions.find((r) => r.id === auditionId) ?? null : null;
 
@@ -1581,6 +1629,7 @@ export default function ChopApp() {
                 : (isPlaying && onOurFile ? undefined : () => cursorSec)}
               overlay={(vp) => {
                 vpRef.current = { tStart: vp.tStart, tEnd: vp.tEnd };
+                setViewportSecRef.current = vp.setViewportSec;
                 return (
                   <ChopRegionOverlay
                     regions={regions}

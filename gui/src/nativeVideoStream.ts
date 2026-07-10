@@ -28,6 +28,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { latheStatus } from './latheStatus';
 import { staleWrapFlushNeeded } from './liveLoopFlush';
+import { isMac } from './platform';
 
 export interface NativeStreamConfig {
   path: string;
@@ -169,6 +170,7 @@ export class NativeVideoEngine {
   private ac: AbortController | null = null;
   private connToken = 0;      // bumped on (re)connect; stale readers self-cancel
   private raf = 0;
+  private frameTimer = 0; // macOS rAF-park fallback (see scheduleFrame)
   private destroyed = false;
 
   // Transport state mirrored from the GUI. rate is tape-style (the daemon
@@ -259,9 +261,31 @@ export class NativeVideoEngine {
     this._playing = true; // autoplay on open
     void this.connect(0);
     void this.startAudio();
-    this.raf = requestAnimationFrame(this.present);
+    this.scheduleFrame();
     this.cb.onState?.(true);
   }
+
+  // Drive present(). rAF is the primary tick (vsync-aligned, smooth). But on
+  // macOS WKWebView PARKS requestAnimationFrame for a satellite window whose
+  // compositor isn't ticking (the same reason ChopApp's reveal uses a timer
+  // fallback) — the rAF loop fires once, re-arms, and then never fires again.
+  // That froze the whole engine: frames still buffer, but present() never runs
+  // to display them OR start the clock, so the picture stays black and the
+  // playhead never moves. A setTimeout keeps the loop alive there; whichever
+  // fires first runs the tick and cancels the other. Windows/WebView2 rAF is
+  // reliable, so the fallback is mac-only and leaves that path untouched.
+  private scheduleFrame(): void {
+    if (this.destroyed) return;
+    this.raf = requestAnimationFrame(this.frameTick);
+    if (isMac) this.frameTimer = window.setTimeout(this.frameTick, 24);
+  }
+
+  private frameTick = (): void => {
+    if (this.raf) { cancelAnimationFrame(this.raf); this.raf = 0; }
+    if (this.frameTimer) { window.clearTimeout(this.frameTimer); this.frameTimer = 0; }
+    this.present();
+    this.scheduleFrame();
+  };
 
   // Subscribe to the daemon's video-audio position, then ask it to start playing
   // this file's audio. Best-effort: if there's no audio track the daemon reports
@@ -662,7 +686,8 @@ export class NativeVideoEngine {
     this.destroyed = true;
     this.connToken++;
     if (this.seekTimer) { window.clearTimeout(this.seekTimer); this.seekTimer = 0; }
-    if (this.raf) cancelAnimationFrame(this.raf);
+    if (this.raf) { cancelAnimationFrame(this.raf); this.raf = 0; }
+    if (this.frameTimer) { window.clearTimeout(this.frameTimer); this.frameTimer = 0; }
     this.ac?.abort(); // server kills the decoder when the socket drops
     if (this.unlistenAudio) { this.unlistenAudio(); this.unlistenAudio = null; }
     void invoke('stop_video_audio').catch(() => {});
@@ -1004,6 +1029,6 @@ export class NativeVideoEngine {
     }
 
     if (now - this.lastTimeEmit > 50) { this.lastTimeEmit = now; this.cb.onTime?.(this.clock); }
-    this.raf = requestAnimationFrame(this.present);
+    // Re-scheduling is owned by frameTick (rAF + mac timer fallback), not here.
   };
 }
