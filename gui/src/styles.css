@@ -48,6 +48,18 @@ html, body, #root {
   background: transparent;
 }
 
+/* macOS: undecorated NSWindows have square corners (Windows 11 DWM rounds
+   top-level windows automatically). Round the shell ourselves: the window is
+   transparent, so clipping body + #root to a radius shapes the visible app.
+   The drag-overlay window is excluded (main.tsx never tags it) so its
+   transparent chip surface never clips. */
+html.wd-mac,
+html.wd-mac body,
+html.wd-mac #root {
+  border-radius: 10px;
+  overflow: hidden;
+}
+
 /* Compact themed scrollbars (WAVdesk's 5px convention) — the default
    Chromium bars read as a glitch against the dark chrome. */
 ::-webkit-scrollbar { width: 5px; height: 5px; }
