@@ -112,6 +112,21 @@ const SEEK_DEBOUNCE_RAW_MS = 120;
 const STREAM_STALL_MS = 600;
 const STREAM_STALL_SLOW_MS = 4000;
 const STREAM_STALL_STARVED_SEC = 0.25;
+// Churn backoff for the stall watchdog. A watchdog reconnect forces a keyframe
+// re-decode, which on a heavy file (even with VideoToolbox) can itself exceed
+// the fast stall tier — so the respawn's OWN first decode looks like a fresh
+// stall and the watchdog reconnect-loops: keyframe decode → watchdog → abort →
+// keyframe decode → watchdog = the loop-wrap freeze. Guards: (a) an intentional
+// re-cue/seek (loop wrap included) arms the SLOW tier via seekInFlight(), so its
+// decode-forward is never mistaken for a wedge; (b) cap reconnects per rolling
+// window, and on consecutive stalls with no clean playback between them GROW the
+// fast tier (600 → 1200 → 2400) so each retry gives the respawn more room; a
+// clean stretch resets it. Beyond the cap, HOLD the stream (the frozen frame is
+// the buffering surface) — more churn only deepens the hole.
+const STREAM_STALL_MAX_MS = 2400;
+const STALL_RECONNECT_CAP = 5;
+const STALL_RECONNECT_WINDOW_MS = 60000;
+const STALL_CLEAN_PLAY_MS = 3000;
 
 // A clock within this of the true duration is treated as end-of-file: seeking
 // or playing backward out of it takes the fresh-reconnect path (see seek()),
@@ -289,6 +304,17 @@ export class NativeVideoEngine {
   // in-flight connect) so only a wedged read() lets it go stale.
   private lastReadAt = 0;
   private connFetching = false;
+  // Stall-watchdog churn backoff (see STREAM_STALL_MAX_MS): reconnect timestamps
+  // in the rolling window, the consecutive-stall streak that grows the fast
+  // tier, the running clean-playback stamp that resets it, and the past-cap hold.
+  private stallReconnects: number[] = [];
+  private stallStreak = 0;
+  private stallCleanSince = 0;
+  private stallHeld = false;
+  // Perf receipt budget: throttle stamp for the present()-tick timing warn (a
+  // multi-second synchronous main-thread block would otherwise freeze the UI
+  // with NO log line — the "silent hang").
+  private lastSlowTickLog = 0;
   // Paused mount: idle the decoder AFTER the first frame is buffered (pausing
   // before it could leave `frames` empty forever — no onReady, stuck Loading).
   private deferInitialPause = false;
@@ -329,9 +355,30 @@ export class NativeVideoEngine {
   private frameTick = (): void => {
     if (this.raf) { cancelAnimationFrame(this.raf); this.raf = 0; }
     if (this.frameTimer) { window.clearTimeout(this.frameTimer); this.frameTimer = 0; }
+    // Budgeted perf receipt (mac): time the present() tick. A single tick over
+    // 100ms is a main-thread stall — the kind that freezes the whole UI with no
+    // other log line (the "silent hang"). Throttled to one line per 2s.
+    const t0 = isMac ? performance.now() : 0;
     this.present();
+    if (isMac) {
+      const took = performance.now() - t0;
+      if (took > 100 && performance.now() - this.lastSlowTickLog > 2000) {
+        this.lastSlowTickLog = performance.now();
+        this.log('warn', `present tick took ${Math.round(took)}ms (frames=${this.frames.length}) - main-thread stall`);
+      }
+    }
     this.scheduleFrame();
   };
+
+  // A seek/re-cue is being serviced (loop-wrap re-cue, scrub, retrigger, or a
+  // fresh connection's first decode): from seek()'s local snap (holdingForSeek +
+  // the debounce timer still pending) through the decoder's marker coming back.
+  // Arms the stall watchdog's SLOW tier so an intentional keyframe re-decode is
+  // never mistaken for a wedged fetch body — the loop-wrap churn fix.
+  private seekInFlight(): boolean {
+    return this.holdingForSeek || this.pendingMarkers > 0 ||
+      this.seekTimer !== 0 || this.frameIdx === 0;
+  }
 
   // Subscribe to the daemon's video-audio position, then ask it to start playing
   // this file's audio. Best-effort: if there's no audio track the daemon reports
@@ -989,12 +1036,33 @@ export class NativeVideoEngine {
     const now = performance.now();
     const dt = (now - this.lastNow) / 1000;
 
+    // Churn-backoff bookkeeping: a clean playback stretch (bytes flowing AND the
+    // buffer not starved) resets the consecutive-stall tier growth and releases
+    // a past-cap hold. Reset the running stamp the moment health lapses.
+    if (isMac && this._playing && this.dir > 0) {
+      const healthy = now - this.lastReadAt < STREAM_STALL_MS &&
+                      this.bufferedAhead() >= STREAM_STALL_STARVED_SEC;
+      if (healthy) {
+        if (this.stallCleanSince === 0) this.stallCleanSince = now;
+        if (now - this.stallCleanSince >= STALL_CLEAN_PLAY_MS) {
+          this.stallStreak = 0;
+          this.stallHeld = false;
+        }
+      } else {
+        this.stallCleanSince = 0;
+      }
+    }
+
     // WKWebView stream-stall watchdog (see STREAM_STALL_MS): playing forward,
     // buffer starved, no stream bytes — the fetch body is wedged; a fresh
-    // connection is the only cure. Budgeted receipt: one warn per fire.
-    const stallMs = this.pendingMarkers > 0 || this.frameIdx === 0
-      ? STREAM_STALL_SLOW_MS   // legitimate byte gaps: seek decode-forward / first decode
-      : STREAM_STALL_MS;
+    // connection is the only cure. A seek/re-cue in flight (the loop-wrap re-cue
+    // included) arms the SLOW tier — its keyframe decode-forward is a LEGITIMATE
+    // byte gap. Otherwise the fast tier applies, grown by the consecutive-stall
+    // streak so a heavy keyframe re-decode can't be mistaken for a wedge.
+    const grownStall = STREAM_STALL_MS * (1 << Math.min(this.stallStreak, 4));
+    const stallMs = this.seekInFlight()
+      ? STREAM_STALL_SLOW_MS
+      : Math.min(STREAM_STALL_MAX_MS, grownStall);
     if (
       isMac && this._playing && this.dir > 0 && !this.connFetching &&
       this.endpointBase !== '' &&
@@ -1002,11 +1070,26 @@ export class NativeVideoEngine {
       this.bufferedAhead() < STREAM_STALL_STARVED_SEC &&
       !(this._duration > 0 && this.clock >= this._duration - 1)
     ) {
-      this.log('warn',
-        `stream stalled (${Math.round(now - this.lastReadAt)}ms without bytes, ` +
-        `${this.frames.length} frames buffered) - reconnecting at ${this.clock.toFixed(2)}s`);
-      this.lastReadAt = now; // cooldown; connect() keeps it fresh from here
-      void this.connect(this.clock);
+      this.stallReconnects = this.stallReconnects.filter((t) => now - t < STALL_RECONNECT_WINDOW_MS);
+      if (this.stallReconnects.length >= STALL_RECONNECT_CAP) {
+        // Reconnect cap hit: more respawns only deepen the churn. HOLD the
+        // stream (the held frame is the buffering surface) until the rolling
+        // window frees a slot or a clean stretch recovers. Budgeted: one line.
+        if (!this.stallHeld) {
+          this.stallHeld = true;
+          this.log('warn',
+            `stall reconnect cap (${STALL_RECONNECT_CAP}/${STALL_RECONNECT_WINDOW_MS / 1000}s) reached at ${this.clock.toFixed(2)}s - holding stream`);
+        }
+        this.lastReadAt = now; // cooldown; don't spin the watchdog
+      } else {
+        this.stallReconnects.push(now);
+        this.stallStreak++;
+        this.log('warn',
+          `stream stalled (${Math.round(now - this.lastReadAt)}ms without bytes, ` +
+          `${this.frames.length} frames buffered) - reconnecting at ${this.clock.toFixed(2)}s (streak ${this.stallStreak})`);
+        this.lastReadAt = now; // cooldown; connect() keeps it fresh from here
+        void this.connect(this.clock);
+      }
     }
 
     // Hold until the first frame is buffered, then start the clock — so there's
