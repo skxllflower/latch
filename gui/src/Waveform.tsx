@@ -18,6 +18,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { playbackEngine } from './playbackEngine';
 import { isMac } from './platform';
+import { logToFile } from './frontendLog';
 
 export interface WaveAudioFile {
   path: string;
@@ -57,6 +58,16 @@ interface WaveData {
 }
 
 const MIN_SPAN_SEC = 0.02;
+// A healthy full-file peaks tier is one bin per requested slot (the fetch asks
+// for >= 4000 — see the load-once effect). A DEGENERATE tier (a short/truncated
+// array of a few to a few hundred bins, e.g. an upstream decode that failed and
+// returned a stub) must never reach the renderer: foldColumns would interpolate
+// it across the whole width and the quad-smoothed envelope would balloon into a
+// giant triangular ramp wedge that SWALLOWS the real peaks (the owner's
+// mirrored-triangle corruption). Any tier below this floor is rejected as
+// no-data so the lane draws clean instead of garbage. Well under the 4000-bin
+// minimum a real tier always carries, so it never rejects a healthy fetch.
+const MIN_TIER_BINS = 512;
 // Exponential lerp factor per frame for the zoom/pan tween (WAVdesk's value).
 // 0.18 lands between snappy and floaty — notches read direct, but pan/zoom
 // pick up the "drag through molasses" glide that feels buttery.
@@ -370,8 +381,25 @@ export const WaveformView: React.FC<WaveformViewProps> = ({
       path: filePath, points: bins, startSec: 0, endSec: duration, perChannel: channelSplit,
     }).then((data) => {
       if (stale || !data?.success) return;
-      const cp = data.channel_points && data.channel_points.length >= 2 ? data.channel_points : null;
-      peaksRef.current = { points: data.points ?? [], channelPoints: cp, tStart: 0, tEnd: duration };
+      const pts = data.points ?? [];
+      // Reject a degenerate tier at the DATA layer (never paint garbage): a
+      // short array folds into the triangular ramp wedge that swallows the real
+      // peaks. Below MIN_TIER_BINS (and well below what was requested) = a
+      // broken/truncated tier — leave peaks null so the lane stays clean, with a
+      // receipt in latch.log so a field recurrence is diagnosable, not silent.
+      if (pts.length > 0 && pts.length < Math.min(bins, MIN_TIER_BINS)) {
+        logToFile('warn', 'Waveform',
+          `${filePath}: degenerate peaks tier (${pts.length} bins for a ${duration.toFixed(2)}s file, requested ${bins}) - skipping render to avoid triangle corruption`);
+        return;
+      }
+      // Only adopt per-channel bins whose lengths MATCH the combined tier — the
+      // split renderer folds each channel with n = combined length, so a
+      // mismatched-length channel array would drift the time axis and wedge into
+      // the same triangle. A mismatch falls back to the single combined lane.
+      const cp = data.channel_points && data.channel_points.length >= 2 &&
+                 data.channel_points.every((c) => c.length === pts.length)
+        ? data.channel_points : null;
+      peaksRef.current = { points: pts, channelPoints: cp, tStart: 0, tEnd: duration };
       draw();
     }).catch(() => { /* peaks are cosmetic; the overlay still works */ });
     return () => { stale = true; };
