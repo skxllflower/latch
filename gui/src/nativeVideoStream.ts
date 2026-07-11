@@ -111,7 +111,28 @@ const SEEK_DEBOUNCE_RAW_MS = 120;
 // WebView2's fetch streaming has no such wedge and Windows stays untouched.
 const STREAM_STALL_MS = 600;
 const STREAM_STALL_SLOW_MS = 4000;
-const STREAM_STALL_STARVED_SEC = 0.25;
+// Lowered from 0.25 with the forward frame-count cap below: an 8-frame forward
+// buffer is ~0.27s@30fps but only ~0.13s@60fps, so a 0.25 "starved" line would
+// read a HEALTHY capped 60fps buffer as starved (breaking the watchdog's clean-
+// play reset). 0.1 sits below the cap at any sane fps yet still means "nearly
+// dry" for the reconnect-fire test — the watchdog only fires once the buffer is
+// genuinely near-empty AND bytes have stopped, never on deliberate backpressure.
+const STREAM_STALL_STARVED_SEC = 0.1;
+// Forward frame-buffer ceiling (GC / RSS hygiene). Bounding only by
+// BUFFER_AHEAD_SEC lets the forward buffer fill to ~18 frames (0.6s@30fps); at
+// 3.3MB/frame (1152x720x4) that pins ~60MB of live ImageBitmaps (the field
+// bufLen:16 = 53MB). 8 frames is the depth presentation actually needs (it
+// matches the decode-warmup start floor) and holds ~26MB. Reverse keeps its
+// deep seconds-based buffer — backward GOP bursts need the runway.
+const MAX_BUFFERED_FRAMES_FWD = 8;
+// Reusable RGBA read-buffer ring (the GC-storm fix). The reader used to COPY
+// each frame's payload into a FRESH Uint8Array(frameSize) every frame —
+// ~100MB/s of stop-the-world heap garbage at 30fps. A small ring is reused
+// instead: createImageBitmap SNAPSHOTS the ImageData, so a slot is free the
+// instant its await resolves (2 would suffice for the double-buffer; 4 for slack).
+const FRAME_BUF_RING = 4;
+// Memory receipt cadence: one churn/pool line every 10s during playback.
+const MEM_RECEIPT_MS = 10000;
 // Churn backoff for the stall watchdog. A watchdog reconnect forces a keyframe
 // re-decode, which on a heavy file (even with VideoToolbox) can itself exceed
 // the fast stall tier — so the respawn's OWN first decode looks like a fresh
@@ -207,6 +228,15 @@ export class NativeVideoEngine {
   private h = 0;
   private fps = 30;
   private frameSize = 0;
+  // Reusable RGBA read-buffer ring + memory-receipt counters (see FRAME_BUF_RING
+  // / MEM_RECEIPT_MS). The ring reuses payload buffers across frames instead of
+  // allocating a fresh 3.3MB Uint8Array each; the counters feed the 10s receipt.
+  private bufRing: Uint8Array[] = [];
+  private bufRingIdx = 0;
+  private memFramesDecoded = 0;   // frames pushed since the last receipt
+  private memBufFresh = 0;        // ring buffers newly allocated since last receipt
+  private memBufReused = 0;       // ring buffers reused since last receipt
+  private lastMemReceiptAt = 0;
   private _duration = 0;
   private _playing = false;
   private clock = 0;          // playback position, seconds
@@ -840,6 +870,25 @@ export class NativeVideoEngine {
     this.frames = [];
   }
 
+  // A frameSize-matched reusable read buffer (see FRAME_BUF_RING). The reader
+  // fills this instead of a fresh Uint8Array per frame; createImageBitmap
+  // snapshots the ImageData built over it, so by the time the read() → decode
+  // await resolves the slot is free for reuse a full ring-lap later. A slot is
+  // rebuilt only when frameSize changes (a height reconnect), so a stale view
+  // can never outrun the payload.
+  private nextRingBuf(): Uint8Array {
+    let b = this.bufRing[this.bufRingIdx];
+    if (!b || b.length !== this.frameSize) {
+      b = new Uint8Array(this.frameSize);
+      this.bufRing[this.bufRingIdx] = b;
+      this.memBufFresh++;
+    } else {
+      this.memBufReused++;
+    }
+    this.bufRingIdx = (this.bufRingIdx + 1) % FRAME_BUF_RING;
+    return b;
+  }
+
   private bufferedAhead(): number {
     if (this.frames.length === 0) return 0;
     // With a decoder loop armed the buffer holds wrapped cycles whose
@@ -925,14 +974,17 @@ export class NativeVideoEngine {
       const reader = resp.body.getReader();
       const queue: Uint8Array[] = [];
       let queued = 0;
-      const readExact = async (n: number): Promise<Uint8Array | null> => {
+      // `dest`, when given, receives the bytes instead of a fresh allocation —
+      // the per-frame payload reuses a ring buffer (nextRingBuf) to kill the
+      // 3.3MB/frame heap churn. The small header read passes no dest.
+      const readExact = async (n: number, dest?: Uint8Array): Promise<Uint8Array | null> => {
         while (queued < n) {
           const { value, done } = await reader.read();
           this.lastReadAt = performance.now();
           if (done) return null;
           if (value && value.length) { queue.push(value); queued += value.length; }
         }
-        const out = new Uint8Array(n);
+        const out = dest && dest.length === n ? dest : new Uint8Array(n);
         let off = 0;
         while (off < n) {
           const head = queue[0];
@@ -947,12 +999,17 @@ export class NativeVideoEngine {
       };
 
       while (token === this.connToken && !this.destroyed) {
-        // Backpressure: don't read past BUFFER_AHEAD beyond the clock — except
-        // while waiting out a seek, when the pipe must drain to reach the
-        // marker no matter how full the (about-to-be-cleared) buffer is.
+        // Backpressure: don't read past the buffer ceiling — except while
+        // waiting out a seek, when the pipe must drain to reach the marker no
+        // matter how full the (about-to-be-cleared) buffer is. Forward is capped
+        // by FRAME COUNT (MAX_BUFFERED_FRAMES_FWD) so live ImageBitmap memory
+        // stays bounded regardless of fps/decode-run-ahead; reverse keeps the
+        // deep seconds-based runway for whole-GOP backward bursts.
         while (
           token === this.connToken && !this.destroyed &&
-          this.bufferedAhead() > (this.dir < 0 ? BUFFER_AHEAD_REVERSE_SEC : BUFFER_AHEAD_SEC) &&
+          (this.dir < 0
+            ? this.bufferedAhead() > BUFFER_AHEAD_REVERSE_SEC
+            : this.frames.length >= MAX_BUFFERED_FRAMES_FWD) &&
           !(this.persistent && (this.holdingForSeek || this.pendingMarkers > 0))
         ) {
           this.lastReadAt = performance.now(); // idle on purpose — not a stall
@@ -982,12 +1039,12 @@ export class NativeVideoEngine {
             continue;
           }
           if (len !== this.frameSize) { this.cb.onError?.('frame stream desync'); break; }
-          payload = await readExact(len);
+          payload = await readExact(len, this.nextRingBuf());
           if (!payload) break;
           if (this.holdingForSeek || this.pendingMarkers > 0) continue; // stale
         } else {
           frameT = this.streamStart + this.frameIdx / this.fps;
-          payload = await readExact(this.frameSize);
+          payload = await readExact(this.frameSize, this.nextRingBuf());
           if (!payload) break; // EOF (end of video in the raw dialect)
         }
         if (token !== this.connToken) break;
@@ -1000,6 +1057,7 @@ export class NativeVideoEngine {
         if (token !== this.connToken || this.destroyed) { bmp.close(); break; }
         this.frames.push({ t: frameT, bmp });
         this.frameIdx++;
+        this.memFramesDecoded++;
         // Paused mount: first frame is in (present() can paint it and fire
         // onReady) — NOW idle the decoder. Re-check _playing live: a play()
         // racing the first frame must not be immediately re-paused.
@@ -1090,6 +1148,25 @@ export class NativeVideoEngine {
         this.lastReadAt = now; // cooldown; connect() keeps it fresh from here
         void this.connect(this.clock);
       }
+    }
+
+    // Memory receipt (budgeted, removable): every MEM_RECEIPT_MS during
+    // playback report frames decoded, ring reuse, and approximate MB moved, so a
+    // churn regression (fresh-alloc creeping back in) shows up in latch.log.
+    // memBufFresh should read ~FRAME_BUF_RING once at warmup, then 0.
+    if (this._playing && now - this.lastMemReceiptAt > MEM_RECEIPT_MS) {
+      if (this.lastMemReceiptAt !== 0 && this.frameSize > 0) {
+        const mb = (n: number) => (n * this.frameSize / 1e6).toFixed(1);
+        const secs = Math.round((now - this.lastMemReceiptAt) / 1000);
+        this.log('info',
+          `mem: ${this.memFramesDecoded} frames decoded/${secs}s (~${mb(this.memFramesDecoded)}MB moved via pooled ring), ` +
+          `ring ${this.bufRing.length}/${FRAME_BUF_RING} bufs (${this.memBufFresh} fresh/${this.memBufReused} reused), ` +
+          `live ${this.frames.length} frames (~${mb(this.frames.length)}MB bitmaps)`);
+      }
+      this.lastMemReceiptAt = now;
+      this.memFramesDecoded = 0;
+      this.memBufFresh = 0;
+      this.memBufReused = 0;
     }
 
     // Hold until the first frame is buffered, then start the clock — so there's
