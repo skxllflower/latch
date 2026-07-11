@@ -29,6 +29,7 @@ import { listen } from '@tauri-apps/api/event';
 import { latheStatus } from './latheStatus';
 import { staleWrapFlushNeeded } from './liveLoopFlush';
 import { isMac } from './platform';
+import { logToFile } from './frontendLog';
 
 export interface NativeStreamConfig {
   path: string;
@@ -111,6 +112,11 @@ const SEEK_DEBOUNCE_RAW_MS = 120;
 const STREAM_STALL_MS = 600;
 const STREAM_STALL_SLOW_MS = 4000;
 const STREAM_STALL_STARVED_SEC = 0.25;
+
+// A clock within this of the true duration is treated as end-of-file: seeking
+// or playing backward out of it takes the fresh-reconnect path (see seek()),
+// because the persistent decoder parked at EOF has a WKWebView-wedgeable body.
+const EOF_EPS_SEC = 0.05;
 
 // The AUDIO pipeline's decode look-ahead in content seconds: the Rust deck's
 // PCM queue (0.75s — see VA_Q_CAP_MS in audio.rs) + the OS pipe + slack. This
@@ -630,6 +636,15 @@ export class NativeVideoEngine {
   seek(t: number, freeze = false): void {
     if (this.destroyed) return;
     const tt = Math.max(0, this._duration > 0 ? Math.min(this._duration, t) : Math.max(0, t));
+    // EOF-exit: seek/play BACKWARD out of a stream parked at end-of-file (the
+    // owner's chop "black video + frozen playhead"). Captured BEFORE the clock
+    // snaps below.
+    const atEofExit = this._duration > 0 &&
+      this.clock >= this._duration - EOF_EPS_SEC &&
+      tt < this.clock - EOF_EPS_SEC;
+    if (atEofExit) {
+      this.log('info', `seek to ${tt.toFixed(2)}s out of end-of-file (dur ${this._duration.toFixed(2)}s)`);
+    }
     // Snap clock + scrubber to the target immediately, then HOLD there: empty
     // the buffer and re-arm the first-frame gate so present() can't advance
     // past tt until frames from the new position arrive. The actual command is
@@ -665,6 +680,23 @@ export class NativeVideoEngine {
     }
     this.cb.onTime?.(tt);
     if (this.seekTimer) window.clearTimeout(this.seekTimer);
+    // EOF-exit on macOS: the persistent decoder idles at end-of-file and its
+    // fetch body gets WEDGED by WKWebView while the reader sits idle there (see
+    // the stall-watchdog note). An in-process /vcontrol seek DOES resume the
+    // decoder (verified in the decode-server lab), but the wedged body delivers
+    // ~one frame and starves, and the stall watchdog then reconnect-loops one-
+    // frame-at-a-time forever (the chop "black video + frozen playhead" after a
+    // prior EOF). A FRESH connection is the one path that always flows, so
+    // restart there instead of reusing the parked stream. Mac-only: WebView2
+    // has no such wedge and the in-process seek is smoother on Windows.
+    if (isMac && atEofExit && !this.loopRegion) {
+      this.seekTimer = 0;
+      this.log('info', `replay out of end-of-file via fresh reconnect at ${tt.toFixed(2)}s (healthy path)`);
+      void invoke('seek_video_audio', { sec: tt, dir: 1 }).catch(() => {});
+      if (!this._playing) void invoke('pause_video_audio').catch(() => {});
+      void this.connect(tt);
+      return;
+    }
     const debounce = this.persistent ? SEEK_DEBOUNCE_PTS_MS : SEEK_DEBOUNCE_RAW_MS;
     this.seekTimer = window.setTimeout(() => { this.seekTimer = 0; this.applySeek(tt); }, debounce);
   }
@@ -730,6 +762,18 @@ export class NativeVideoEngine {
     } catch {
       return false;
     }
+  }
+
+  // Diagnostics line into BOTH the webview console (dev) and latch.log (field
+  // receipts). The engine's mac stall-watchdog / loop-overdue / EOF-replay
+  // warns previously reached only console.* and never survived to the log file.
+  private log(level: 'error' | 'warn' | 'info', msg: string): void {
+    const base = this.cfg.path.split(/[/\\]/).pop() ?? this.cfg.path;
+    const line = `[nativeVideo] ${base}: ${msg}`;
+    if (level === 'error') console.error(line);
+    else if (level === 'warn') console.warn(line);
+    else console.info(line);
+    logToFile(level, 'nativeVideo', `${base}: ${msg}`);
   }
 
   destroy(): void {
@@ -958,10 +1002,9 @@ export class NativeVideoEngine {
       this.bufferedAhead() < STREAM_STALL_STARVED_SEC &&
       !(this._duration > 0 && this.clock >= this._duration - 1)
     ) {
-      console.warn(
-        `[nativeVideo] stream stalled (${Math.round(now - this.lastReadAt)}ms without bytes, ` +
-        `${this.frames.length} frames buffered) - reconnecting at ${this.clock.toFixed(2)}s`,
-      );
+      this.log('warn',
+        `stream stalled (${Math.round(now - this.lastReadAt)}ms without bytes, ` +
+        `${this.frames.length} frames buffered) - reconnecting at ${this.clock.toFixed(2)}s`);
       this.lastReadAt = now; // cooldown; connect() keeps it fresh from here
       void this.connect(this.clock);
     }
@@ -1017,7 +1060,7 @@ export class NativeVideoEngine {
           // live-drag callback queued a disarm behind a drop's re-arm). Without
           // this the hard-follow below tracks the escaped audio FOREVER.
           // Re-take authority: re-cue inside the region and re-send the arm.
-          console.warn(`[nativeVideo] loop wrap overdue at ${this.clock.toFixed(2)}s (out ${this.loopRegion.outSec.toFixed(2)}s) - re-cueing + re-arming`);
+          this.log('warn', `loop wrap overdue at ${this.clock.toFixed(2)}s (out ${this.loopRegion.outSec.toFixed(2)}s) - re-cueing + re-arming`);
           this.seek(this.loopRegion.inSec);
           this.queueArmLoop();
         } else if (this.audioActive && !this.audioSeekPending) {

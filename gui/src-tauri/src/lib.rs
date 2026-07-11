@@ -103,6 +103,20 @@ async fn open_log_file() -> Result<(), String> {
     .map_err(|e| format!("open log join: {e}"))?
 }
 
+/// Frontend to file log bridge: route a diagnostic line from the webview into
+/// latch.log so field failures have receipts. The native-video engine's mac
+/// stall-watchdog / loop-overdue / EOF-replay warns previously reached only the
+/// webview console (invisible after the fact). Rate-limited on the frontend.
+/// async + spawn_blocking: logger::log touches disk, so it must not run inline
+/// on the IPC pump (the sync-command main-thread-freeze rule).
+#[tauri::command]
+async fn log_frontend(level: String, source: String, message: String) {
+    let _ = tauri::async_runtime::spawn_blocking(move || {
+        logger::log(&format!("[{}] {}: {}", level.to_uppercase(), source, message));
+    })
+    .await;
+}
+
 pub fn run() {
     // Kill-on-close job from the very start, so latch.exe + its yt-dlp/
     // ffmpeg children (and the WebView2 tree) can never outlive a crash.
@@ -235,6 +249,7 @@ pub fn run() {
             cursor::set_native_cursor_position,
             register_taskbar_window,
             open_log_file,
+            log_frontend,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Latch");
