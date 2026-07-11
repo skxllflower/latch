@@ -165,11 +165,11 @@ export default function ChopApp() {
   // playhead (and resumes if it was playing) instead of jumping to 0.
   const pendingSeekRef = useRef<number | null>(null);
   const pendingPlayRef = useRef(false);
-  // The native video engine autoplays on open (nativeVideoStream: _playing =
-  // true in its constructor). A chop session should open PAUSED at the start so
-  // the user draws cuts before anything moves. This latches the first ready per
-  // session so we pause+park once, without a later re-stream (fullscreen /
-  // resize re-fires onReady) yanking an already-playing clip back to 0.
+  // A chop session opens PAUSED at the start so the user draws cuts before
+  // anything moves — the engine mounts with nativeAutoplay:false (no motion,
+  // no audio session). This latches the first ready per session so the park
+  // happens once, without a later re-stream (fullscreen / resize re-fires
+  // onReady) yanking an already-playing clip back to 0.
   const initialPauseDoneRef = useRef(false);
   // The waveform's wrapper (to snapshot its canvas for the drag chip) and
   // the live viewport from the overlay render-prop (to crop the chip to
@@ -1572,13 +1572,13 @@ export default function ChopApp() {
                 video links, so the WAV transport below is hidden then. */}
             <VideoPreview ref={videoRef} src={convertFileSrc(videoPath)} path={videoPath} suppressChip disableKeyboard
               pitchPreviewLock={pitchMode === 'preserve'}
+              nativeAutoplay={false}
               onPlayingChange={setVideoPlaying}
               onLoopPointsChange={onLoopPoints}
               onReady={() => {
                 // After the low-res → HD swap reload, restore the playhead —
-                // and the PAUSE state: the engine autoplays on open, so a
-                // paused session would otherwise burst into playback when
-                // the HD file lands mid-thought.
+                // and the PLAY state (nativeAutoplay:false mounts paused, so
+                // a session that was playing must be resumed at position).
                 if (pendingSeekRef.current != null) {
                   const t = pendingSeekRef.current; pendingSeekRef.current = null;
                   videoRef.current?.seek(t);
@@ -1586,13 +1586,14 @@ export default function ChopApp() {
                   else videoRef.current?.pause();
                   pendingPlayRef.current = false;
                 } else if (!initialPauseDoneRef.current) {
-                  // Initial open: cancel the engine's autoplay so the session
-                  // starts PAUSED with the playhead parked at 0 (transport
-                  // ready, nothing moving). Latched so a later re-stream can't
+                  // Initial open: nativeAutoplay:false already mounts the
+                  // engine PAUSED at 0 with no audio session — nothing moves
+                  // or sounds until the user asks. Just park the cursor.
+                  // (The old pause()+seek(0,freeze) park left the decoder's
+                  // pipe idle-wedgeable on WKWebView; see nativeVideoStream's
+                  // stall watchdog.) Latched so a later re-stream can't
                   // interrupt playback the user has since started.
                   initialPauseDoneRef.current = true;
-                  videoRef.current?.pause();
-                  videoRef.current?.seek(0, true);
                   setCursorSec(0);
                 }
               }} />

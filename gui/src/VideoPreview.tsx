@@ -35,7 +35,7 @@ const NATIVE_PREVIEW_FPS = 30;
 // VideoView.
 export const VideoPreview = forwardRef<VideoViewHandle, VideoViewProps>(
   function VideoPreview(props, ref) {
-    const { src, path, maxDim } = props;
+    const { src, path, maxDim, nativeAutoplay } = props;
     const [latheResolved, setLatheResolved] = useState(() => latheStatus.get().resolved);
     useEffect(() => latheStatus.subscribe((s) => setLatheResolved(s.resolved)), []);
 
@@ -44,8 +44,10 @@ export const VideoPreview = forwardRef<VideoViewHandle, VideoViewProps>(
     // Stable config identity — VideoView keys effects on it, and a fresh
     // object every render re-fired its media-reset (nulling loop points).
     const nativeStream = useMemo(
-      () => (isVideo ? { path: path as string, height: NATIVE_PREVIEW_HEIGHT, fps: NATIVE_PREVIEW_FPS } : null),
-      [isVideo, path],
+      () => (isVideo
+        ? { path: path as string, height: NATIVE_PREVIEW_HEIGHT, fps: NATIVE_PREVIEW_FPS, autoplay: nativeAutoplay }
+        : null),
+      [isVideo, path, nativeAutoplay],
     );
 
     if (isVideo && latheResolved) {

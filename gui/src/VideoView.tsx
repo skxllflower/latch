@@ -127,6 +127,11 @@ export interface VideoViewProps {
   // mode for now (Phase 0: prove the picture path); play/pause/seek + audio
   // sync land next.
   nativeStream?: NativeStreamConfig | null;
+  // Autoplay for the native-stream mount (default true). false = the engine
+  // opens PAUSED at 0 with no audio session until the first play() — the chop
+  // window's parked open. Consumed by VideoPreview when it builds the
+  // nativeStream config; inert for the <video> fallback path.
+  nativeAutoplay?: boolean;
   // When true, the preview plays at 1× regardless of the speed button. The
   // audio engine only does varispeed (pitch follows speed), so a pitch-locked
   // speed change can't be previewed honestly — the Latch chop window's "Locked
@@ -352,6 +357,11 @@ export const VideoView = forwardRef<VideoViewHandle, VideoViewProps>(function Vi
   const nsPath = nativeStream?.path;
   const nsHeight = nativeStream?.height;
   const nsFps = nativeStream?.fps;
+  // autoplay is read through a ref at mount time (NOT an effect key): it only
+  // matters for how a FRESH engine opens, and keying on it would tear the
+  // engine down if the host ever recomputed the config object.
+  const nsAutoplayRef = useRef(nativeStream?.autoplay);
+  nsAutoplayRef.current = nativeStream?.autoplay;
   useEffect(() => {
     if (!nsPath || nsHeight == null || nsFps == null) return;
     let firstFrame = true;
@@ -359,7 +369,7 @@ export const VideoView = forwardRef<VideoViewHandle, VideoViewProps>(function Vi
     setHdrKind('');
     setTonemapOn(true);
     const engine = new NativeVideoEngine(
-      { path: nsPath, height: nsHeight, fps: nsFps },
+      { path: nsPath, height: nsHeight, fps: nsFps, autoplay: nsAutoplayRef.current },
       {
         onGeom: (g) => {
           setSize({ w: g.w, h: g.h });
