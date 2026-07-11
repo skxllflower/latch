@@ -422,13 +422,27 @@ ExtractResult extract(const std::string& url,
   if (opts.video) {
     std::vector<Rung> vrungs;
     if (opts.video_max_height > 0) {
-      char cap[48];
-      std::snprintf(cap, sizeof(cap), "[height<=%d]", opts.video_max_height);
-      vrungs.push_back({std::string("1/3 ") + std::to_string(opts.video_max_height) +
-                          "p (bestvideo+bestaudio)",
+      // A height cap means this is the chop window's low-res PREVIEW proxy, and
+      // the preview is played by the native decoder (`lathe decode-server`), NOT
+      // <video>. That decoder has no software AV1 path — on macOS AV1 is
+      // hardware-only ("Your platform doesn't support hardware accelerated AV1
+      // decoding" -> zero frames -> a black pane while audio still plays). But
+      // YouTube's `bestvideo` under any height cap is usually AV1/VP9, so the
+      // proxy has to be pinned to H.264 (avc1) or the preview never paints.
+      // rung 1 prefers avc1; the any-codec rungs below still recover if a link
+      // truly has no H.264 (rare on YouTube; the HD export path stays uncapped
+      // best and is decoder-agnostic, so quality there is unaffected).
+      const std::string cap =
+          std::string("[height<=") + std::to_string(opts.video_max_height) + "]";
+      vrungs.push_back({std::string("1/4 ") + std::to_string(opts.video_max_height) +
+                          "p H.264 preview (avc1)",
+                        std::string("bestvideo[vcodec^=avc1]") + cap +
+                          "+bestaudio/best[vcodec^=avc1]" + cap});
+      vrungs.push_back({std::string("2/4 ") + std::to_string(opts.video_max_height) +
+                          "p (bestvideo+bestaudio, any codec)",
                         std::string("bestvideo") + cap + "+bestaudio/best" + cap});
-      vrungs.push_back({"2/3 uncapped bestvideo+bestaudio", "bestvideo*+bestaudio/best"});
-      vrungs.push_back({"3/3 best (any single muxed stream)", "best"});
+      vrungs.push_back({"3/4 uncapped bestvideo+bestaudio", "bestvideo*+bestaudio/best"});
+      vrungs.push_back({"4/4 best (any single muxed stream)", "best"});
     } else {
       vrungs.push_back({"1/2 bestvideo+bestaudio", "bestvideo*+bestaudio/best"});
       vrungs.push_back({"2/2 best (any single muxed stream)", "best"});
