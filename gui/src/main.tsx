@@ -16,6 +16,14 @@ import './styles.css';
 // (settingsWindow.ts).
 const wd = new URLSearchParams(window.location.search).get('wd');
 
+// macOS draws undecorated NSWindows with square corners (Windows 11's DWM
+// rounds every top-level window for free): tag the root so the stylesheet
+// can round the shell ourselves. EXCLUDE the drag-overlay window — its
+// transparent chip surface must never clip to a radius.
+if (navigator.platform.startsWith('Mac') && wd !== 'drag-overlay') {
+  document.documentElement.classList.add('wd-mac');
+}
+
 // No native browser context menu anywhere except text fields.
 window.addEventListener('contextmenu', (e) => {
   const t = e.target as HTMLElement | null;

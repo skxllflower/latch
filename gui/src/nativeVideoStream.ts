@@ -34,6 +34,11 @@ export interface NativeStreamConfig {
   path: string;
   height: number;
   fps: number;
+  // Whether to autoplay + start the audio session on open. Absent = true
+  // (the historical behavior). false = mount paused at 0 with NO audio
+  // session until the first play() (the chop window opens parked: the user
+  // draws cuts before anything moves or sounds).
+  autoplay?: boolean;
 }
 
 export interface NativeGeom {
@@ -83,6 +88,29 @@ const VIDEO_AV_LEAD_SEC = 0.05;
 // raw restarts both ffmpeg pipes and needs the wider window.
 const SEEK_DEBOUNCE_PTS_MS = 50;
 const SEEK_DEBOUNCE_RAW_MS = 120;
+
+// macOS WKWebView stream-stall watchdog. WebKit can permanently WEDGE a
+// streaming fetch body after the JS reader goes idle: while the engine sits
+// paused (the chop window's parked open) the reader stops pulling, WebKit's
+// network process buffers ~20MB off the socket and suspends the connection —
+// and when the reader resumes, the resume is sometimes lost and reader.read()
+// never settles again, even though the server keeps writing (the same stream
+// drains fine via curl, and a FRESH connection always flows). Field symptom:
+// black video + frozen playhead with audio playing on — zero frames means
+// `started` never flips, so the clock never runs. The wedge also strikes
+// periodically (~every 4-7s / ~100MB observed) during SUSTAINED playback in
+// the busy chop window. Detection: playing forward, buffer starved, and no
+// stream bytes for STALL_MS (the reader refreshes its byte stamp while
+// backpressure-idle, so a legitimately full buffer never trips this). Cure:
+// abort + reconnect at the clock. STALL_MS is tuned so the respawn lands
+// about when the 0.6s frame buffer runs dry — the hiccup is barely visible.
+// SLOW_MS covers the windows where a byte gap is LEGITIMATE (a fresh
+// connection's first decode, an in-flight seek's keyframe+decode-forward on
+// heavy files) so a slow 4K can't trigger a respawn livelock. Mac-only;
+// WebView2's fetch streaming has no such wedge and Windows stays untouched.
+const STREAM_STALL_MS = 600;
+const STREAM_STALL_SLOW_MS = 4000;
+const STREAM_STALL_STARVED_SEC = 0.25;
 
 // The AUDIO pipeline's decode look-ahead in content seconds: the Rust deck's
 // PCM queue (0.75s — see VA_Q_CAP_MS in audio.rs) + the OS pipe + slack. This
@@ -250,6 +278,14 @@ export class NativeVideoEngine {
   // race), then runs on the wall clock and eases onto the audio position. Reset
   // on seek so the same hold re-arms while the new position spins up.
   private started = false;
+  // Stall watchdog (see STREAM_STALL_MS): wall time of the last stream-byte
+  // arrival; refreshed while the reader idles on PURPOSE (backpressure, an
+  // in-flight connect) so only a wedged read() lets it go stale.
+  private lastReadAt = 0;
+  private connFetching = false;
+  // Paused mount: idle the decoder AFTER the first frame is buffered (pausing
+  // before it could leave `frames` empty forever — no onReady, stuck Loading).
+  private deferInitialPause = false;
   private seekTimer = 0;      // debounce: coalesces a held scrub / arrow flurry
   private unlistenAudio: (() => void) | null = null;
 
@@ -258,11 +294,15 @@ export class NativeVideoEngine {
     this.cb = cb;
     this.curHeight = cfg.height;
     this.lastNow = performance.now();
-    this._playing = true; // autoplay on open
+    this.lastReadAt = performance.now();
+    this._playing = cfg.autoplay ?? true; // default: autoplay on open
     void this.connect(0);
-    void this.startAudio();
+    // Only spin up the audio session for an autoplaying mount. A paused mount
+    // (the chop window's parked open) starts NO session — play() lazily starts
+    // it at the current clock, so nothing is audible until the user asks.
+    if (this._playing) void this.startAudio();
     this.scheduleFrame();
-    this.cb.onState?.(true);
+    this.cb.onState?.(this._playing);
   }
 
   // Drive present(). rAF is the primary tick (vsync-aligned, smooth). But on
@@ -290,7 +330,14 @@ export class NativeVideoEngine {
   // Subscribe to the daemon's video-audio position, then ask it to start playing
   // this file's audio. Best-effort: if there's no audio track the daemon reports
   // vaudio_state{active:false} and the video stays on the wall-clock, muted.
-  private async startAudio(): Promise<void> {
+  // Idempotent (audioStarted latch): an autoplay mount runs it from the ctor;
+  // a paused mount defers it to the first play(), which passes the clock so
+  // the session begins where the playhead is parked.
+  private audioStarted = false;
+
+  private async startAudio(startSec = 0): Promise<void> {
+    if (this.audioStarted) return;
+    this.audioStarted = true;
     try {
       this.unlistenAudio = await listen('audio_event', (e) => {
         const p = e.payload as { event?: string; sec?: number; active?: boolean } | null;
@@ -321,7 +368,7 @@ export class NativeVideoEngine {
     if (this.destroyed) { this.unlistenAudio?.(); return; }
     const lathe = latheStatus.get().path ?? '';
     try {
-      await invoke('start_video_audio', { path: this.cfg.path, start: 0, lathe });
+      await invoke('start_video_audio', { path: this.cfg.path, start: startSec, lathe });
       // The daemon resets per-stream volume/rate to 1.0 at begin — re-apply
       // what the GUI set (it may have called the setters before the stream
       // existed, where the daemon-side ops were no-ops).
@@ -340,7 +387,10 @@ export class NativeVideoEngine {
     this._playing = true;
     this.lastNow = performance.now();
     void this.control('play');
-    void invoke('resume_video_audio').catch(() => {});
+    // Paused mount (autoplay:false): no audio session exists yet — start it
+    // at the parked clock. Otherwise just resume the existing session.
+    if (this.audioStarted) void invoke('resume_video_audio').catch(() => {});
+    else void this.startAudio(this.clock);
     this.cb.onState?.(true);
   }
 
@@ -748,7 +798,14 @@ export class NativeVideoEngine {
         `&height=${this.curHeight}&fps=${this.cfg.fps}&start=${start}` +
         `&lathe=${encodeURIComponent(lathePath)}`;
 
-      const resp = await fetch(url, { signal: ac.signal });
+      this.connFetching = true;
+      let resp: Response;
+      try {
+        resp = await fetch(url, { signal: ac.signal });
+      } finally {
+        this.connFetching = false;
+      }
+      this.lastReadAt = performance.now();
       if (token !== this.connToken) return;
       if (!resp.ok || !resp.body) { this.cb.onError?.(`stream HTTP ${resp.status}`); return; }
 
@@ -768,6 +825,11 @@ export class NativeVideoEngine {
       // for a tone-map the user toggled OFF (the decoder defaults ON for HDR).
       if (this.loopRegion) this.queueArmLoop();
       if (!this.tonemapOn && geom.hdr) void this.control('tonemap', undefined, undefined, false);
+      // Paused mount (autoplay:false / reconnect while paused): idle the fresh
+      // decoder so it doesn't free-run into a backpressured pipe (feeding the
+      // WKWebView wedge above). Deferred to the first buffered frame — pausing
+      // before it would leave `frames` empty and the pane stuck on Loading.
+      this.deferInitialPause = !this._playing && this.persistent;
 
       const reader = resp.body.getReader();
       const queue: Uint8Array[] = [];
@@ -775,6 +837,7 @@ export class NativeVideoEngine {
       const readExact = async (n: number): Promise<Uint8Array | null> => {
         while (queued < n) {
           const { value, done } = await reader.read();
+          this.lastReadAt = performance.now();
           if (done) return null;
           if (value && value.length) { queue.push(value); queued += value.length; }
         }
@@ -801,6 +864,7 @@ export class NativeVideoEngine {
           this.bufferedAhead() > (this.dir < 0 ? BUFFER_AHEAD_REVERSE_SEC : BUFFER_AHEAD_SEC) &&
           !(this.persistent && (this.holdingForSeek || this.pendingMarkers > 0))
         ) {
+          this.lastReadAt = performance.now(); // idle on purpose — not a stall
           await sleep(12);
         }
         if (token !== this.connToken || this.destroyed) break;
@@ -845,6 +909,13 @@ export class NativeVideoEngine {
         if (token !== this.connToken || this.destroyed) { bmp.close(); break; }
         this.frames.push({ t: frameT, bmp });
         this.frameIdx++;
+        // Paused mount: first frame is in (present() can paint it and fire
+        // onReady) — NOW idle the decoder. Re-check _playing live: a play()
+        // racing the first frame must not be immediately re-paused.
+        if (this.deferInitialPause) {
+          this.deferInitialPause = false;
+          if (!this._playing) void this.control('pause');
+        }
       }
       try { await reader.cancel(); } catch { /* ignore */ }
 
@@ -873,6 +944,27 @@ export class NativeVideoEngine {
     if (this.destroyed) return;
     const now = performance.now();
     const dt = (now - this.lastNow) / 1000;
+
+    // WKWebView stream-stall watchdog (see STREAM_STALL_MS): playing forward,
+    // buffer starved, no stream bytes — the fetch body is wedged; a fresh
+    // connection is the only cure. Budgeted receipt: one warn per fire.
+    const stallMs = this.pendingMarkers > 0 || this.frameIdx === 0
+      ? STREAM_STALL_SLOW_MS   // legitimate byte gaps: seek decode-forward / first decode
+      : STREAM_STALL_MS;
+    if (
+      isMac && this._playing && this.dir > 0 && !this.connFetching &&
+      this.endpointBase !== '' &&
+      now - this.lastReadAt > stallMs &&
+      this.bufferedAhead() < STREAM_STALL_STARVED_SEC &&
+      !(this._duration > 0 && this.clock >= this._duration - 1)
+    ) {
+      console.warn(
+        `[nativeVideo] stream stalled (${Math.round(now - this.lastReadAt)}ms without bytes, ` +
+        `${this.frames.length} frames buffered) - reconnecting at ${this.clock.toFixed(2)}s`,
+      );
+      this.lastReadAt = now; // cooldown; connect() keeps it fresh from here
+      void this.connect(this.clock);
+    }
 
     // Hold until the first frame is buffered, then start the clock — so there's
     // no audio-wait freeze and no racing ahead of the picture.
