@@ -17,7 +17,8 @@ import {
 } from './imageAnalysis';
 import { isMac } from './platform';
 
-const HUD_BOTTOM = 72;   // clears the transport (scrubber + controls row)
+const HUD_BOTTOM = 72;
+const HUD_TOP = 0;
 
 // Volume fader, modeled on the control-room master fader but capped at 0 dB
 // (unity = max; no boost). Linear gain 0..1 ↔ dB; bottom of the track is -∞.
@@ -138,10 +139,12 @@ export interface VideoViewProps {
   // pitch" mode passes this to preview at true 1× pitch instead of faking it.
   // `getSpeed()` still returns the chosen speed, so export is unaffected.
   pitchPreviewLock?: boolean;
+  /** Prefer compressed WebKit playback for a known-safe Mac preview file. */
+  macDirectPlayback?: boolean;
 }
 
 export const VideoView = forwardRef<VideoViewHandle, VideoViewProps>(function VideoView(
-  { src, onPopOut, suppressChip = false, onReady, onTime, disableKeyboard = false, onPlayingChange, nativeStream, onLoopPointsChange, pitchPreviewLock = false }, ref,
+  { src, path, onPopOut, suppressChip = false, onReady, onTime, disableKeyboard = false, onPlayingChange, nativeStream, onLoopPointsChange, pitchPreviewLock = false, macDirectPlayback = false }, ref,
 ) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -176,9 +179,85 @@ export const VideoView = forwardRef<VideoViewHandle, VideoViewProps>(function Vi
   const [volume, setVolume] = useState(1);
   const [muted, setMuted] = useState(false);
   const [speed, setSpeed] = useState(1);
+  const [latheBinary, setLatheBinary] = useState(() => latheStatus.get().path ?? '');
   const [inPoint, setInPoint] = useState<number | null>(null);
   const [outPoint, setOutPoint] = useState<number | null>(null);
   const [loopRegion, setLoopRegion] = useState(false);
+  const inPointRef = useRef(inPoint); inPointRef.current = inPoint;
+  const outPointRef = useRef(outPoint); outPointRef.current = outPoint;
+  const loopRegionRef = useRef(loopRegion); loopRegionRef.current = loopRegion;
+  const macAv = isMac && macDirectPlayback && !!path;
+  const macTimeRef = useRef(0);
+  const macPlayingRef = useRef(false);
+  const macRevealTimerRef = useRef<number | null>(null);
+  const revealMacVideo = useCallback(() => {
+    if (macRevealTimerRef.current != null) window.clearTimeout(macRevealTimerRef.current);
+    macRevealTimerRef.current = window.setTimeout(() => {
+      macRevealTimerRef.current = null;
+      void invoke('mac_video_command', { label: getCurrentWindow().label, action: 'reveal', sec: 0, end: 0 });
+    }, 120);
+  }, []);
+
+  useEffect(() => {
+    if (!macAv || !path) return;
+    const label = getCurrentWindow().label;
+    let lastFrame = '';
+    let frameRaf = 0;
+    const syncFrame = () => {
+      const r = containerRef.current?.getBoundingClientRect();
+      if (!r) return;
+      const pictureH = Math.max(1, r.height - HUD_TOP - HUD_BOTTOM);
+      const frameKey = `${r.left.toFixed(2)}:${r.top.toFixed(2)}:${r.width.toFixed(2)}:${pictureH.toFixed(2)}:${window.innerHeight}`;
+      if (frameKey === lastFrame) return;
+      lastFrame = frameKey;
+      void invoke('mac_video_frame', {
+        label, x: r.left, y: window.innerHeight - (r.top + HUD_TOP) - pictureH,
+        width: r.width, height: pictureH,
+      });
+    };
+    const scheduleFrame = () => {
+      if (frameRaf) return;
+      frameRaf = requestAnimationFrame(() => { frameRaf = 0; syncFrame(); });
+    };
+    const r = containerRef.current?.getBoundingClientRect();
+    if (!r) return;
+    const pictureH = Math.max(1, r.height - HUD_TOP - HUD_BOTTOM);
+    void invoke('mac_video_open', {
+      label, path, x: r.left, y: window.innerHeight - (r.top + HUD_TOP) - pictureH,
+      width: r.width, height: pictureH,
+    }).then(() => { setStatus('ready'); onReadyRef.current?.(); syncFrame(); });
+    const ro = new ResizeObserver(scheduleFrame); ro.observe(containerRef.current!);
+    window.addEventListener('resize', scheduleFrame);
+    const poll = window.setInterval(() => {
+      scheduleFrame();
+      void invoke<{ active: boolean; sec: number; duration: number; width: number; height: number; playing: boolean; recovered_loop: boolean }>('mac_video_state', { label }).then((s) => {
+        if (!s.active) return;
+        if (s.recovered_loop) {
+          // AVPlayer escaped despite an armed looper. Re-cue the independent
+          // audio/clock decoder in the same recovery cycle so picture and
+          // sound cannot remain split (silent audio + free-running playhead).
+          const lo = inPointRef.current;
+          const hi = outPointRef.current;
+          if (loopRegionRef.current && lo != null && hi != null && hi > lo) {
+            nativeEngineRef.current?.setLoopRegion({ inSec: lo, outSec: hi });
+            nativeEngineRef.current?.seek(lo);
+          }
+        }
+        macTimeRef.current = s.sec;
+        macPlayingRef.current = s.playing;
+        setCurrentTime(s.sec);
+        setPlaying(s.playing);
+        if (s.duration > 0) setDuration((old) => old === s.duration ? old : s.duration);
+        if (s.width > 0 && s.height > 0) setSize((old) => old.w === s.width && old.h === s.height ? old : { w: s.width, h: s.height });
+      });
+    }, 33);
+    return () => {
+      ro.disconnect(); window.removeEventListener('resize', scheduleFrame); window.clearInterval(poll);
+      if (frameRaf) cancelAnimationFrame(frameRaf);
+      if (macRevealTimerRef.current != null) window.clearTimeout(macRevealTimerRef.current);
+      void invoke('mac_video_stop', { label });
+    };
+  }, [macAv, path]);
   const [volOpen, setVolOpen] = useState(false);
   const [volDragging, setVolDragging] = useState(false);
   const [volWarping, setVolWarping] = useState(false);
@@ -221,6 +300,7 @@ export const VideoView = forwardRef<VideoViewHandle, VideoViewProps>(function Vi
   // doesn't expose fps); seeds frame stepping. Falls back to 30.
   const fpsRef = useRef(30);
   const lastMediaTimeRef = useRef(-1);
+  const directPresentedTimeRef = useRef(-1);
 
   // JKL shuttle: an integer level (0 = stop, +N = forward N×, −N = reverse N×).
   // Forward uses native playbackRate; reverse seeks backward on a rAF loop
@@ -259,6 +339,11 @@ export const VideoView = forwardRef<VideoViewHandle, VideoViewProps>(function Vi
   // Space + K: play/pause at the normal speed, clearing any shuttle. K while
   // shuttling → pause; when paused → restart at regular speed.
   const togglePlay = useCallback(() => {
+    if (macAv) {
+      const action = macPlayingRef.current ? 'pause' : 'play';
+      void invoke('mac_video_command', { label: getCurrentWindow().label, action, sec: 0, end: 0 });
+      return;
+    }
     if (nativeEngineRef.current) {
       // K/Space while shuttling stops the shuttle (= pause); otherwise toggle.
       if (shuttleRef.current !== 0) {
@@ -276,7 +361,7 @@ export const VideoView = forwardRef<VideoViewHandle, VideoViewProps>(function Vi
     v.playbackRate = speed;
     if (wasShuttling) { v.pause(); return; }
     if (v.paused) void v.play().catch(() => {}); else v.pause();
-  }, [speed, stopReverse]);
+  }, [speed, stopReverse, macAv]);
   // Global Space (FileExplorer's video-row handler) drives this player without
   // hover/focus. Ref-bridged so the registration doesn't churn per render;
   // satellite windows (disableKeyboard) keep their own transport.
@@ -311,8 +396,35 @@ export const VideoView = forwardRef<VideoViewHandle, VideoViewProps>(function Vi
     onTap: togglePlay,
     onHover: (cx, cy) => sampleAtRef.current(cx, cy),
     onLeave: () => setHover(null),
+    // Use the same accumulated-target + 0.18 lerp as WAVdesk's spectrogram.
+    // It arbitrates smooth-wheel pan as one gesture instead of issuing a
+    // separate native-layer jump for every Magic Mouse event.
+    directGestures: false,
   });
   const { view, viewRef, containerSize } = viewport;
+
+  // The AVPlayerLayer lives outside WebKit's canvas compositor, so mirror the
+  // existing image-view viewport onto it. The native host clips at the top of
+  // the transport; its child layer receives the exact canvas fit/zoom/pan.
+  useEffect(() => {
+    if (!macAv || size.w <= 0 || size.h <= 0 || containerSize.w <= 0 || containerSize.h <= 0) return;
+    const pictureHeight = Math.max(1, containerSize.h - HUD_TOP - HUD_BOTTOM);
+    const fullFit = Math.min(containerSize.w / size.w, containerSize.h / size.h);
+    const pictureFit = Math.min(containerSize.w / size.w, pictureHeight / size.h);
+    const nativeScale = pictureFit * (view.s / Math.max(1e-9, fullFit));
+    const fullCenterX = (containerSize.w - size.w * view.s) / 2;
+    const fullCenterY = (containerSize.h - size.h * view.s) / 2;
+    const panScale = nativeScale / Math.max(1e-9, view.s);
+    const ox = (containerSize.w - size.w * nativeScale) / 2 + (view.ox - fullCenterX) * panScale;
+    const oy = (pictureHeight - size.h * nativeScale) / 2 + (view.oy - fullCenterY) * panScale;
+    void invoke('mac_video_transform', {
+      label: getCurrentWindow().label,
+      ox, oy,
+      width: size.w * nativeScale,
+      height: size.h * nativeScale,
+      pictureHeight,
+    });
+  }, [macAv, size, view, containerSize]);
 
   // ---- draw a frame at the current viewport ----
   const draw = useCallback(() => {
@@ -431,19 +543,23 @@ export const VideoView = forwardRef<VideoViewHandle, VideoViewProps>(function Vi
   // Native mode: fetch the whole-track waveform peaks once per file (lathe
   // decodes the audio to bins). Feeds drawWave via nativePeaksRef + waveReady.
   useEffect(() => {
+    return latheStatus.subscribe((s) => setLatheBinary(s.path ?? ''));
+  }, []);
+  useEffect(() => {
     nativePeaksRef.current = null;
-    if (!nsPath) return;
+    const peaksPath = nsPath ?? (macAv ? path : undefined);
+    if (!peaksPath || !latheBinary) return;
     let cancelled = false;
     void invoke<{ peaks?: number[] }>('video_audio_peaks', {
-      binaryPath: latheStatus.get().path ?? '', path: nsPath, bins: 2000,
+      binaryPath: latheBinary, path: peaksPath, bins: 2000,
     }).then((r) => {
       if (!cancelled && Array.isArray(r?.peaks) && r.peaks.length) {
         nativePeaksRef.current = r.peaks;
         setWaveReady((n) => n + 1);
       }
-    }).catch(() => {});
+    }).catch((err) => console.warn('[VideoView] audio peaks unavailable', err));
     return () => { cancelled = true; };
-  }, [nsPath]);
+  }, [nsPath, macAv, path, latheBinary]);
 
   // Waveform peaks → the scrubber canvas (drawn once peaks land + on resize).
   const drawWave = useCallback(() => {
@@ -590,12 +706,23 @@ export const VideoView = forwardRef<VideoViewHandle, VideoViewProps>(function Vi
     }
     let handle = 0;
     const cb = (_now: number, md: { mediaTime: number }) => {
+      const loopIn = inPointRef.current;
+      const loopOut = outPointRef.current;
+      if (loopRegionRef.current && loopIn != null && loopOut != null &&
+          loopOut > loopIn && md.mediaTime >= loopOut) {
+        video.currentTime = loopIn;
+        setCurrentTime(loopIn);
+        lastMediaTimeRef.current = -1;
+        handle = video.requestVideoFrameCallback!(cb);
+        return;
+      }
       const last = lastMediaTimeRef.current;
       if (last >= 0) {
         const d = md.mediaTime - last;
         if (d > 0.0005 && d < 0.5) fpsRef.current = fpsRef.current * 0.8 + (1 / d) * 0.2;  // smoothed
       }
       lastMediaTimeRef.current = md.mediaTime;
+      directPresentedTimeRef.current = md.mediaTime;
       drawFnRef.current();
       handle = video.requestVideoFrameCallback!(cb);
     };
@@ -613,6 +740,7 @@ export const VideoView = forwardRef<VideoViewHandle, VideoViewProps>(function Vi
       setStatus('loading'); setPlaying(false); setCurrentTime(0); setDuration(0); setBuffered(0);
     }
     setInPoint(null); setOutPoint(null); lastMediaTimeRef.current = -1;
+    directPresentedTimeRef.current = -1;
     // The component is reused across file switches (no key= at the call site),
     // so clear the frame-dedup key — the new video's frame 0 would otherwise
     // collide with the previous file's locked key and the palette/histogram
@@ -682,6 +810,10 @@ export const VideoView = forwardRef<VideoViewHandle, VideoViewProps>(function Vi
 
   // ---- transport actions ----
   const seek = useCallback((t: number, freeze = false) => {
+    if (macAv) {
+      void invoke('mac_video_command', { label: getCurrentWindow().label, action: 'seek', sec: t, end: 0 });
+      return;
+    }
     if (nativeEngineRef.current) {
       nativeEngineRef.current.seek(t, freeze);
       setCurrentTime(nativeEngineRef.current.currentTime);
@@ -690,7 +822,7 @@ export const VideoView = forwardRef<VideoViewHandle, VideoViewProps>(function Vi
     const v = videoRef.current; if (!v || !v.duration) return;
     v.currentTime = Math.max(0, Math.min(v.duration, t));
     setCurrentTime(v.currentTime);
-  }, []);
+  }, [macAv]);
   const stepFrame = useCallback((dir: number) => {
     if (nativeEngineRef.current) {
       // Native: pause (parity with the <video> path) and step relative to the
@@ -737,10 +869,16 @@ export const VideoView = forwardRef<VideoViewHandle, VideoViewProps>(function Vi
   // what actually lands them on the daemon/decoder.
   useEffect(() => {
     nativeEngineRef.current?.setVolume(muted ? 0 : volume);
-  }, [volume, muted]);
+    if (macAv) void invoke('mac_video_command', {
+      label: getCurrentWindow().label, action: 'volume', sec: muted ? 0 : volume, end: 0,
+    });
+  }, [volume, muted, macAv]);
   useEffect(() => {
     nativeEngineRef.current?.setRate(pitchPreviewLock ? 1 : speed);
-  }, [speed, pitchPreviewLock]);
+    if (macAv) void invoke('mac_video_command', {
+      label: getCurrentWindow().label, action: 'rate', sec: pitchPreviewLock ? 1 : speed, end: 0,
+    });
+  }, [speed, pitchPreviewLock, macAv]);
   useEffect(() => {
     nativeEngineRef.current?.setLoopRegion(
       loopRegion && inPoint != null && outPoint != null && outPoint > inPoint
@@ -753,8 +891,6 @@ export const VideoView = forwardRef<VideoViewHandle, VideoViewProps>(function Vi
   // inPoint/outPoint also fired for the imperative setLoop() the chop
   // host calls when ACTIVATING a region, feeding the points straight
   // back as a new-region request (sliver regions, selection chaos).
-  const inPointRef = useRef(inPoint); inPointRef.current = inPoint;
-  const outPointRef = useRef(outPoint); outPointRef.current = outPoint;
   const toggleFullscreen = useCallback(() => {
     const el = containerRef.current; if (!el) return;
     if (document.fullscreenElement) void document.exitFullscreen().catch(() => {});
@@ -851,6 +987,10 @@ export const VideoView = forwardRef<VideoViewHandle, VideoViewProps>(function Vi
   useImperativeHandle(ref, () => ({
     seek, togglePlay, shuttle, stepFrame,
     play: () => {
+      if (macAv) {
+        void invoke('mac_video_command', { label: getCurrentWindow().label, action: 'play', sec: 0, end: 0 });
+        return;
+      }
       const eng = nativeEngineRef.current;
       if (eng) {
         if (shuttleRef.current !== 0) eng.shuttle(0);
@@ -865,13 +1005,22 @@ export const VideoView = forwardRef<VideoViewHandle, VideoViewProps>(function Vi
     },
     setLoop: (inSec: number, outSec: number) => {
       setInPoint(inSec); setOutPoint(outSec); setLoopRegion(true);
+      // The native stream remains the audio + transport clock even when
+      // AVPlayer paints the Mac picture. Arm it in this same call so a click
+      // followed immediately by Space cannot outrun React's mirror effect.
+      if (outSec > inSec) nativeEngineRef.current?.setLoopRegion({ inSec, outSec });
+      if (macAv) {
+        void invoke('mac_video_command', { label: getCurrentWindow().label, action: 'loop', sec: inSec, end: outSec });
+        revealMacVideo();
+        return;
+      }
       // Push the new bounds to the native engine SYNCHRONOUSLY — not only via
       // the deferred inPoint/outPoint mirror effect. A live region-resize that
       // strands the playhead needs the engine to re-arm + force-wrap in the
       // SAME tick, before the chop host's follow-up seek runs; otherwise that
       // seek re-cues the decoder while the OLD loop is still armed and the old
       // span replays for a cycle or two. Idempotent with the mirror effect.
-      if (outSec > inSec) nativeEngineRef.current?.setLoopRegion({ inSec, outSec });
+      // Already armed synchronously above; the state mirror is idempotent.
     },
     setLoopBounds: (inSec: number, outSec: number) => {
       // Live drag: poke ONLY the engine's live loop bounds (present() reads
@@ -881,13 +1030,25 @@ export const VideoView = forwardRef<VideoViewHandle, VideoViewProps>(function Vi
     },
     clearLoop: () => {
       setLoopRegion(false);
+      // Mac AVPlayer is only the picture surface; clear the native
+      // audio/clock loop as well, synchronously with the host gesture.
+      nativeEngineRef.current?.setLoopRegion(null);
+      if (macAv) {
+        void invoke('mac_video_command', { label: getCurrentWindow().label, action: 'loop', sec: 0, end: 0 });
+        revealMacVideo();
+        return;
+      }
       // Sync engine clear too: with loopRegion state ALREADY false (a gesture
       // cage armed via setLoopBounds only — nothing ever set the React loop),
       // the mirror effect won't re-fire, and the engine's live-drag loop
       // would dangle at the last drag bounds, caging whole-file playback.
-      nativeEngineRef.current?.setLoopRegion(null);
+      // Already cleared synchronously above; the state mirror is idempotent.
     },
     pause: () => {
+      if (macAv) {
+        void invoke('mac_video_command', { label: getCurrentWindow().label, action: 'pause', sec: 0, end: 0 });
+        return;
+      }
       const eng = nativeEngineRef.current;
       if (eng) {
         if (shuttleRef.current !== 0) eng.shuttle(0);
@@ -899,7 +1060,8 @@ export const VideoView = forwardRef<VideoViewHandle, VideoViewProps>(function Vi
       stopReverse(); shuttleRef.current = 0; setShuttleLevel(0);
       if (!v.paused) v.pause();
     },
-    getCurrentTime: () => nativeEngineRef.current?.currentTime ?? videoRef.current?.currentTime ?? 0,
+    getCurrentTime: () => macAv ? macTimeRef.current : nativeEngineRef.current?.currentTime ??
+      (directPresentedTimeRef.current >= 0 ? directPresentedTimeRef.current : videoRef.current?.currentTime ?? 0),
     getSpeed: () => speedRef.current,
     captureFrame: () => {
       // Prefer the painted canvas (what's actually on screen, incl. a
@@ -1132,7 +1294,7 @@ export const VideoView = forwardRef<VideoViewHandle, VideoViewProps>(function Vi
       ref={containerRef}
       tabIndex={-1}
       className="w-full h-full relative overflow-hidden select-none group bg-black/40 outline-none"
-      style={{ touchAction: 'none', cursor: viewport.panning ? 'grabbing' : (viewport.isZoomed ? 'grab' : 'default') }}
+      style={{ touchAction: 'none', cursor: viewport.panning ? 'grabbing' : ((macAv || viewport.isZoomed) ? 'grab' : 'default') }}
       onMouseEnter={() => { hoveredRef.current = true; }}
       onMouseLeave={() => { hoveredRef.current = false; }}
       // Clicking anywhere in the player (incl. the video itself) takes keyboard
@@ -1145,7 +1307,7 @@ export const VideoView = forwardRef<VideoViewHandle, VideoViewProps>(function Vi
         ref={videoRef}
         // Native mode: no src, so the <video> never decodes (and never crashes
         // the host). Frames come from the stream engine onto the canvas instead.
-        src={nativeStream ? undefined : src}
+        src={nativeStream || macAv ? undefined : src}
         crossOrigin="anonymous"
         playsInline
         preload="auto"
@@ -1177,7 +1339,8 @@ export const VideoView = forwardRef<VideoViewHandle, VideoViewProps>(function Vi
       {/* Control cluster — top-right, fades in on hover. Image-style tools
           (channel / palette / histogram) plus pop-out. */}
       <div
-        className="absolute top-1.5 right-1.5 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-150"
+        className="absolute top-1.5 right-1.5 z-[2147483647] flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-150"
+        style={{ transform: 'translateZ(0)' }}
         onPointerDown={(e) => e.stopPropagation()}
       >
         <WdSelect<ImageChannel>
@@ -1259,8 +1422,9 @@ export const VideoView = forwardRef<VideoViewHandle, VideoViewProps>(function Vi
 
       {/* Transport — theme-aware, fades in on hover (always visible while paused). */}
       <div
-        className={`absolute bottom-0 inset-x-0 px-2 pt-1 pb-1.5 flex flex-col gap-1 bg-gradient-to-t from-black/80 to-transparent
+        className={`absolute bottom-0 inset-x-0 z-[2147483647] px-2 pt-1 pb-1.5 flex flex-col gap-1 bg-gradient-to-t from-black/80 to-transparent
                     transition-opacity duration-150 ${playing ? 'opacity-0 group-hover:opacity-100' : 'opacity-100'}`}
+        style={{ transform: 'translateZ(0)' }}
         onPointerDown={(e) => e.stopPropagation()}
       >
         {/* Scrub timeline — waveform-backed (scrub by sound). */}

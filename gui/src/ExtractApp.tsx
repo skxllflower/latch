@@ -1199,9 +1199,6 @@ export default function ExtractApp() {
   const onExtract = useCallback(() => {
     if (!canExtract) return;
     enqueueExtract(parsedUrls);
-    // Unresolved searches + unpicked candidates stay queued — only the
-    // rows that actually went to extraction leave the input list.
-    setInputQueue(prev => prev.filter(q => q.kind === 'search' || !!q.candidateGroup));
   }, [canExtract, parsedUrls, enqueueExtract]);
 
   // Prompt key handler — Enter commits the buffer to the queue (with
@@ -1770,7 +1767,7 @@ export default function ExtractApp() {
               </div>
               {/* Queued URL rows — line-numbered, selectable. */}
               <div
-                className="flex-1 min-h-0 overflow-y-auto -mx-2"
+                className="flex-1 min-h-0 overflow-y-auto -mx-2 wd-latch-input-scroll"
                 onClick={(e) => {
                   if (e.target === e.currentTarget) clearQueuedSelection();
                 }}

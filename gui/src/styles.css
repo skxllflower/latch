@@ -71,6 +71,15 @@ html.wd-mac #root {
 }
 ::-webkit-scrollbar-thumb:hover { background: var(--theme-scrollbar-thumb-hover); }
 
+/* WebKit/macOS paints a tiny end-cap thumb in Latch's URL input queue even
+   when the content only barely overflows. Blend that one input scrollbar into
+   its panel; other application scrollbars retain their normal affordance. */
+html.wd-mac .wd-latch-input-scroll::-webkit-scrollbar-track,
+html.wd-mac .wd-latch-input-scroll::-webkit-scrollbar-thumb,
+html.wd-mac .wd-latch-input-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--theme-bg-panel);
+}
+
 /* WdSelect section header rows (copied from WAVdesk's themed-components). */
 .wd-select-section-row {
   background-color: var(--wd-select-section-bg);

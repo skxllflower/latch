@@ -351,6 +351,43 @@ ExtractResult extract(const std::string& url,
     return at;
   };
 
+  // A persisted browser-cookie profile can occasionally make YouTube expose a
+  // restricted player manifest with none of the otherwise-public formats.
+  // Keep cookies for authenticated/private media, but when yt-dlp specifically
+  // reports that the requested format is unavailable, retry the same request
+  // once without either cookie source. Chop does not normally pass the saved
+  // GUI cookie preference, which is why the same public URL could work there
+  // while failing every selector in the main extractor.
+  auto run_ytdlp_with_cookie_format_fallback =
+      [&](const std::vector<std::string>& argv) -> Attempt {
+    Attempt at = run_ytdlp(argv);
+    if (at.cancelled || (!at.had_error && !at.final_path.empty())) return at;
+
+    std::string cause = essence_of(at);
+    std::transform(cause.begin(), cause.end(), cause.begin(),
+      [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (cause.find("requested format is not available") == std::string::npos) {
+      return at;
+    }
+
+    std::vector<std::string> cookie_free;
+    cookie_free.reserve(argv.size());
+    bool removed_cookies = false;
+    for (size_t i = 0; i < argv.size(); ++i) {
+      if (argv[i] == "--cookies" || argv[i] == "--cookies-from-browser") {
+        removed_cookies = true;
+        if (i + 1 < argv.size()) ++i;
+        continue;
+      }
+      cookie_free.push_back(argv[i]);
+    }
+    if (!removed_cookies) return at;
+
+    progress_log("rung",
+      "cookie-backed format manifest unavailable; retrying without cookies");
+    return run_ytdlp(cookie_free);
+  };
+
   // Build argv for one VIDEO rung: a muxed/merged download yt-dlp writes
   // straight to out_template. This IS the media a chop session wants (its
   // audio companion is pulled later by `latch clip --preview`), so unlike the
@@ -371,24 +408,6 @@ ExtractResult extract(const std::string& url,
     return argv;
   };
 
-  // Build argv for one AUDIO rung: yt-dlp extracts the audio track (-x) to
-  // out_template.
-  auto build_audio_argv = [&](const std::string& selector) {
-    std::vector<std::string> argv = base;
-    argv.insert(argv.end(), extras.begin(), extras.end());
-    argv.push_back("-o");
-    argv.push_back(out_template);
-    argv.push_back("-x");
-    argv.push_back("-f");
-    argv.push_back(selector);
-    if (!opts.audio_format.empty()) {
-      argv.push_back("--audio-format");
-      argv.push_back(opts.audio_format);
-    }
-    argv.push_back(url);
-    return argv;
-  };
-
   // Try each selector rung in turn; first success wins. Every rung is its OWN
   // yt-dlp invocation with its own receipts, so an extractor error that aborts
   // one selector (not merely a format-unavailable) still lets the next rung
@@ -401,7 +420,7 @@ ExtractResult extract(const std::string& url,
                         std::string& last_essence) -> int {
     for (const auto& r : rungs) {
       progress_log("rung", r.label + ": -f " + r.selector);
-      Attempt at = run_ytdlp(build(r.selector));
+      Attempt at = run_ytdlp_with_cookie_format_fallback(build(r.selector));
       if (at.cancelled) return -1;
       if (!at.had_error && !at.final_path.empty()) {
         progress_done(at.final_path);
@@ -458,30 +477,18 @@ ExtractResult extract(const std::string& url,
     return ExtractResult::DownloadFailed;
   }
 
-  // ---- Audio mode: resilience ladder, first success wins -------------------
-  // Rung 1: -f bestaudio               (audio-only; the historical default)
-  // Rung 2: -f bestaudio/best          (fall back to a muxed stream, still -x)
-  // Rung 3: -f best, no -x; download a muxed file and extract audio locally
-  //         with the shared-bin ffmpeg. Covers the case where yt-dlp's own
-  //         audio post-processor is what's failing, or where nothing but a
-  //         progressive stream is offered at all.
+  // ---- Audio mode: acquire source first, encode locally --------------------
+  // Output format is never a yt-dlp selection concern. Download the highest
+  // quality audio source (falling back to a muxed `best` stream), then use our
+  // own ffmpeg for stream-copy / requested conversion. This keeps WAV/FLAC/
+  // MP3/M4A/OPUS choices from making a perfectly valid URL un-downloadable.
   std::string last_essence;
+  // Download into our own temp area, then extract/convert locally. Sweep the
+  // temp on every exit path.
   {
-    const std::vector<Rung> rungs = {
-      {"1/3 bestaudio (audio-only)", "bestaudio"},
-      {"2/3 bestaudio/best (fallback chain)", "bestaudio/best"},
-    };
-    int rc = run_ladder(rungs, build_audio_argv, last_essence);
-    if (rc < 0) { progress_cancelled(); return ExtractResult::Cancelled; }
-    if (rc == 1) return ExtractResult::Ok;
-  }
-
-  // Rung 3: download a muxed video into our own temp area, then extract the
-  // audio with ffmpeg. Sweep the temp on every exit path.
-  {
-    const char* kRung3 = "3/3 video + local extract";
+    const char* kRung3 = "source + local audio conversion";
     progress_log("rung", std::string(kRung3) +
-      ": downloading a muxed stream (-f best/bestvideo*+bestaudio)");
+      ": downloading highest-quality audio source (-f bestaudio/best)");
 
     auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::system_clock::now().time_since_epoch()).count();
@@ -496,12 +503,22 @@ ExtractResult extract(const std::string& url,
     argv.push_back("-o");
     argv.push_back(temp_template);
     argv.push_back("-f");
-    argv.push_back("best/bestvideo*+bestaudio");
+    argv.push_back("bestaudio/best");
     argv.push_back(url);
 
-    Attempt at = run_ytdlp(argv);
+    Attempt at = run_ytdlp_with_cookie_format_fallback(argv);
     if (at.cancelled) { progress_cancelled(); return ExtractResult::Cancelled; }
-    if (at.had_error && at.final_path.empty()) {
+    if (at.had_error || at.final_path.empty()) {
+      last_essence = essence_of(at);
+      progress_log("rung", std::string(kRung3) +
+        " bestaudio failed: " + last_essence + "; retrying -f best");
+      fs::remove_all(tempdir, ec);
+      fs::create_directories(tempdir, ec);
+      argv[argv.size() - 2] = "best";
+      at = run_ytdlp_with_cookie_format_fallback(argv);
+      if (at.cancelled) { progress_cancelled(); return ExtractResult::Cancelled; }
+    }
+    if (at.had_error || at.final_path.empty()) {
       last_essence = essence_of(at);
       progress_log("rung", std::string(kRung3) + " download failed: " + last_essence);
       progress_error("all download methods failed. last error: " + last_essence);

@@ -656,12 +656,10 @@ export default function ChopApp() {
   const playRegion = useCallback((r: ChopRegion) => {
     if (!audioPath) return;
     setAuditionId(r.id);
-    void playbackEngine.play(audioPath, 'full', { startSec: r.startSec });
-    // Cmd::Play resets the Rust loop; re-arm explicitly (channel order
-    // guarantees play-then-arm). The watcher's arm effect only fires on a
-    // BOUNDS change, so a same-region retrigger (Space stop → Space, which
-    // now keeps the region armed) would otherwise play through the out.
-    playbackEngine.setLoop(r.startSec, r.endSec);
+    // One native command owns both operations. Two independent Tauri invokes
+    // have no ordering guarantee; if set-loop arrived first, Play cleared it
+    // and the optimized release escaped the selected region intermittently.
+    void playbackEngine.playLoop(audioPath, r.startSec, r.endSec);
   }, [audioPath]);
 
   // Folded play: an ARMED selected region auditions THAT region (looped);
@@ -791,7 +789,11 @@ export default function ChopApp() {
       // becomes the transport (a leaked engine play would otherwise run
       // UNDER the video audio with no UI showing it).
       playbackEngine.stop({ fadeMs: 20 });
-      videoRef.current?.seek(r.startSec, true); // freeze across the retrigger seek (no flash)
+      // Stop/activation already parks the native player at the region start.
+      // Re-seeking the exact same AVPlayerItem on every Space retrigger flushed
+      // its presentation layer for one black frame before playback.
+      const t = videoRef.current?.getCurrentTime() ?? r.startSec;
+      if (Math.abs(t - r.startSec) > 1 / 120) videoRef.current?.seek(r.startSec, true);
       videoRef.current?.setLoop(r.startSec, r.endSec);
       videoRef.current?.play();
     } else {
@@ -1571,6 +1573,7 @@ export default function ChopApp() {
                 shuttle, zoom/pan, frame-step. It owns playback (audio) for
                 video links, so the WAV transport below is hidden then. */}
             <VideoPreview ref={videoRef} src={convertFileSrc(videoPath)} path={videoPath} suppressChip disableKeyboard
+              macDirectPlayback
               pitchPreviewLock={pitchMode === 'preserve'}
               nativeAutoplay={false}
               onPlayingChange={setVideoPlaying}

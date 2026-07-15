@@ -9,6 +9,7 @@ mod drag_overlay;
 mod explorer_folder;
 mod job_object;
 mod logger;
+mod mac_video;
 #[cfg(target_os = "windows")]
 mod native_drag_chip;
 mod cursor;
@@ -226,6 +227,12 @@ pub fn run() {
             chop::latch_clips_dir,
             chop::latch_clip,
             audio::audio_cmd,
+            mac_video::mac_video_open,
+            mac_video::mac_video_command,
+            mac_video::mac_video_state,
+            mac_video::mac_video_frame,
+            mac_video::mac_video_transform,
+            mac_video::mac_video_stop,
             peaks::generate_waveform,
             peaks::generate_waveform_any,
             peaks::wav_nearest_zero_cross,

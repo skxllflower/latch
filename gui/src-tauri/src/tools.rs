@@ -337,18 +337,22 @@ fn build_tiers(name: &str, configured: &str) -> Vec<Tier> {
         cands: dev_tool_fallbacks(name),
         enabled: cfg!(debug_assertions),
     });
-    tiers.push(Tier {
-        source: "registry",
-        message: "shared registry".into(),
-        cands: crate::registry::resolved_binary(name).into_iter().collect(),
-        enabled: true,
-    });
-    tiers.push(Tier {
+    let installed = Tier {
         source: "installed",
         message: "default install location".into(),
         cands: installed_tool_fallbacks(name),
         enabled: true,
-    });
+    };
+    let registry = Tier {
+        source: "registry",
+        message: "shared registry".into(),
+        cands: crate::registry::resolved_binary(name).into_iter().collect(),
+        enabled: true,
+    };
+    // Our packaged coredist is authoritative for our own core. A registry
+    // entry may legitimately point to an older same-version bootstrap copy.
+    if name == "latch" { tiers.push(installed); tiers.push(registry); }
+    else { tiers.push(registry); tiers.push(installed); }
     tiers
 }
 
@@ -556,13 +560,24 @@ pub(crate) fn run_reader(
                 continue;
             }
             let line = String::from_utf8_lossy(&raw);
-            let payload = match serde_json::from_str::<Value>(&line) {
-                Ok(v) => serde_json::json!({
+            let parsed = serde_json::from_str::<Value>(&line).ok();
+            if let Some(v) = parsed.as_ref() {
+                let ty = v.get("type").and_then(Value::as_str).unwrap_or("");
+                if ty == "log" || ty == "error" || ty == "start" {
+                    let phase = v.get("phase").and_then(Value::as_str).unwrap_or(ty);
+                    let message = v.get("message").and_then(Value::as_str)
+                        .or_else(|| v.get("url").and_then(Value::as_str))
+                        .unwrap_or("");
+                    crate::logger::log(&format!("[job {job_id}] [{phase}] {message}"));
+                }
+            }
+            let payload = match parsed {
+                Some(v) => serde_json::json!({
                     "tool": tool,
                     "jobId": job_id,
                     "event": v,
                 }),
-                Err(_) => serde_json::json!({
+                None => serde_json::json!({
                     "tool": tool,
                     "jobId": job_id,
                     "event": { "type": "raw", "line": line },
@@ -629,12 +644,11 @@ pub async fn latch_extract(
     let bin = find_tool_binary("latch", &binary_path)?;
     log_binary_receipt(&bin, if options.video { "chop/extract-video" } else { "chop/extract-audio" });
     let mut args = vec!["extract".to_string(), url, output_dir];
-    let fmt = if options.audio_format.is_empty() {
-        "mp3".to_string()
-    } else {
-        options.audio_format.clone()
-    };
-    args.push(format!("--format={}", fmt));
+    // Output encoding is independent of source acquisition. Empty means
+    // preserve the downloaded source codec; never silently turn it into MP3.
+    if !options.audio_format.trim().is_empty() {
+        args.push(format!("--format={}", options.audio_format.trim()));
+    }
     if options.no_playlist {
         args.push("--no-playlist".to_string());
     } else {
@@ -1107,6 +1121,43 @@ pub async fn video_audio_peaks(
     path: String,
     bins: Option<u32>,
 ) -> Result<serde_json::Value, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let n = bins.unwrap_or(2000).max(1) as usize;
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let mut candidates = Vec::new();
+        if let Some(home) = home {
+            candidates.push(home.join("Library/Application Support/Vacant Systems/Shared/bin/ffmpeg"));
+        }
+        candidates.push(PathBuf::from("/Library/Application Support/Vacant Systems/Shared/bin/ffmpeg"));
+        candidates.push(PathBuf::from("/usr/local/bin/ffmpeg"));
+        candidates.push(PathBuf::from("/opt/homebrew/bin/ffmpeg"));
+        let ffmpeg = candidates.into_iter().find(|p| p.exists())
+            .ok_or("ffmpeg not found for macOS waveform analysis")?;
+        let input = path.clone();
+        return tauri::async_runtime::spawn_blocking(move || {
+            let out = Command::new(ffmpeg)
+                .args(["-v", "error", "-i", &input, "-vn", "-ac", "1", "-ar", "2000", "-f", "f32le", "pipe:1"])
+                .stdout(Stdio::piped()).stderr(Stdio::piped()).output()
+                .map_err(|e| format!("waveform ffmpeg spawn: {e}"))?;
+            if !out.status.success() {
+                return Err(format!("waveform ffmpeg: {}", String::from_utf8_lossy(&out.stderr).trim()));
+            }
+            let samples: Vec<f32> = out.stdout.chunks_exact(4)
+                .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]).abs().min(1.0))
+                .collect();
+            if samples.is_empty() { return Err("video has no decodable audio samples".into()); }
+            let mut peaks = vec![0.0f32; n];
+            for (i, sample) in samples.iter().enumerate() {
+                let bin = (i * n / samples.len()).min(n - 1);
+                peaks[bin] = peaks[bin].max(*sample);
+            }
+            Ok(serde_json::json!({ "bins": n, "dur": samples.len() as f64 / 2000.0, "peaks": peaks }))
+        }).await.map_err(|e| format!("waveform analysis join: {e}"))?;
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
     let bin = find_tool_binary("lathe", &binary_path)?;
     let n = bins.unwrap_or(2000).max(1);
     let mut cmd = Command::new(&bin);
@@ -1124,6 +1175,7 @@ pub async fn video_audio_peaks(
     let stdout = String::from_utf8_lossy(&output.stdout);
     let line = stdout.lines().last().unwrap_or("").trim();
     serde_json::from_str(line).map_err(|e| format!("audio-peaks parse: {e} (raw: {line})"))
+    }
 }
 
 /// Open a directory (or file) with the OS default handler — the clips

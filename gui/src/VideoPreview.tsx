@@ -2,6 +2,7 @@ import { forwardRef, useEffect, useMemo, useState } from 'react';
 import { VideoView, type VideoViewHandle, type VideoViewProps } from './VideoView';
 import { isVideoPath, isChromiumPlayableVideo } from './formats';
 import { latheStatus } from './latheStatus';
+import { isMac } from './platform';
 
 // The largest pixel dimension we'll hand WebView2's <video> in the FALLBACK
 // path. Chromium decodes 1080p-and-under H.264 reliably; a 4K stream (even a
@@ -49,6 +50,13 @@ export const VideoPreview = forwardRef<VideoViewHandle, VideoViewProps>(
         : null),
       [isVideo, path, nativeAutoplay],
     );
+
+    const directMacPreview = isMac && !!props.macDirectPlayback && isVideo &&
+      isChromiumPlayableVideo(path as string);
+
+    if (directMacPreview) {
+      return <VideoView ref={ref} {...props} nativeStream={null} />;
+    }
 
     if (isVideo && latheResolved) {
       return (

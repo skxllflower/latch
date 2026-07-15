@@ -15,7 +15,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tauri = { version = "2", features = ["macos-private-api"] }
+tauri = { version = "2", features = ["protocol-asset", "macos-private-api"] }
 tauri-plugin-dialog = "2"
 # Second launch focuses the running window instead of spawning a twin.
 tauri-plugin-single-instance = "2"
@@ -40,6 +40,9 @@ drag = { path = "vendor/drag" }
 # OS-level keyboard polling for the drag chip's modifier state —
 # DoDragDrop's modal pump blocks JS keydown during a drag.
 device_query = "2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
 
 # Job Objects tie every spawned latch.exe (and its yt-dlp/ffmpeg
 # children, by job inheritance) to this process's lifetime — same

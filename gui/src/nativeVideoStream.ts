@@ -457,6 +457,14 @@ export class NativeVideoEngine {
       // existed, where the daemon-side ops were no-ops).
       void invoke('set_video_audio_volume', { vol: this.volume }).catch(() => {});
       if (this.rate !== 1) void invoke('set_video_audio_rate', { rate: this.rate }).catch(() => {});
+      // Backend retains this across startup too; resend the latest JS intent
+      // after the awaited start as an idempotent belt-and-braces sync. This
+      // also covers a region change that occurred while start was awaiting.
+      const r = this.loopRegion;
+      void invoke('set_video_audio_loop', {
+        inSec: r ? r.inSec : 0,
+        outSec: r ? r.outSec : 0,
+      }).catch(() => {});
     } catch { /* no audio / failure → muted video (wall clock) */ }
   }
 
@@ -573,6 +581,10 @@ export class NativeVideoEngine {
   // re-cue seek per wrap, not per move), so the loop tracks the dragged edges
   // in real time. setLoopRegion re-arms the gapless loop once the drag settles.
   setLoopBounds(inSec: number, outSec: number): void {
+    // WKWebView's persistent stream is fragile while an in-process seek is
+    // decode-forwarding. Keep the settled decoder loop armed during a Mac
+    // pointer gesture; setLoopRegion applies the final bounds on release.
+    if (isMac) return;
     const prev = this.loopRegion;
     const wasLive = this.liveLoopActive;
     this.loopRegion = outSec > inSec ? { inSec, outSec } : null;
@@ -782,10 +794,15 @@ export class NativeVideoEngine {
     if (this.destroyed) return;
     this.lastSeekCmdAt = performance.now();
     if (this.persistent) {
+      const issuedConnToken = this.connToken;
+      const issuedStreamId = this.streamId;
       this.pendingMarkers++;
       this.holdingForSeek = false;
       void this.control('seek', tt).then((ok) => {
         if (ok || this.destroyed) return;
+        // Ignore a late failure from a decoder that another fallback already
+        // replaced. Reconnecting again would abort the fresh stream.
+        if (issuedConnToken !== this.connToken || issuedStreamId !== this.streamId) return;
         // Decoder gone (control 404 / network failure): the marker will never
         // come, which would discard frames forever. Reconnect — /vstream
         // spawns a fresh decoder at tt.
@@ -1084,6 +1101,17 @@ export class NativeVideoEngine {
     } catch (e) {
       const aborted = e instanceof DOMException && e.name === 'AbortError';
       if (token === this.connToken && !this.destroyed && !aborted) {
+        if (this.persistent) {
+          this.quickDeaths = performance.now() - this.connectedAt < 2000 ? this.quickDeaths + 1 : 0;
+          if (this.quickDeaths < 3) {
+            const resumeAt = this.clock;
+            this.log('warn', `stream read failed (${e}) - recovering at ${resumeAt.toFixed(2)}s`);
+            await sleep(300);
+            if (token === this.connToken && !this.destroyed) void this.connect(resumeAt);
+            return;
+          }
+        }
+        this.log('error', `stream read failed repeatedly: ${e}`);
         this.cb.onError?.(`stream read failed: ${e}`);
       }
     }

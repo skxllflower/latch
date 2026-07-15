@@ -14,6 +14,10 @@ use tauri::{AppHandle, Emitter};
 
 pub enum Cmd {
     Play { path: String, start_sec: f64 },
+    // Atomic region audition. Keeping play + loop bounds in one mailbox
+    // command prevents two frontend invokes from arriving in the opposite
+    // order (Play intentionally clears any previous loop).
+    PlayLoop { path: String, start_sec: f64, end_sec: f64 },
     Pause,
     Resume,
     Stop,
@@ -282,6 +286,10 @@ struct VideoDeck {
     playing: bool,
     rate: f32,
     volume: f32,
+    // Desired loop survives decoder startup/restart. A VSetLoop can arrive
+    // before decode-server has exposed stdin; treating it as fire-and-forget
+    // made freshly drawn regions intermittently lose their audio loop.
+    looping: Option<(f64, f64)>,
 }
 
 impl VideoDeck {
@@ -297,6 +305,7 @@ impl VideoDeck {
             playing: false,
             rate: 1.0,
             volume: 1.0,
+            looping: None,
         }
     }
 
@@ -397,6 +406,16 @@ impl VideoDeck {
         let stderr = child.stderr.take();
         self.stdin = child.stdin.take();
         self.persistent = persistent;
+
+        // Apply retained transport intent as soon as the persistent decoder
+        // can accept control commands, before its buffered audio reaches the
+        // sink. Raw stream-audio has no control stdin and loops via fallback.
+        if persistent {
+            if let Some((lo, hi)) = self.looping {
+                let cmd = format!("{{\"op\":\"loop\",\"in\":{lo:.6},\"out\":{hi:.6}}}\n");
+                let _ = self.send(&cmd);
+            }
+        }
 
         // Drain the rest of stderr so lathe never blocks on a full pipe.
         if let Some(mut e) = stderr {
@@ -721,6 +740,24 @@ fn audio_thread(app: AppHandle, rx: Receiver<Cmd>) {
                         }
                     }
                 }
+                Cmd::PlayLoop { path, start_sec, end_sec } => {
+                    if let Some(s) = st.sink.take() { s.stop(); }
+                    st.looping = (end_sec > start_sec).then_some((start_sec, end_sec));
+                    match open_sink(&handle, &path, start_sec) {
+                        Ok(sink) => {
+                            st.sink = Some(sink);
+                            st.path = path;
+                        }
+                        Err(e) => {
+                            st.path = String::new();
+                            st.looping = None;
+                            crate::logger::log(&format!("audition play-loop: FAILED for {path}: {e}"));
+                            let _ = app.emit("audio-pos", serde_json::json!({
+                                "path": path, "posSec": 0.0, "state": "error", "message": e,
+                            }));
+                        }
+                    }
+                }
                 Cmd::Pause => { if let Some(s) = &st.sink { s.pause(); } }
                 Cmd::Resume => { if let Some(s) = &st.sink { s.play(); } }
                 Cmd::Stop => {
@@ -763,6 +800,7 @@ fn audio_thread(app: AppHandle, rx: Receiver<Cmd>) {
                 Cmd::VStop => {
                     vd.stop();
                     vd.path = String::new();
+                    vd.looping = None;
                 }
                 Cmd::VSeek { sec, dir } => {
                     // The decoder owns BOTH directions: dir=-1 streams
@@ -788,6 +826,7 @@ fn audio_thread(app: AppHandle, rx: Receiver<Cmd>) {
                     // already-wrapped PCM and the position sails straight
                     // past the region. The daemon clears wraps ONLY at
                     // seek-marker flushes; so do we.
+                    vd.looping = (out_sec > in_sec).then_some((in_sec, out_sec));
                     let cmd = format!(
                         "{{\"op\":\"loop\",\"in\":{:.6},\"out\":{:.6}}}\n",
                         in_sec, out_sec,
@@ -962,6 +1001,16 @@ pub fn audio_cmd(
         "play" => Cmd::Play {
             path: path.ok_or("play needs path")?,
             start_sec: sec.unwrap_or(0.0),
+        },
+        "play-loop" => {
+            let start_sec = sec.ok_or("play-loop needs sec")?;
+            let end_sec = end_sec.ok_or("play-loop needs endSec")?;
+            if end_sec <= start_sec { return Err("play-loop end must be after start".into()); }
+            Cmd::PlayLoop {
+                path: path.ok_or("play-loop needs path")?,
+                start_sec,
+                end_sec,
+            }
         },
         "pause" => Cmd::Pause,
         "resume" => Cmd::Resume,

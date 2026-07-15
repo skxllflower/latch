@@ -40,9 +40,10 @@ interface Options {
   onHover?: (clientX: number, clientY: number) => void;  // non-drag pointer move
   onLeave?: () => void;
   onTap?: (clientX: number, clientY: number) => void;    // click with no drag
+  directGestures?: boolean;                             // apply gesture deltas immediately (native overlays)
 }
 
-export function useCanvasViewport({ containerRef, contentW, contentH, enabled = true, spacebarFit = true, onHover, onLeave, onTap }: Options) {
+export function useCanvasViewport({ containerRef, contentW, contentH, enabled = true, spacebarFit = true, onHover, onLeave, onTap, directGestures = false }: Options) {
   const [view, setView] = useState<View>({ s: 1, ox: 0, oy: 0 });
   const viewRef = useRef(view); viewRef.current = view;
   const [containerSize, setContainerSize] = useState({ w: 0, h: 0 });
@@ -124,15 +125,19 @@ export function useCanvasViewport({ containerRef, contentW, contentH, enabled = 
       if (!h) return;
       cx = h.x - rect.left; cy = h.y - rect.top;
     }
-    const base = targetRef.current ?? viewRef.current;
+    const base = directGestures ? viewRef.current : (targetRef.current ?? viewRef.current);
     cancelMomentum();
-    easeTo(zoomAround(base, base.s * factor, cx, cy));
-  }, [containerRef, cancelMomentum, easeTo, zoomAround]);
+    const next = zoomAround(base, base.s * factor, cx, cy);
+    if (directGestures) { cancelTween(); setView(next); }
+    else easeTo(next);
+  }, [containerRef, cancelMomentum, cancelTween, directGestures, easeTo, zoomAround]);
 
   const panSmoothBy = useCallback((dx: number, dy: number) => {
-    const base = targetRef.current ?? viewRef.current;
-    easeTo(clampView({ s: base.s, ox: base.ox + dx, oy: base.oy + dy }));
-  }, [clampView, easeTo]);
+    const base = directGestures ? viewRef.current : (targetRef.current ?? viewRef.current);
+    const next = clampView({ s: base.s, ox: base.ox + dx, oy: base.oy + dy });
+    if (directGestures) { cancelTween(); setView(next); }
+    else easeTo(next);
+  }, [cancelTween, clampView, directGestures, easeTo]);
   const panBy = useCallback((dx: number, dy: number) => {
     const v = viewRef.current;
     setView(clampView({ s: v.s, ox: v.ox + dx, oy: v.oy + dy }));
@@ -290,13 +295,15 @@ export function useCanvasViewport({ containerRef, contentW, contentH, enabled = 
       // panning both axes; ctrlKey is trackpad pinch and Cmd+wheel is the mac
       // opt-in zoom (both fall through to the cursor-anchored zoom below).
       if (!isMouseWheel && !e.ctrlKey && !(isMac && e.metaKey)) { panSmoothBy(-e.deltaX, -e.deltaY); return; }
-      const base = isMouseWheel ? viewRef.current : (targetRef.current ?? viewRef.current);
+      const base = directGestures || isMouseWheel ? viewRef.current : (targetRef.current ?? viewRef.current);
       const k = isMouseWheel ? WHEEL_K : PINCH_WHEEL_K;
-      easeTo(zoomAround(base, base.s * Math.exp(-e.deltaY * k), cx, cy));
+      const next = zoomAround(base, base.s * Math.exp(-e.deltaY * k), cx, cy);
+      if (directGestures) { cancelTween(); setView(next); }
+      else easeTo(next);
     };
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
-  }, [containerRef, cancelMomentum, panSmoothBy, easeTo, zoomAround]);
+  }, [containerRef, cancelMomentum, cancelTween, directGestures, panSmoothBy, easeTo, zoomAround]);
 
   // ---- hover gate + Tauri HID gesture events ----
   useEffect(() => {
@@ -316,7 +323,11 @@ export function useCanvasViewport({ containerRef, contentW, contentH, enabled = 
     let un: (() => void) | null = null; let disposed = false;
     listen<boolean>('wd-trackpad-active', (e) => {
       if (!isHoveredRef.current) return;
-      trackpadActiveUntilRef.current = e.payload ? Number.MAX_SAFE_INTEGER : performance.now() + 250;
+      // Contact alone is not motion. Latching here made smooth-wheel devices
+      // (notably Magic Mouse) alternate between the WebKit wheel stream and
+      // the native gesture stream. The motion handlers below establish their
+      // own short duplicate-suppression window, matching SpectrogramView.
+      if (!e.payload) trackpadActiveUntilRef.current = 0;
     }).then((fn) => { if (disposed) fn(); else un = fn; });
     return () => { disposed = true; if (un) un(); };
   }, []);
