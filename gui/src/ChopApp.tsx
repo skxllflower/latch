@@ -183,7 +183,7 @@ export default function ChopApp() {
 
   const {
     regions, selectedId, setRegions, select, createDefault, remove,
-    setLabel, setStaged, setExportVideo, setClip,
+    setLabel, setStaged, setExportVideo, setClip, setVideoClip,
   } = useChopRegions();
   // Fresh-regions ref so handlers fired from a gesture's pointerup (stale
   // closure) still see a just-drawn region.
@@ -1257,15 +1257,21 @@ export default function ChopApp() {
   // the background PRE-render (so a drag can start instantly inside the
   // gesture) and the drag path's render-on-miss. Stamps clipPath only
   // if the region's bounds didn't change mid-render.
-  const renderRegionClip = useCallback(async (id: string, forceVideo?: boolean): Promise<string | null> => {
+  const renderRegionClip = useCallback(async (id: string, forceVideo?: boolean, quiet?: boolean): Promise<string | null> => {
     const r = regionsRef.current.find((x) => x.id === id);
-    if (!r || !audioPath || r.clipState === 'rendering') return null;
+    if (!r || !audioPath) return null;
+    const wantsVideo = forceVideo ?? r.exportVideo ?? false;
+    // Off-default video pre-render lands in the region's SECOND slot (the
+    // dragout strip's right half is always a video drag, independent of
+    // exportVideo) — the default slot keeps the exportVideo-flavored render.
+    const videoSlot = wantsVideo && !(r.exportVideo ?? false);
+    const stamp = videoSlot ? setVideoClip : setClip;
+    if ((videoSlot ? (r.videoClipState ?? 'none') : r.clipState) === 'rendering') return null;
     // A video render before the full-res file lands would silently fall
     // back to an AUDIO cut (clipInputFor's gate) while the UI says
-    // "video" — be honest instead.
-    const wantsVideo = forceVideo ?? r.exportVideo ?? false;
+    // "video" — be honest instead. quiet = background warm, no toast.
     if (wantsVideo && !hdVideoPath) {
-      setExportMsg('Full-res video still downloading… try the video export shortly');
+      if (!quiet) setExportMsg('Full-res video still downloading… try the video export shortly');
       return null;
     }
     const { input, video, ext } = clipInputFor(r, forceVideo);
@@ -1275,7 +1281,7 @@ export default function ChopApp() {
     try { clipsDir = await ensureClipsDir(); } catch { /* temp fallback */ }
     if (!clipsDir) return null;
     const dsep = clipsDir.includes('\\') ? '\\' : '/';
-    setClip(id, 'rendering');
+    stamp(id, 'rendering');
     try {
       // Stamped mint name — see beginRegionDragOut; keeps pre-renders
       // collision-proof at any later drop destination too.
@@ -1285,18 +1291,21 @@ export default function ChopApp() {
         speed: videoRef.current?.getSpeed() ?? 1, pitchMode: pitchModeRef.current,
       });
       const cur = regionsRef.current.find((x) => x.id === id);
-      const variantIsDefault = (forceVideo ?? (r.exportVideo ?? false)) === (cur?.exportVideo ?? false);
+      // The video slot is variant-pinned by construction; the default slot is
+      // stale if exportVideo flipped mid-render.
+      const variantIsDefault = videoSlot
+        || (forceVideo ?? (r.exportVideo ?? false)) === (cur?.exportVideo ?? false);
       if (cur && cur.startSec === r.startSec && cur.endSec === r.endSec && variantIsDefault) {
-        setClip(id, 'ready', path);
+        stamp(id, 'ready', path);
       } else if (cur) {
-        setClip(id, 'none'); // bounds/variant moved on — the cache is stale
+        stamp(id, 'none'); // bounds/variant moved on — the cache is stale
       }
       return path;
     } catch {
-      setClip(id, 'error');
+      stamp(id, 'error');
       return null;
     }
-  }, [audioPath, hdVideoPath, clipInputFor, runClip, setClip, sourceStem, ensureClipsDir]);
+  }, [audioPath, hdVideoPath, clipInputFor, runClip, setClip, setVideoClip, sourceStem, ensureClipsDir]);
 
   // Background pre-render, debounced — runs after a region settles so the
   // file EXISTS by drag time. DoDragDrop must start inside the pointer
@@ -1314,16 +1323,39 @@ export default function ChopApp() {
       }
     }, 700));
   }, [renderRegionClip]);
+  // Video-variant warm, keyed separately so it never cancels the default
+  // slot's debounce for the same region.
+  const scheduleVideoClipRender = useCallback((id: string) => {
+    const key = `v:${id}`;
+    const prev = renderTimersRef.current.get(key);
+    if (prev) window.clearTimeout(prev);
+    renderTimersRef.current.set(key, window.setTimeout(() => {
+      renderTimersRef.current.delete(key);
+      const r = regionsRef.current.find((x) => x.id === id);
+      const st = r?.videoClipState ?? 'none';
+      if (r && st !== 'ready' && st !== 'rendering') {
+        void renderRegionClip(id, true, true);
+      }
+    }, 700));
+  }, [renderRegionClip]);
 
   // EVERY region keeps a fresh render, one at a time (the completing
   // render flips its clipState, which re-runs this and picks the next
   // 'none'). Bound edits invalidate clipState, re-arming the queue.
+  // Once every default variant is settled, warm the VIDEO variant for
+  // audio-default regions too (right half of the dragout strip is always a
+  // video drag) so video drag-outs also start instantly.
   useEffect(() => {
     if (phase !== 'ready') return;
-    if (regions.some((r) => r.clipState === 'rendering')) return;
+    if (regions.some((r) => r.clipState === 'rendering' || r.videoClipState === 'rendering')) return;
     const next = regions.find((r) => r.clipState === 'none');
-    if (next) scheduleClipRender(next.id);
-  }, [phase, regions, scheduleClipRender]);
+    if (next) { scheduleClipRender(next.id); return; }
+    if (!hdVideoPath) return;
+    const nextVideo = regions.find(
+      (r) => !(r.exportVideo ?? false) && (r.videoClipState ?? 'none') === 'none',
+    );
+    if (nextVideo) scheduleVideoClipRender(nextVideo.id);
+  }, [phase, regions, scheduleClipRender, scheduleVideoClipRender, hdVideoPath]);
 
   // Drag a region out as a file: render the clip to temp (if not already)
   // and hand it to the OS drag. VERBATIM port of the working WAVdesk flow
@@ -1372,17 +1404,32 @@ export default function ChopApp() {
     // NSDraggingSession (and its chip) existed at all. Mirrors wavdesk's
     // localPreRenders reuse; the fresh render stays as the miss fallback.
     let pre: string | null = null;
+    let preWasVideoSlot = false;
     {
       const cur = regionsRef.current.find((x) => x.id === r.id);
       const dragVariant = forceVideo ?? (cur?.exportVideo ?? false);
-      if (cur?.clipState === 'ready' && cur.clipPath
-          && dragVariant === (cur.exportVideo ?? false)
-          && cur.clipPath.toLowerCase().endsWith(`.${ext.toLowerCase()}`)) {
+      const defaultVariant = cur?.exportVideo ?? false;
+      // Default slot when the drag wants the exportVideo flavor; the video
+      // warm slot when it's a video drag off an audio-default region.
+      let candidate: string | undefined;
+      if (cur && dragVariant === defaultVariant && cur.clipState === 'ready') {
+        candidate = cur.clipPath;
+      } else if (cur && dragVariant && !defaultVariant && cur.videoClipState === 'ready') {
+        candidate = cur.videoClipPath;
+        preWasVideoSlot = true;
+      }
+      if (candidate && candidate.toLowerCase().endsWith(`.${ext.toLowerCase()}`)) {
         try {
-          if (await invoke<boolean>('clip_path_exists', { path: cur.clipPath })) pre = cur.clipPath;
+          if (await invoke<boolean>('clip_path_exists', { path: candidate })) pre = candidate;
         } catch { /* probe failed — render fresh */ }
       }
+      if (!pre) preWasVideoSlot = false;
     }
+    // Stamp whichever slot this drag's variant belongs to — a video drag
+    // off an audio-default region caches into the video warm slot.
+    const dragIsVideo = forceVideo ?? (regionsRef.current.find((x) => x.id === r.id)?.exportVideo ?? false);
+    const dragDefaultVariant = regionsRef.current.find((x) => x.id === r.id)?.exportVideo ?? false;
+    const stampSlot = (preWasVideoSlot || (dragIsVideo && !dragDefaultVariant)) ? setVideoClip : setClip;
     const chip = await buildDragChip(r, video);
     try {
       await startOverlayDrag({
@@ -1391,14 +1438,14 @@ export default function ChopApp() {
       });
       let path = pre;
       if (!path) {
-        setClip(r.id, 'rendering');
+        stampSlot(r.id, 'rendering');
         // Drag-out renders under a held pointer gesture, so it can't stop to ask
         // — it uses the current session pitch mode (set by the Pitch chip or a
         // prior Export dialog; defaults to preserve). The Export button owns the
         // ask-once dialog.
         path = await runClip({ input, output: out, startSec: r.startSec, endSec: r.endSec, video, overwrite: false, speed: videoRef.current?.getSpeed() ?? 1, pitchMode: pitchModeRef.current });
       }
-      setClip(r.id, 'ready', path);
+      stampSlot(r.id, 'ready', path);
       void emit('wd-latch-clip-exported', { path, title: fileName });
       if (released) {
         void endOverlayDrag();
@@ -1412,7 +1459,7 @@ export default function ChopApp() {
         void endOverlayDrag(); // DoDragDrop finished — ensure the chip is gone
       }
     } catch (err) {
-      setClip(r.id, 'error');
+      stampSlot(r.id, 'error');
       setExportMsg(`Clip failed: ${String((err as Error)?.message ?? err)}`);
       void endOverlayDrag();
     } finally {
@@ -1429,7 +1476,7 @@ export default function ChopApp() {
       setCursorSec(r.startSec);
       if (hasVideoRef.current) videoRef.current?.setLoop(r.startSec, r.endSec);
     }
-  }, [audioPath, clipInputFor, runClip, setClip, buildDragChip, sourceStem, ensureClipsDir, select]);
+  }, [audioPath, clipInputFor, runClip, setClip, setVideoClip, buildDragChip, sourceStem, ensureClipsDir, select]);
 
   const handleRegionDragOut = useCallback((id: string, opts: { video: boolean }) => {
     const r = regionsRef.current.find((x) => x.id === id);
@@ -1501,8 +1548,12 @@ export default function ChopApp() {
   }, []);
 
   // ---- Render -------------------------------------------------------------
+  // inline-flex + items-center: the text buttons must center their content
+  // geometrically like iconBtn / Export already do — baseline-flow text sits
+  // a couple px high inside h-6 on mac's font metrics (the "buttons slightly
+  // off on their y coordinates" report).
   const railBtn = (active: boolean) =>
-    `h-6 px-2 border transition-none text-[0.5625rem] uppercase font-bold tracking-tight shrink-0 ${
+    `h-6 px-2 border transition-none text-[0.5625rem] uppercase font-bold tracking-tight shrink-0 inline-flex items-center ${
       active ? 'bg-[var(--theme-bg-hover)] border-[color:var(--theme-border-strong)] text-[color:var(--theme-text-heading)]'
              : 'bg-[var(--theme-bg-surface)] border-[color:var(--theme-border)] hover:bg-[var(--theme-bg-elevated)] text-[color:var(--theme-text-secondary)] hover:text-[color:var(--theme-text-primary)]'}`;
   const iconBtn = 'h-6 w-7 flex items-center justify-center shrink-0 transition-none bg-[var(--theme-bg-surface)] border border-[color:var(--theme-border)] hover:bg-[var(--theme-bg-elevated)] text-[color:var(--theme-text-secondary)] hover:text-[color:var(--theme-text-heading)]';

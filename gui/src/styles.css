@@ -180,6 +180,11 @@ html.wd-mac.wd-native-hole .wd-punch-clear {
   pointer-events: none;
   display: none;
   z-index: -1;
+  /* position:fixed escapes the html/body/#root radius clip (no containing
+     block), so the strips must round THEMSELVES or the opaque backfill
+     repaints square corner triangles the moment the hole activates. */
+  border-radius: 10px;
+  overflow: hidden;
 }
 html.wd-mac.wd-native-hole #wd-punch-backfill {
   display: block;

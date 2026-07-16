@@ -13,6 +13,7 @@ import {
   setStaged as opSetStaged,
   setExportVideo as opSetExportVideo,
   setClip as opSetClip,
+  setVideoClip as opSetVideoClip,
 } from './chopRegions';
 
 export interface UseChopRegions {
@@ -27,6 +28,7 @@ export interface UseChopRegions {
   setStaged: (id: string, staged: boolean) => void;
   setExportVideo: (id: string, v: boolean) => void;
   setClip: (id: string, state: ClipState, path?: string) => void;
+  setVideoClip: (id: string, state: ClipState, path?: string) => void;
 }
 
 export function useChopRegions(): UseChopRegions {
@@ -61,10 +63,13 @@ export function useChopRegions(): UseChopRegions {
   const setClip = useCallback((id: string, state: ClipState, path?: string) => {
     setRegionsState((prev) => opSetClip(prev, id, state, path));
   }, []);
+  const setVideoClip = useCallback((id: string, state: ClipState, path?: string) => {
+    setRegionsState((prev) => opSetVideoClip(prev, id, state, path));
+  }, []);
 
   return {
     regions, selectedId,
     setRegions, select, createDefault, remove,
-    setLabel, setStaged, setExportVideo, setClip,
+    setLabel, setStaged, setExportVideo, setClip, setVideoClip,
   };
 }

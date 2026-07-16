@@ -35,6 +35,8 @@ mod imp {
         fn CGImageRelease(image: *const std::ffi::c_void);
         fn CGColorCreateGenericRGB(r: f64, g: f64, b: f64, a: f64) -> *mut std::ffi::c_void;
         fn CGColorRelease(color: *mut std::ffi::c_void);
+        fn CGPathCreateWithRoundedRect(rect: CGRect, cw: f64, ch: f64, transform: *const std::ffi::c_void) -> *mut std::ffi::c_void;
+        fn CGPathRelease(path: *mut std::ffi::c_void);
     }
     #[link(name = "CoreVideo", kind = "framework")]
     extern "C" {
@@ -206,6 +208,27 @@ mod imp {
         std::ptr::null_mut()
     }
 
+    // The CSS shell rounding (html.wd-mac, 10px) clips the DOM, but the video
+    // host is a sibling NSView — when its rect (or 8px bleed) reaches a window
+    // corner it paints a SQUARE corner over the rounded shell ("corners get
+    // sharp once the video lands"). Mask the host's layer to the window's
+    // rounded rect, expressed in host coordinates; re-applied on every frame
+    // move since the intersection shifts with the host.
+    unsafe fn apply_corner_mask(host: *mut AnyObject) {
+        let window: *mut AnyObject = msg_send![host, window];
+        if window.is_null() { return; }
+        let content: *mut AnyObject = msg_send![window, contentView];
+        if content.is_null() { return; }
+        let cb: CGRect = msg_send![content, bounds];
+        let in_host: CGRect = msg_send![host, convertRect: cb, fromView: content];
+        let path = CGPathCreateWithRoundedRect(in_host, 10.0, 10.0, std::ptr::null());
+        let mask: *mut AnyObject = msg_send![class!(CAShapeLayer), layer];
+        let _: () = msg_send![mask, setPath: path];
+        CGPathRelease(path);
+        let layer: *mut AnyObject = msg_send![host, layer];
+        let _: () = msg_send![layer, setMask: mask];
+    }
+
     unsafe fn release(p: usize) { if p != 0 { let _: () = msg_send![p as *mut AnyObject, release]; } }
     unsafe fn destroy(s: Session) {
         let player = s.player as *mut AnyObject;
@@ -304,6 +327,7 @@ mod imp {
             } else {
                 let _: () = msg_send![parent, addSubview: host, positioned: -1i64, relativeTo: std::ptr::null_mut::<AnyObject>()];
             }
+            apply_corner_mask(host);
             let _: () = msg_send![player, setActionAtItemEnd: 2i64];
             // Keep the currently presented frame up until AVFoundation has the
             // destination frame ready. Local files preroll quickly, while the
@@ -456,6 +480,7 @@ mod imp {
                     frame.origin.x, frame.origin.y, frame.size.width, frame.size.height
                 ));
             let _: () = msg_send![s.host as *mut AnyObject, setFrame: frame];
+            apply_corner_mask(s.host as *mut AnyObject);
         }
     }
     pub fn frame(app: tauri::AppHandle, label: String, x: f64, y: f64, w: f64, h: f64) -> Result<(), String> {

@@ -20,6 +20,13 @@ export interface ChopRegion {
   // Absolute path of this region's pre-rendered clip, once it exists.
   clipPath?: string;
   clipState: ClipState;
+  // Second pre-render slot for the VIDEO variant. The dragout strip's right
+  // half is always a video drag regardless of exportVideo, so an
+  // audio-default region needs a video pre-render too or every video drag
+  // re-renders under the held gesture (the mac ~1s bare-cursor gap).
+  // Unused when exportVideo=true (the default slot IS video then).
+  videoClipPath?: string;
+  videoClipState?: ClipState;
   // Per-region override of the export-bar default. Only meaningful when
   // the source link includes video. undefined = follow the global.
   exportVideo?: boolean;
@@ -81,7 +88,11 @@ export function sortRegions(regions: ChopRegion[]): ChopRegion[] {
 // invalidate (they don't affect the cut bytes); exportVideo DOES (audio
 // clip != video clip).
 function invalidateClip(r: ChopRegion): ChopRegion {
-  return { ...r, clipPath: undefined, clipState: 'none' };
+  return {
+    ...r,
+    clipPath: undefined, clipState: 'none',
+    videoClipPath: undefined, videoClipState: 'none',
+  };
 }
 
 // The maximal free interval containing `sec`, or null if `sec` is inside
@@ -255,6 +266,16 @@ export function setClip(
   clipPath?: string,
 ): ChopRegion[] {
   return regions.map((r) => (r.id === id ? { ...r, clipState, clipPath } : r));
+}
+
+// Stamp the VIDEO-variant pre-render slot (see videoClipState on the model).
+export function setVideoClip(
+  regions: ChopRegion[],
+  id: string,
+  videoClipState: ClipState,
+  videoClipPath?: string,
+): ChopRegion[] {
+  return regions.map((r) => (r.id === id ? { ...r, videoClipState, videoClipPath } : r));
 }
 
 // Collapse a string to a safe, filesystem-friendly stem: strip illegal
