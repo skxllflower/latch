@@ -201,19 +201,61 @@ export const VideoView = forwardRef<VideoViewHandle, VideoViewProps>(function Vi
   useEffect(() => {
     if (!macAv || !path) return;
     const label = getCurrentWindow().label;
+    const doc = document.documentElement;
+    // The picture composites BELOW the webview (wavdesk's underlay system):
+    // the DOM must stop painting over the video rect. wd-native-hole clears
+    // the background chain and #wd-punch-backfill repaints the app background
+    // around the hole via four strips (see styles.css; both backfill layers
+    // ride z-index -1 — positioned boxes otherwise paint over static chrome).
+    let backfill = document.getElementById('wd-punch-backfill');
+    if (!backfill) {
+      backfill = document.createElement('div');
+      backfill.id = 'wd-punch-backfill';
+      for (const side of ['t', 'b', 'l', 'r']) {
+        const strip = document.createElement('div');
+        strip.className = `wd-punch-${side}`;
+        backfill.appendChild(strip);
+      }
+      document.body.prepend(backfill);
+    }
+    // Clamp the hole to overflow-hidden ancestors; the native frame keeps the
+    // unclamped rect (offscreen native video is invisible below the webview).
+    let clippers: HTMLElement[] = [];
+    const collectClippers = () => {
+      clippers = [];
+      let el = containerRef.current?.parentElement ?? null;
+      while (el) {
+        const cs = getComputedStyle(el);
+        if (cs.overflowX !== 'visible' || cs.overflowY !== 'visible') clippers.push(el);
+        el = el.parentElement;
+      }
+    };
+    collectClippers();
     let lastFrame = '';
+    let lastHole = '';
     let frameRaf = 0;
     const syncFrame = () => {
-      const r = containerRef.current?.getBoundingClientRect();
-      if (!r) return;
-      const pictureH = Math.max(1, r.height - HUD_TOP - HUD_BOTTOM);
-      const frameKey = `${r.left.toFixed(2)}:${r.top.toFixed(2)}:${r.width.toFixed(2)}:${pictureH.toFixed(2)}:${window.innerHeight}`;
+      const r = containerRef.current?.getBoundingClientRect(); if (!r) return;
+      let hx = r.left, hy = r.top, hr = r.right, hb = r.bottom;
+      for (const c of clippers) {
+        const cr = c.getBoundingClientRect();
+        hx = Math.max(hx, cr.left); hy = Math.max(hy, cr.top);
+        hr = Math.min(hr, cr.right); hb = Math.min(hb, cr.bottom);
+      }
+      const hw = Math.max(0, hr - hx), hh = Math.max(0, hb - hy);
+      const holeKey = `${hx.toFixed(2)}:${hy.toFixed(2)}:${hw.toFixed(2)}:${hh.toFixed(2)}`;
+      if (holeKey !== lastHole) {
+        lastHole = holeKey;
+        doc.style.setProperty('--wd-hole-x', `${hx}px`);
+        doc.style.setProperty('--wd-hole-y', `${hy}px`);
+        doc.style.setProperty('--wd-hole-w', `${hw}px`);
+        doc.style.setProperty('--wd-hole-h', `${hh}px`);
+        doc.classList.add('wd-native-hole');
+      }
+      const frameKey = `${r.left.toFixed(2)}:${r.top.toFixed(2)}:${r.width.toFixed(2)}:${r.height.toFixed(2)}:${window.innerHeight}`;
       if (frameKey === lastFrame) return;
       lastFrame = frameKey;
-      void invoke('mac_video_frame', {
-        label, x: r.left, y: window.innerHeight - (r.top + HUD_TOP) - pictureH,
-        width: r.width, height: pictureH,
-      });
+      void invoke('mac_video_frame', { label, x: r.left, y: r.top, width: r.width, height: r.height });
     };
     const scheduleFrame = () => {
       if (frameRaf) return;
@@ -221,12 +263,11 @@ export const VideoView = forwardRef<VideoViewHandle, VideoViewProps>(function Vi
     };
     const r = containerRef.current?.getBoundingClientRect();
     if (!r) return;
-    const pictureH = Math.max(1, r.height - HUD_TOP - HUD_BOTTOM);
     void invoke('mac_video_open', {
-      label, path, x: r.left, y: window.innerHeight - (r.top + HUD_TOP) - pictureH,
-      width: r.width, height: pictureH,
+      label, path, x: r.left, y: r.top, width: r.width, height: r.height,
     }).then(() => { setStatus('ready'); onReadyRef.current?.(); syncFrame(); });
-    const ro = new ResizeObserver(scheduleFrame); ro.observe(containerRef.current!);
+    const ro = new ResizeObserver(() => { collectClippers(); scheduleFrame(); });
+    ro.observe(containerRef.current!);
     window.addEventListener('resize', scheduleFrame);
     const poll = window.setInterval(() => {
       scheduleFrame();
@@ -255,6 +296,10 @@ export const VideoView = forwardRef<VideoViewHandle, VideoViewProps>(function Vi
       ro.disconnect(); window.removeEventListener('resize', scheduleFrame); window.clearInterval(poll);
       if (frameRaf) cancelAnimationFrame(frameRaf);
       if (macRevealTimerRef.current != null) window.clearTimeout(macRevealTimerRef.current);
+      // Un-punch BEFORE stopping the session: the worst interleaving is one
+      // frame of DOM background over live video, never a hole over nothing.
+      doc.classList.remove('wd-native-hole');
+      document.getElementById('wd-punch-backfill')?.remove();
       void invoke('mac_video_stop', { label });
     };
   }, [macAv, path]);
@@ -404,25 +449,15 @@ export const VideoView = forwardRef<VideoViewHandle, VideoViewProps>(function Vi
   const { view, viewRef, containerSize } = viewport;
 
   // The AVPlayerLayer lives outside WebKit's canvas compositor, so mirror the
-  // existing image-view viewport onto it. The native host clips at the top of
-  // the transport; its child layer receives the exact canvas fit/zoom/pan.
+  // canvas viewport onto it. Underlay architecture: the picture fills the
+  // FULL container (the DOM transport draws on top, same as wavdesk), so the
+  // viewport maps 1:1 — no more HUD-band remap from the old above-webview
+  // overlay days.
   useEffect(() => {
     if (!macAv || size.w <= 0 || size.h <= 0 || containerSize.w <= 0 || containerSize.h <= 0) return;
-    const pictureHeight = Math.max(1, containerSize.h - HUD_TOP - HUD_BOTTOM);
-    const fullFit = Math.min(containerSize.w / size.w, containerSize.h / size.h);
-    const pictureFit = Math.min(containerSize.w / size.w, pictureHeight / size.h);
-    const nativeScale = pictureFit * (view.s / Math.max(1e-9, fullFit));
-    const fullCenterX = (containerSize.w - size.w * view.s) / 2;
-    const fullCenterY = (containerSize.h - size.h * view.s) / 2;
-    const panScale = nativeScale / Math.max(1e-9, view.s);
-    const ox = (containerSize.w - size.w * nativeScale) / 2 + (view.ox - fullCenterX) * panScale;
-    const oy = (pictureHeight - size.h * nativeScale) / 2 + (view.oy - fullCenterY) * panScale;
     void invoke('mac_video_transform', {
-      label: getCurrentWindow().label,
-      ox, oy,
-      width: size.w * nativeScale,
-      height: size.h * nativeScale,
-      pictureHeight,
+      label: getCurrentWindow().label, ox: view.ox, oy: view.oy,
+      width: size.w * view.s, height: size.h * view.s, pictureHeight: containerSize.h,
     });
   }, [macAv, size, view, containerSize]);
 
@@ -592,9 +627,54 @@ export const VideoView = forwardRef<VideoViewHandle, VideoViewProps>(function Vi
   // The display blits the full-res frame; this is a capped offscreen copy
   // (decoded ImageBitmap during reverse, else the <video>). getImageData
   // throws on a tainted canvas — tools degrade silently then. Throttled.
+  // Shared scope-consumption tail: histogram straight to canvas, palette via
+  // throttled React state. Both the canvas path and the macAv native-sample
+  // path land here.
+  const consumeSample = useCallback((data: Uint8ClampedArray, sw: number, sh: number, now: number) => {
+    sampleRef.current = { data, w: sw, h: sh };
+    if (showHistRef.current) {
+      const hist = buildHistogram(data, sw, sh);
+      histRef.current = hist;
+      const c = histCanvasRef.current;
+      if (c) drawHistogram(c, hist, channelRef.current);
+    }
+    if (showPaletteRef.current && now - lastPaletteRef.current > 90) {
+      lastPaletteRef.current = now;
+      setPalette(extractPalette(data));
+    }
+  }, []);
+
+  const macSampleBusyRef = useRef(false);
   const sampleFrame = useCallback(() => {
     const now = performance.now();
     if (now - lastSampleRef.current < 33) return;          // ~30fps cap
+    if (macAv) {
+      // The picture composites below the webview — pixels come from the
+      // native AVPlayerItemVideoOutput tap instead of a canvas blit.
+      if (macSampleBusyRef.current) return;
+      const key = `${macTimeRef.current.toFixed(3)}|mac`;
+      if (key === sampleKeyRef.current) return;
+      macSampleBusyRef.current = true;
+      lastSampleRef.current = now;
+      void invoke<ArrayBuffer>('mac_video_sample', { label: getCurrentWindow().label, maxDim: 480 })
+        .then((buf) => {
+          if (!buf || buf.byteLength < 8) {
+            // No NEW pixel buffer (paused + already sampled). Lock the key so
+            // a static frame doesn't re-poll every tick — but only once a
+            // sample exists, else preroll would lock the scopes empty.
+            if (sampleRef.current) sampleKeyRef.current = key;
+            return;
+          }
+          sampleKeyRef.current = key;
+          const head = new DataView(buf);
+          const sw = head.getUint32(0, true), sh = head.getUint32(4, true);
+          if (sw <= 0 || sh <= 0 || buf.byteLength < 8 + sw * sh * 4) return;
+          consumeSample(new Uint8ClampedArray(buf, 8, sw * sh * 4), sw, sh, performance.now());
+        })
+        .catch(() => { /* transient (window teardown, timeout) — keep last */ })
+        .finally(() => { macSampleBusyRef.current = false; });
+      return;
+    }
     const src = nativeFrameRef.current ?? decodedFrameRef.current ?? videoRef.current;
     const vw = size.w, vh = size.h;
     if (!src || vw <= 0 || vh <= 0) return;
@@ -618,25 +698,11 @@ export const VideoView = forwardRef<VideoViewHandle, VideoViewProps>(function Vi
       const octx = off.getContext('2d', { willReadFrequently: true })!;
       octx.drawImage(src, 0, 0, sw, sh);
       const data = octx.getImageData(0, 0, sw, sh).data;
-      sampleRef.current = { data, w: sw, h: sh };
-      // Histogram draws straight to its canvas every sample (no React state →
-      // no re-render storm) so it tracks the video in realtime.
-      if (showHistRef.current) {
-        const hist = buildHistogram(data, sw, sh);
-        histRef.current = hist;
-        const c = histCanvasRef.current;
-        if (c) drawHistogram(c, hist, channelRef.current);
-      }
-      // Palette is React state (drives the swatch DOM); throttle a touch more
-      // so 30fps re-renders don't pile up — colors shift slowly anyway.
-      if (showPaletteRef.current && now - lastPaletteRef.current > 90) {
-        lastPaletteRef.current = now;
-        setPalette(extractPalette(data));
-      }
+      consumeSample(data, sw, sh, now);
     } catch {
       sampleRef.current = null; histRef.current = null;
     }
-  }, [size]);
+  }, [size, macAv, consumeSample]);
 
   // Hover RGBA — map the cursor to image px via the viewport transform, then
   // read the capped sample. Samples on demand so the readout works without a
@@ -1293,7 +1359,7 @@ export const VideoView = forwardRef<VideoViewHandle, VideoViewProps>(function Vi
     <div
       ref={containerRef}
       tabIndex={-1}
-      className="w-full h-full relative overflow-hidden select-none group bg-black/40 outline-none"
+      className={`w-full h-full relative overflow-hidden select-none group outline-none ${macAv ? '' : 'bg-black/40'}`}
       style={{ touchAction: 'none', cursor: viewport.panning ? 'grabbing' : ((macAv || viewport.isZoomed) ? 'grab' : 'default') }}
       onMouseEnter={() => { hoveredRef.current = true; }}
       onMouseLeave={() => { hoveredRef.current = false; }}

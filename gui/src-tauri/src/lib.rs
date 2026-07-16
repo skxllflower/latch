@@ -233,6 +233,7 @@ pub fn run() {
             mac_video::mac_video_frame,
             mac_video::mac_video_transform,
             mac_video::mac_video_stop,
+            mac_video::mac_video_sample,
             peaks::generate_waveform,
             peaks::generate_waveform_any,
             peaks::wav_nearest_zero_cross,

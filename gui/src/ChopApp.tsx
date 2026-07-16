@@ -1503,7 +1503,7 @@ export default function ChopApp() {
   const videoExportUi = canExportVideo && showVideo;
 
   return (
-    <div className="font-mono text-[color:var(--theme-text-primary)] select-none"
+    <div className="wd-punch-clear font-mono text-[color:var(--theme-text-primary)] select-none"
       style={{ height: '100vh', width: '100vw', overflow: 'hidden', background: bg, userSelect: 'none' }}>
       {/* Titlebar */}
       <div data-tauri-drag-region
@@ -1560,7 +1560,7 @@ export default function ChopApp() {
             clip fills it with no letterbox deadspace. */}
         {hasVideo && videoPath && phase === 'ready' && (
           <div
-            className="w-full border-b border-[color:var(--theme-border)] bg-black"
+            className="wd-punch-clear w-full border-b border-[color:var(--theme-border)] bg-black"
             style={showVideo
               // Shown: sized to the video aspect (or the user split), and able
               // to shrink to MIN_VIDEO_PANE first as the region list grows.

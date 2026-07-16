@@ -4,6 +4,7 @@
 // existing window. The label must appear in capabilities/default.json.
 
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
+import { isMac } from './platform';
 import { listen, emitTo } from '@tauri-apps/api/event';
 
 const LABEL = 'chop';
@@ -37,6 +38,10 @@ export async function openChopWindow(seed: ChopSeed): Promise<void> {
     resizable:   true,
     decorations: false,
     transparent: true,
+    // macOS: the CSS shell rounding (html.wd-mac) only reveals if the OS
+    // window backdrop is fully transparent; an opaque default backgroundColor
+    // paints square corner triangles (same fix as wavdesk's chop window).
+    ...(isMac ? { backgroundColor: '#00000000' } : {}),
     visible:     false, // revealed after first paint to avoid the white flash
   });
 

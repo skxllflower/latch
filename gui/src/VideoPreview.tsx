@@ -51,8 +51,11 @@ export const VideoPreview = forwardRef<VideoViewHandle, VideoViewProps>(
       [isVideo, path, nativeAutoplay],
     );
 
-    const directMacPreview = isMac && !!props.macDirectPlayback && isVideo &&
-      isChromiumPlayableVideo(path as string);
+    // All video containers route to AVFoundation on mac (matches wavdesk's
+    // VideoPreview): the old isChromiumPlayableVideo clause sent .mov/.mkv to
+    // the canvas engine — backwards, since AVFoundation is exactly the
+    // decoder those containers want.
+    const directMacPreview = isMac && !!props.macDirectPlayback && isVideo;
 
     if (directMacPreview) {
       return <VideoView ref={ref} {...props} nativeStream={null} />;

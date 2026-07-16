@@ -158,3 +158,53 @@ input[type="checkbox"] { accent-color: var(--theme-accent, #71717a); }
   max-width: 3.5rem;
   opacity: 1;
 }
+
+/* macOS native video hole punch (ported from wavdesk): the AVPlayerLayer
+   composites BELOW the WKWebView, so while a native session is open
+   (VideoView adds .wd-native-hole + the --wd-hole-* vars) every opaque paint
+   layer over the video rect goes transparent and #wd-punch-backfill repaints
+   the app background everywhere EXCEPT the hole via four strips. Both punch
+   layers ride z-index -1: positioned boxes otherwise paint AFTER static
+   content and cover the titlebar/chrome (the wavdesk shipped-twice bug). */
+html.wd-mac.wd-native-hole,
+html.wd-mac.wd-native-hole body,
+html.wd-mac.wd-native-hole #root {
+  background: transparent !important;
+}
+html.wd-mac.wd-native-hole .wd-punch-clear {
+  background: transparent !important;
+}
+#wd-punch-backfill {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  display: none;
+  z-index: -1;
+}
+html.wd-mac.wd-native-hole #wd-punch-backfill {
+  display: block;
+}
+#wd-punch-backfill > div {
+  position: absolute;
+  background: var(--theme-bg-app, #000);
+}
+#wd-punch-backfill > .wd-punch-t {
+  left: 0; right: 0; top: 0;
+  height: var(--wd-hole-y, 0px);
+}
+#wd-punch-backfill > .wd-punch-b {
+  left: 0; right: 0; bottom: 0;
+  top: calc(var(--wd-hole-y, 0px) + var(--wd-hole-h, 0px));
+}
+#wd-punch-backfill > .wd-punch-l {
+  left: 0;
+  top: var(--wd-hole-y, 0px);
+  height: var(--wd-hole-h, 0px);
+  width: var(--wd-hole-x, 0px);
+}
+#wd-punch-backfill > .wd-punch-r {
+  right: 0;
+  top: var(--wd-hole-y, 0px);
+  height: var(--wd-hole-h, 0px);
+  left: calc(var(--wd-hole-x, 0px) + var(--wd-hole-w, 0px));
+}
