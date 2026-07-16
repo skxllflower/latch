@@ -15,7 +15,7 @@
 #   SKIP_CPP=1 tools/build-release-mac.sh # reuse existing build/
 set -euo pipefail
 
-export PATH="$HOME/.cargo/bin:/usr/local/bin:$PATH"
+export PATH="/opt/homebrew/opt/rustup/bin:/opt/homebrew/bin:$HOME/.cargo/bin:/usr/local/bin:$PATH"
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD="$REPO/build"
@@ -88,7 +88,8 @@ codesign --verify --verbose=1 "$APP" || echo "  (codesign verify warned; ad-hoc 
 # ---- Step 5: package a dmg carrying the SIGNED app (hdiutil, no Finder) ----
 step 5 "Package signed .dmg"
 VER="$(node -p "require('$TAURI/tauri.conf.json').version" 2>/dev/null || echo 0.0.0)"
-DMG="$BUNDLE/dmg/${PRODUCT}_${VER}_x64.dmg"
+ARCH="$(uname -m)"
+DMG="$BUNDLE/dmg/${PRODUCT}_${VER}_${ARCH}.dmg"
 mkdir -p "$BUNDLE/dmg"
 STAGE="$(mktemp -d)"
 cp -R "$APP" "$STAGE/"

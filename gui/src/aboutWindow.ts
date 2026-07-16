@@ -7,6 +7,7 @@
 
 import { getCurrentWindow, currentMonitor, PhysicalPosition } from '@tauri-apps/api/window';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
+import { isMac } from './platform';
 
 const THEME_BG = '#09090b';
 const W = 420;
@@ -50,7 +51,7 @@ export async function openAboutWindow(): Promise<void> {
     maxWidth: W,
     minHeight: H,
     maxHeight: H,
-    backgroundColor: THEME_BG,
+    ...(isMac ? { transparent: true, backgroundColor: '#00000000' } : { backgroundColor: THEME_BG }),
     resizable: false,
     decorations: false,
     alwaysOnTop: true,

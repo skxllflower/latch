@@ -6,6 +6,7 @@
 
 import { getCurrentWindow, currentMonitor, PhysicalPosition } from '@tauri-apps/api/window';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
+import { isMac } from './platform';
 
 const THEME_BG = '#09090b';
 const W = 540;
@@ -47,7 +48,7 @@ export async function openSettingsWindow(): Promise<void> {
     height: H,
     minWidth: 460,
     minHeight: 420,
-    backgroundColor: THEME_BG,
+    ...(isMac ? { transparent: true, backgroundColor: '#00000000' } : { backgroundColor: THEME_BG }),
     resizable: true,
     decorations: false,
     // Unlike the static About notice, Settings opens native file/folder
