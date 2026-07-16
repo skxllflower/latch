@@ -57,6 +57,16 @@ pub fn sweep_temp_root() {
     let _ = std::fs::remove_dir_all(chop_root());
 }
 
+/// Existence probe for a pre-rendered clip path — lets the drag-out path
+/// trust (and reuse) a settle-time pre-render instead of re-rendering
+/// under the held gesture. Async: a cold-disk stat would stall the UI.
+#[tauri::command]
+pub async fn clip_path_exists(path: String) -> bool {
+    tauri::async_runtime::spawn_blocking(move || std::path::Path::new(&path).is_file())
+        .await
+        .unwrap_or(false)
+}
+
 /// Persistent clips folder (Documents\Vacant Systems\Latch Clips) —
 /// exported + rendered clips land here so DAW references survive the
 /// temp-dir sweep. One vendor folder for the whole ecosystem (a

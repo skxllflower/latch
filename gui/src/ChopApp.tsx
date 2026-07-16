@@ -1226,7 +1226,9 @@ export default function ChopApp() {
   // back to cropping the on-screen canvas.
   const buildDragChip = useCallback(async (r: ChopRegion, wantVideo: boolean): Promise<{ url: string; bg: string | null } | null> => {
     if (wantVideo && videoRef.current) {
-      const frame = videoRef.current.captureFrame();
+      // Async capture: under macAv the picture is native (no painted canvas)
+      // and the frame comes through the mac_video_sample pixel tap.
+      const frame = await videoRef.current.captureFrameAsync();
       if (frame) return videoFrameToChipDataUrl(frame);
       // No painted frame → fall through to the waveform chip.
     }
@@ -1362,21 +1364,40 @@ export default function ChopApp() {
     };
     window.addEventListener('pointerup', onUp);
     window.addEventListener('pointercancel', onUp);
+    // Reuse the settle-time pre-render when it is still current for THIS
+    // variant (same exportVideo flavor, same extension) and still on disk (a
+    // prior shell reclaim may have deleted it). A hit starts the OS drag
+    // instantly inside the gesture — on mac there is no follow-chip, so the
+    // old unconditional re-render meant ~1s of bare crosshair before the
+    // NSDraggingSession (and its chip) existed at all. Mirrors wavdesk's
+    // localPreRenders reuse; the fresh render stays as the miss fallback.
+    let pre: string | null = null;
+    {
+      const cur = regionsRef.current.find((x) => x.id === r.id);
+      const dragVariant = forceVideo ?? (cur?.exportVideo ?? false);
+      if (cur?.clipState === 'ready' && cur.clipPath
+          && dragVariant === (cur.exportVideo ?? false)
+          && cur.clipPath.toLowerCase().endsWith(`.${ext.toLowerCase()}`)) {
+        try {
+          if (await invoke<boolean>('clip_path_exists', { path: cur.clipPath })) pre = cur.clipPath;
+        } catch { /* probe failed — render fresh */ }
+      }
+    }
     const chip = await buildDragChip(r, video);
     try {
       await startOverlayDrag({
-        paths: [out], fileName, isDirectory: false, count: 1,
+        paths: [pre ?? out], fileName, isDirectory: false, count: 1,
         waveformDataUrl: chip?.url ?? null, bgColor: chip?.bg ?? null,
       });
-      // Render fresh each drag: a prior render may have been cleaned up
-      // after a folder drop, so a cached path can't be trusted. No-clobber
-      // keeps any path an app has already linked byte-stable.
-      setClip(r.id, 'rendering');
-      // Drag-out renders under a held pointer gesture, so it can't stop to ask
-      // — it uses the current session pitch mode (set by the Pitch chip or a
-      // prior Export dialog; defaults to preserve). The Export button owns the
-      // ask-once dialog.
-      const path = await runClip({ input, output: out, startSec: r.startSec, endSec: r.endSec, video, overwrite: false, speed: videoRef.current?.getSpeed() ?? 1, pitchMode: pitchModeRef.current });
+      let path = pre;
+      if (!path) {
+        setClip(r.id, 'rendering');
+        // Drag-out renders under a held pointer gesture, so it can't stop to ask
+        // — it uses the current session pitch mode (set by the Pitch chip or a
+        // prior Export dialog; defaults to preserve). The Export button owns the
+        // ask-once dialog.
+        path = await runClip({ input, output: out, startSec: r.startSec, endSec: r.endSec, video, overwrite: false, speed: videoRef.current?.getSpeed() ?? 1, pitchMode: pitchModeRef.current });
+      }
       setClip(r.id, 'ready', path);
       void emit('wd-latch-clip-exported', { path, title: fileName });
       if (released) {

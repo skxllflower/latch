@@ -90,6 +90,10 @@ export interface VideoViewHandle {
   // Snapshot the currently-visible frame to a fresh offscreen canvas
   // (or null if nothing is painted yet). Used by the chop drag-out chip.
   captureFrame: () => HTMLCanvasElement | null;
+  // Async variant that also works under macAv, where the picture is native
+  // (below the webview) and no canvas is ever painted: fetches the on-screen
+  // frame through the mac_video_sample pixel tap. Prefer this for chips.
+  captureFrameAsync: () => Promise<HTMLCanvasElement | null>;
 }
 
 export interface VideoViewProps {
@@ -1152,7 +1156,52 @@ export const VideoView = forwardRef<VideoViewHandle, VideoViewProps>(function Vi
       }
       return null;
     },
-  }), [seek, togglePlay, shuttle, stepFrame, speed, stopReverse]);
+    captureFrameAsync: async () => {
+      if (!macAv) {
+        const c = canvasRef.current;
+        if (c && c.width > 0 && c.height > 0) {
+          try {
+            const off = document.createElement('canvas');
+            off.width = c.width; off.height = c.height;
+            const cx = off.getContext('2d');
+            if (cx) { cx.drawImage(c, 0, 0); return off; }
+          } catch { /* fall through */ }
+        }
+        const v = videoRef.current;
+        if (v && v.videoWidth > 0) {
+          try {
+            const off = document.createElement('canvas');
+            off.width = v.videoWidth; off.height = v.videoHeight;
+            const cx = off.getContext('2d');
+            if (cx) { cx.drawImage(v, 0, 0, off.width, off.height); return off; }
+          } catch { /* ignore */ }
+        }
+        return null;
+      }
+      const toCanvas = (data: Uint8ClampedArray, w: number, h: number): HTMLCanvasElement | null => {
+        const off = document.createElement('canvas');
+        off.width = w; off.height = h;
+        const cx = off.getContext('2d');
+        if (!cx) return null;
+        cx.putImageData(new ImageData(data, w, h), 0, 0);
+        return off;
+      };
+      try {
+        const buf = await invoke<ArrayBuffer>('mac_video_sample', { label: getCurrentWindow().label, maxDim: 480 });
+        if (buf && buf.byteLength >= 8) {
+          const head = new DataView(buf);
+          const sw = head.getUint32(0, true), sh = head.getUint32(4, true);
+          if (sw > 0 && sh > 0 && buf.byteLength >= 8 + sw * sh * 4) {
+            return toCanvas(new Uint8ClampedArray(buf, 8, sw * sh * 4), sw, sh);
+          }
+        }
+      } catch { /* fall through to the scopes' last sample */ }
+      // Empty response = the scopes already consumed this exact frame; their
+      // last sample IS the on-screen frame.
+      const samp = sampleRef.current;
+      return samp ? toCanvas(samp.data, samp.w, samp.h) : null;
+    },
+  }), [seek, togglePlay, shuttle, stepFrame, speed, stopReverse, macAv]);
 
   // ---- scrub timeline ----
   const trackRef = useRef<HTMLDivElement>(null);

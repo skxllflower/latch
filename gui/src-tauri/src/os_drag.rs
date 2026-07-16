@@ -73,6 +73,17 @@ fn shell_surface_under_cursor() -> Option<ShellSurface> {
 #[derive(Clone, Copy, Debug)]
 enum ShellSurface {}
 
+// DELIBERATE mac policy, not a stub-in-waiting: macOS has no IShellFolder
+// equivalent to resolve the drop-destination folder, so the copy-verified
+// reclaim below can never run — and deleting the source on a bare
+// Dropped(Copy) would RACE Finder's asynchronous copy (a big clip to a slow
+// volume can still be reading the source seconds after the session ends;
+// NSFilePromiseProvider is the only correct fix and neither app uses it yet).
+// So on mac the dragged file stays in Latch Clips. That is cache-consistent:
+// the drag path reuses the region's settle-time pre-render, so the kept file
+// IS the region's render cache, exactly what the pre-render machine maintains
+// for every region anyway. The session temp root (latch-chop/) is swept on
+// startup/teardown regardless.
 #[cfg(not(windows))]
 fn shell_surface_under_cursor() -> Option<ShellSurface> {
     None

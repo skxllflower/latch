@@ -201,12 +201,22 @@ export function buildWaveformDragChipPng(opts: {
     ctx.fillRect(0, 0, chipW, chipH);
 
     // 2. Waveform — top, full chip width when the chip stretched to
-    //    accommodate a long filename. drawImage stretches when chipW
-    //    exceeds thumbW; brief moments of horizontal squish or stretch
-    //    are visually fine for a miniature.
+    //    accommodate a long filename. A strip-shaped source (a real
+    //    waveform) stretches like before — mild squish is fine and cropping
+    //    would cut off the end of the waveform. A frame-shaped source (a
+    //    video thumbnail, ~16:9 vs the ~3:1 strip) cover-crops centered
+    //    instead: squashing it was the "weird stretched out" chip.
     const thumbDrawW = chipW;
     if (waveformCanvas && waveformCanvas.width > 0 && waveformCanvas.height > 0) {
-      ctx.drawImage(waveformCanvas, 0, 0, thumbDrawW, thumbH);
+      const srcW = waveformCanvas.width, srcH = waveformCanvas.height;
+      const srcAspect = srcW / srcH, dstAspect = thumbDrawW / thumbH;
+      if (srcAspect < dstAspect * 0.8 || srcAspect > dstAspect * 1.25) {
+        let cw = srcW, ch = srcH;
+        if (srcAspect < dstAspect) ch = srcW / dstAspect; else cw = srcH * dstAspect;
+        ctx.drawImage(waveformCanvas, (srcW - cw) / 2, (srcH - ch) / 2, cw, ch, 0, 0, thumbDrawW, thumbH);
+      } else {
+        ctx.drawImage(waveformCanvas, 0, 0, thumbDrawW, thumbH);
+      }
     }
 
     // 3. Filename — centered in the strip below.
