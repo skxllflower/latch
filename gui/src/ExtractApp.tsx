@@ -443,6 +443,12 @@ export default function ExtractApp() {
     let done = false;
     try { if (localStorage.getItem('wd-latch-rights-ack-v1') === '1') return; } catch { /* ignore */ }
     void (async () => {
+      // Let launch activation settle first: on macOS the OS brings the main
+      // window to front AFTER a mount-time dialog has shown, burying it (the
+      // "rights notice behind the window" bug). One beat is enough for the
+      // activation reorder to have happened; the dialog then spawns on top.
+      await new Promise((r) => setTimeout(r, 350));
+      if (done) return;
       const agreed = await confirmInWindow({
         title:        'Make sure you have the rights',
         message:      "Only download material you own or have the rights to, and follow each source's terms of service. You're responsible for how you use Latch.",

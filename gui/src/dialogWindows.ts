@@ -124,6 +124,21 @@ async function spawnDialog<R>(args: {
       }
       try { await win.show(); } catch { /* ignore */ }
       try { await win.setFocus(); } catch { /* ignore */ }
+      if (isMac) {
+        // Launch-time race: macOS activates the app and brings main to
+        // front AFTER a dialog spawned during boot has already shown, and
+        // the setFocus above lands before the transparent webview paints.
+        // Re-assert the floating level + focus on the next macrotask so
+        // they land after that activation reorder (the drag-overlay
+        // re-raise idiom, applied dialog-wide).
+        setTimeout(() => {
+          void (async () => {
+            try { await win.setAlwaysOnTop(false); } catch { /* ignore */ }
+            try { await win.setAlwaysOnTop(true); } catch { /* ignore */ }
+            try { await win.setFocus(); } catch { /* ignore */ }
+          })();
+        }, 120);
+      }
     })();
   });
   win.once('tauri://error', (e) => console.error('Dialog window error:', e));
