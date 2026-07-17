@@ -136,6 +136,10 @@ pub enum DragOperation {
     Copy,
     Move,
     Link,
+    /// macOS Dock-Trash drop (NSDragOperationDelete): the TARGET performed a
+    /// delete, and the source is expected to dispose of the dragged items.
+    /// Only ever reported on macOS.
+    Delete,
 }
 
 pub type DataProvider = Box<dyn Fn(&str) -> Option<Vec<u8>>>;

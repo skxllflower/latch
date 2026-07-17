@@ -256,9 +256,15 @@ pub fn start_drag<W: HasWindowHandle, F: Fn(DragResult, CursorPosition) + Send +
                             let mode = *this.get_ivar::<DragMode>("drag_mode");
                             let () = msg_send![dragging_session, setAnimatesToStartingPositionsOnCancelOrFail: *animates];
 
+                            // Delete (0x20) rides along so the Dock Trash
+                            // accepts the drag. Destinations AND this mask
+                            // with their own: Finder folders request
+                            // Copy/Generic and still perform a plain copy;
+                            // only the Trash requests Delete, which then
+                            // arrives in dragging_session_end below.
                             match mode {
-                                DragMode::Copy => 1,  // NSDragOperationCopy
-                                DragMode::Move => 16, // NSDragOperationMove
+                                DragMode::Copy => 1 | 0x20,  // Copy | Delete
+                                DragMode::Move => 16 | 0x20, // Move | Delete
                             }
                         }
                     }
@@ -284,6 +290,10 @@ pub fn start_drag<W: HasWindowHandle, F: Fn(DragResult, CursorPosition) + Send +
                             if operation == 0 {
                                 // NSDragOperationNone
                                 callback_closure(DragResult::Cancel, mouse_location);
+                            } else if operation == 0x20 {
+                                // NSDragOperationDelete — the Dock Trash took
+                                // the drop; the source owns the disposal.
+                                callback_closure(DragResult::Dropped(DragOperation::Delete), mouse_location);
                             } else {
                                 callback_closure(DragResult::Dropped(DragOperation::Unknown), mouse_location);
                             }

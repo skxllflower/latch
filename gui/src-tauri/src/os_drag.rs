@@ -323,6 +323,20 @@ pub fn start_os_file_drag(
                         drag::DragResult::Dropped(op) => Some(op),
                         drag::DragResult::Cancel => None,
                     };
+                    // mac Dock-Trash drop: the OS reports an explicit Delete
+                    // operation — the one drop verdict that IS trustworthy
+                    // (unlike copy intents, there is no async paste to race).
+                    // Latch drag-outs are disposable rendered temps, so
+                    // dispose of them directly; the pre-render cache slot is
+                    // invalidated by the next render pass.
+                    if matches!(performed, Some(drag::DragOperation::Delete)) && cleanup_temp {
+                        for p in &dragged_paths {
+                            match std::fs::remove_file(p) {
+                                Ok(()) => log::info!("latch clip trash-drop: removed temp {p}"),
+                                Err(e) => log::warn!("latch clip trash-drop: remove failed for {p}: {e}"),
+                            }
+                        }
+                    }
                     // Disposable temp render dropped onto a shell surface →
                     // fate-based reclaim (see module header): observe the
                     // filesystem instead of trusting the (intent-only, async)
