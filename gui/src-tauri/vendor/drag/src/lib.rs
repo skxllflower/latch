@@ -232,3 +232,48 @@ pub struct CursorPosition {
     pub x: i32,
     pub y: i32,
 }
+
+// macOS live drag-chip update (visual parity with the Windows chip).
+//
+// On Windows the drag chip is a follow-window webview the app repaints live.
+// On macOS the chip is the native NSDraggingSession image, baked ONCE at drag
+// start (start_drag). To update the live verb ("Move X to 'Folder'" / "Copy
+// ...") mid-drag, the app re-composes the chip PNG and calls
+// `macos_set_pending_drag_image`, which stashes the bytes here. The drag
+// source's `draggingSession:movedToPoint:` callback runs on the main thread
+// INSIDE AppKit's modal drag tracking loop (where a dispatch_async does NOT
+// drain until the drag ends), so it polls this static each move and, when a
+// new PNG is pending, swaps the dragging item's contents in place. The static
+// is cleared after applying and at session end so a stale image can't leak
+// into the next drag.
+#[cfg(target_os = "macos")]
+pub(crate) struct PendingDragImage {
+    pub png: Vec<u8>,
+    /// Chip LOGICAL (point) dimensions. The frontend composes the PNG at
+    /// devicePixelRatio (== backingScaleFactor), so these are the SAME logical
+    /// space start_drag divides the initial image into — the movedToPoint
+    /// handler sizes the new NSImage to them so a 2x bitmap draws logical size.
+    pub logical_w: f64,
+    pub logical_h: f64,
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) static PENDING_DRAG_IMAGE: std::sync::Mutex<Option<PendingDragImage>> =
+    std::sync::Mutex::new(None);
+
+/// macOS only: stash a freshly composed drag-chip PNG to be applied to the live
+/// `NSDraggingSession` on the next `draggingSession:movedToPoint:` tick.
+/// `logical_w`/`logical_h` are the chip's LOGICAL (point) dimensions. Overwrites
+/// any not-yet-applied image — intermediate verb frames are droppable; only the
+/// latest matters. Safe to call from any thread; the movedToPoint callback (main
+/// thread) drains it. No effect if no drag is in flight.
+#[cfg(target_os = "macos")]
+pub fn macos_set_pending_drag_image(png: Vec<u8>, logical_w: f64, logical_h: f64) {
+    if let Ok(mut slot) = PENDING_DRAG_IMAGE.lock() {
+        *slot = Some(PendingDragImage {
+            png,
+            logical_w,
+            logical_h,
+        });
+    }
+}

@@ -7,10 +7,11 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
+use block::ConcreteBlock;
 use cocoa::{
     appkit::{NSApp, NSEvent, NSEventModifierFlags, NSEventType, NSImage},
     base::{id, nil},
-    foundation::{NSArray, NSData, NSPoint, NSRect, NSSize, NSUInteger},
+    foundation::{NSArray, NSData, NSInteger, NSPoint, NSRect, NSSize, NSUInteger},
 };
 use core_graphics::display::CGDisplay;
 use objc::{
@@ -244,6 +245,100 @@ pub fn start_drag<W: HasWindowHandle, F: Fn(DragResult, CursorPosition) + Send +
                         dragging_session_end
                             as extern "C" fn(&Object, Sel, id, NSPoint, NSUInteger),
                     );
+                    // WAVdesk: live drag-chip verb update. AppKit calls this on
+                    // every pointer move DURING the modal drag tracking loop, on
+                    // the main thread — the only place a mid-drag image swap can
+                    // land (dispatch_async does not drain here).
+                    cls.add_method(
+                        sel!(draggingSession:movedToPoint:),
+                        dragging_session_moved as extern "C" fn(&Object, Sel, id, NSPoint),
+                    );
+
+                    // WAVdesk: apply a pending chip PNG (if any) to the live
+                    // dragging items, anchored so the chip doesn't jump when the
+                    // new verb text changes its width. Hot no-op when nothing is
+                    // pending (the common per-move case).
+                    extern "C" fn dragging_session_moved(
+                        _this: &Object,
+                        _: Sel,
+                        dragging_session: id,
+                        _point: NSPoint,
+                    ) {
+                        unsafe {
+                            let pending = match crate::PENDING_DRAG_IMAGE.lock() {
+                                Ok(mut slot) => slot.take(),
+                                Err(_) => return,
+                            };
+                            let pending = match pending {
+                                Some(p) if !p.png.is_empty() => p,
+                                _ => return,
+                            };
+
+                            let data = NSData::dataWithBytes_length_(
+                                nil,
+                                pending.png.as_ptr() as *const std::os::raw::c_void,
+                                pending.png.len() as u64,
+                            );
+                            let new_img: id = NSImage::initWithData_(NSImage::alloc(nil), data);
+                            if new_img == nil {
+                                return;
+                            }
+                            // Same backingScaleFactor correction the initial chip
+                            // gets in start_drag: a 72-dpi PNG reports its PIXEL
+                            // dims as points, so a 2x bitmap would draw double
+                            // size. The frontend composes at devicePixelRatio and
+                            // passes the LOGICAL (point) dims — the exact logical
+                            // space start_drag divides the initial image into — so
+                            // use them directly. Fall back to natural-size / main-
+                            // screen backing when absent.
+                            let mut new_size: NSSize = msg_send![new_img, size];
+                            if pending.logical_w > 1.0 && pending.logical_h > 1.0 {
+                                new_size = NSSize::new(pending.logical_w, pending.logical_h);
+                            } else {
+                                let screen: id = msg_send![class!(NSScreen), mainScreen];
+                                let backing: f64 = if screen != nil {
+                                    msg_send![screen, backingScaleFactor]
+                                } else {
+                                    1.0
+                                };
+                                if backing > 1.0 && new_size.width > 1.0 && new_size.height > 1.0 {
+                                    new_size = NSSize::new(
+                                        new_size.width / backing,
+                                        new_size.height / backing,
+                                    );
+                                }
+                            }
+                            let _: () = msg_send![new_img, setSize: new_size];
+
+                            // Swap the image on every dragging item. Reuse each
+                            // item's existing draggingFrame ORIGIN and only change
+                            // the size + contents, so the chip stays pinned while
+                            // the verb text resizes it. NSURL matches file drags,
+                            // NSPasteboardItem matches data drags.
+                            let classes: id = NSArray::arrayWithObjects(
+                                nil,
+                                &[
+                                    class!(NSURL) as *const Class as id,
+                                    class!(NSPasteboardItem) as *const Class as id,
+                                ],
+                            );
+                            let block = ConcreteBlock::new(
+                                move |item: id, _idx: NSInteger, _stop: *mut BOOL| unsafe {
+                                    let frame: NSRect = msg_send![item, draggingFrame];
+                                    let new_frame = NSRect::new(frame.origin, new_size);
+                                    let _: () =
+                                        msg_send![item, setDraggingFrame: new_frame contents: new_img];
+                                },
+                            );
+                            let block = block.copy();
+                            let _: () = msg_send![dragging_session,
+                                enumerateDraggingItemsWithOptions: 0_usize
+                                forView: nil
+                                classes: classes
+                                searchOptions: nil
+                                usingBlock: &*block];
+                        }
+                    }
 
                     extern "C" fn dragging_session(
                         this: &Object,
@@ -277,6 +372,11 @@ pub fn start_drag<W: HasWindowHandle, F: Fn(DragResult, CursorPosition) + Send +
                         operation: NSUInteger,
                     ) {
                         unsafe {
+                            // Drop any not-yet-applied chip image so it can't leak
+                            // into the next drag's first frames.
+                            if let Ok(mut slot) = crate::PENDING_DRAG_IMAGE.lock() {
+                                *slot = None;
+                            }
                             let callback = this.get_ivar::<*mut c_void>("on_drop_ptr");
 
                             let mouse_location = CursorPosition {

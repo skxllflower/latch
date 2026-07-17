@@ -987,6 +987,7 @@ dependencies = [
 name = "drag"
 version = "2.1.0"
 dependencies = [
+ "block",
  "cocoa",
  "core-graphics 0.24.0",
  "dunce",

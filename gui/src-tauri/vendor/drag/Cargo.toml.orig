@@ -22,6 +22,7 @@ tauri.workspace = true
 cocoa = "0.26.0"
 objc = "0.2.7"
 core-graphics = "0.24.0"
+block = "0.1"
 
 [target."cfg(any(target_os = \"linux\", target_os = \"dragonfly\", target_os = \"freebsd\", target_os = \"openbsd\", target_os = \"netbsd\"))".dependencies]
 gtk = { version = "0.18.1" }
