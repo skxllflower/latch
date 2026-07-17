@@ -10,6 +10,7 @@ mod explorer_folder;
 mod job_object;
 mod logger;
 mod mac_video;
+mod mac_input;
 #[cfg(target_os = "windows")]
 mod native_drag_chip;
 mod cursor;

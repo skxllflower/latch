@@ -20,6 +20,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::OnceLock;
 use std::time::Duration;
 
+#[cfg(not(target_os = "macos"))]
 use device_query::{DeviceQuery, DeviceState, Keycode};
 use tauri::{AppHandle, Manager};
 // Referenced only from the Windows (offscreen park) and Linux (overlay follow)
@@ -258,8 +259,12 @@ fn spawn_poll_thread(app: AppHandle) {
         let mut cur_y = LAST_CURSOR_Y.load(Ordering::SeqCst) as f32;
         // device_query is allocated once outside the loop — its
         // platform backends (raw input on Windows, X11 connection
-        // on Linux, CGEvent on macOS) cache initialization here so
-        // get_keys() doesn't re-open per tick.
+        // on Linux) cache initialization here so get_keys() doesn't
+        // re-open per tick. NOT on macOS: DeviceState::new() asserts
+        // Accessibility trust and aborts the process when untrusted
+        // (the first-drag TCC crash); mac reads NSEvent class state
+        // instead (crate::mac_input), which needs no permission.
+        #[cfg(not(target_os = "macos"))]
         let device_state = DeviceState::new();
         // ~60Hz. 120Hz showed no perceptible difference in chip
         // latency on test hardware and just burns CPU.
@@ -325,23 +330,39 @@ fn spawn_poll_thread(app: AppHandle) {
             // since user expectation is "Ctrl on Windows, Cmd on
             // Mac" — both surface as a Copy via copyModeRef on the
             // JS side.
-            let keys = device_state.get_keys();
-            let ctrl_now = keys.iter().any(|k| matches!(
-                k,
-                Keycode::LControl | Keycode::RControl |
-                Keycode::Command  |
-                Keycode::LMeta    | Keycode::RMeta
-            ));
-            let shift_now = keys.iter().any(|k| matches!(
-                k,
-                Keycode::LShift | Keycode::RShift
-            ));
+            #[cfg(not(target_os = "macos"))]
+            let (ctrl_now, shift_now) = {
+                let keys = device_state.get_keys();
+                (
+                    keys.iter().any(|k| matches!(
+                        k,
+                        Keycode::LControl | Keycode::RControl |
+                        Keycode::Command  |
+                        Keycode::LMeta    | Keycode::RMeta
+                    )),
+                    keys.iter().any(|k| matches!(
+                        k,
+                        Keycode::LShift | Keycode::RShift
+                    )),
+                )
+            };
+            #[cfg(target_os = "macos")]
+            let (ctrl_now, shift_now) = {
+                let flags = crate::mac_input::modifier_flags();
+                (
+                    flags & (crate::mac_input::FLAG_COMMAND | crate::mac_input::FLAG_OPTION) != 0,
+                    flags & crate::mac_input::FLAG_SHIFT != 0,
+                )
+            };
             MOD_CTRL.store(ctrl_now, Ordering::SeqCst);
             MOD_SHIFT.store(shift_now, Ordering::SeqCst);
 
             // Hide the chip on the press→release transition. Logical
             // drag state is untouched — the drop callback still runs.
+            #[cfg(not(target_os = "macos"))]
             let down = device_state.get_mouse().button_pressed.get(1).copied().unwrap_or(false);
+            #[cfg(target_os = "macos")]
+            let down = crate::mac_input::pressed_mouse_buttons() & 0b1 != 0;
             if was_down && !down {
                 if let Some(overlay) = app.get_webview_window(OVERLAY_LABEL) {
                     let _ = overlay.hide();

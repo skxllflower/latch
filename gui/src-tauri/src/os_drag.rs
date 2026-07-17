@@ -147,7 +147,17 @@ fn primary_pointer_down() -> bool {
         ((GetAsyncKeyState(VK_LBUTTON.0 as i32) as u16) & 0x8000 != 0)
             || ((GetAsyncKeyState(VK_RBUTTON.0 as i32) as u16) & 0x8000 != 0)
     }
-    #[cfg(not(windows))]
+    // macOS: NEVER device_query here. DeviceState::new() asserts
+    // Accessibility trust (AXIsProcessTrustedWithOptions) and aborts the
+    // process when the app isn't in the TCC list yet - on a fresh install
+    // that popped the OS permission dialog and crashed the app on the very
+    // first drag (SIGABRT on the main thread, see the 2026-07-16 .ips).
+    // NSEvent's class-level pressedMouseButtons needs no permission.
+    #[cfg(target_os = "macos")]
+    {
+        crate::mac_input::pressed_mouse_buttons() & 0b11 != 0
+    }
+    #[cfg(all(not(windows), not(target_os = "macos")))]
     {
         use device_query::DeviceQuery;
         let m = device_query::DeviceState::new().get_mouse();
