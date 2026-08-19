@@ -8,8 +8,11 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -31,6 +34,42 @@ static std::string path_to_utf8(const fs::path& p) { return p.string(); }
 
 static std::string ffmpeg_path() {
   return resolved_ffmpeg();
+}
+
+// Sniff whether `path` is an IEEE-float WAV: format tag 3, or WAVE_FORMAT_
+// EXTENSIBLE (0xFFFE) whose subformat GUID starts with the float code. Lets the
+// clip cut keep a processed float source float (pcm_f32le) instead of folding it
+// to int, so a float32 palette-bake temp is not truncated on the way to the
+// deliverable. Header-only read (no ffprobe dependency); any non-WAV / int /
+// unreadable input reads as false, so lossy downloads and int WAVs are
+// unaffected. Cross-platform: ifstream takes the fs::path directly (wide on Win).
+static bool wav_is_float(const std::string& path) {
+  std::ifstream in(path_from_utf8(path), std::ios::binary);
+  if (!in) return false;
+  unsigned char buf[4096];
+  in.read(reinterpret_cast<char*>(buf), sizeof(buf));
+  const std::streamsize got = in.gcount();
+  if (got < 44) return false;
+  const size_t n = static_cast<size_t>(got);
+  if (std::memcmp(buf, "RIFF", 4) != 0 || std::memcmp(buf + 8, "WAVE", 4) != 0) return false;
+  auto rd_u16 = [&](size_t o) { return static_cast<uint16_t>(buf[o] | (buf[o + 1] << 8)); };
+  auto rd_u32 = [&](size_t o) {
+    return static_cast<uint32_t>(buf[o]) | (static_cast<uint32_t>(buf[o + 1]) << 8) |
+           (static_cast<uint32_t>(buf[o + 2]) << 16) | (static_cast<uint32_t>(buf[o + 3]) << 24);
+  };
+  size_t off = 12;  // first chunk after "WAVE"
+  while (off + 8 <= n) {
+    const uint32_t csz = rd_u32(off + 4);
+    if (std::memcmp(buf + off, "fmt ", 4) == 0 && off + 8 + 16 <= n) {
+      const uint16_t tag = rd_u16(off + 8);          // wFormatTag
+      if (tag == 0x0003) return true;                // WAVE_FORMAT_IEEE_FLOAT
+      if (tag == 0xFFFE && off + 8 + 26 <= n)        // EXTENSIBLE: subformat GUID @ fmt-data+24
+        return rd_u16(off + 8 + 24) == 0x0003;
+      return false;                                  // PCM / a-law / etc.
+    }
+    off += 8 + csz + (csz & 1u);                     // advance past chunk (+ pad byte)
+  }
+  return false;
 }
 
 // Lower-cased file extension without the leading dot.
@@ -236,7 +275,11 @@ ClipResult clip(const std::string& input,
     af += afade_declick(out_duration);
     argv.insert(argv.end(), {"-filter:a", af});
     if (fmt == "wav") {
-      argv.insert(argv.end(), {"-c:a", "pcm_s24le"});
+      // Preserve a processed float source as float32; fold int / lossy sources
+      // to 24-bit (transparent). Keeps a float32 palette-bake temp lossless
+      // through the cut instead of truncating it to int on export.
+      const char* wav_codec = wav_is_float(input) ? "pcm_f32le" : "pcm_s24le";
+      argv.insert(argv.end(), {"-c:a", wav_codec});
     } else if (fmt == "flac") {
       argv.insert(argv.end(), {"-c:a", "flac"});
     } else if (fmt == "mp3") {

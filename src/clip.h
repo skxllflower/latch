@@ -16,7 +16,8 @@ struct ClipOptions {
   // false -> audio-only clip: drop video, encode audio (sample-accurate).
   bool video = false;
   // Audio container/codec for audio-only mode: wav / flac / mp3 / m4a /
-  // aac / opus. Empty defaults to wav (pcm_s24le). Ignored for video.
+  // aac / opus. Empty defaults to wav (float32 in -> pcm_f32le, else pcm_s24le
+  // so a processed float source is not truncated). Ignored for video.
   std::string audio_format;
   // Display-only preview: encode a tiny mono, low-sample-rate, 16-bit WAV
   // (just enough to draw a waveform). Used for the chop window's companion
