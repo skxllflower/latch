@@ -72,6 +72,9 @@ const MIN_TIER_BINS = 512;
 // 0.18 lands between snappy and floaty — notches read direct, but pan/zoom
 // pick up the "drag through molasses" glide that feels buttery.
 const ZOOM_LERP_K = 0.18;
+// No scroll events for this long = a new gesture: reset the scroll-delta EMA so
+// a fresh flick never inherits the previous one's smoothed velocity.
+const SCROLL_ZOOM_IDLE_MS = 120;
 
 // Waveform paint, ported from WAVdesk's WaveformView so the two render
 // identically: a filled min/max envelope (the asymmetric DAW look), quad-
@@ -416,6 +419,26 @@ export const WaveformView: React.FC<WaveformViewProps> = ({
 
   useEffect(() => { draw(); }, [vp, markers, draw]);
 
+  // Scroll-zoom delta smoothing: macOS momentum/inertial scrolling delivers
+  // spiky, variable deltaY between events, so feeding each raw delta straight
+  // into the exp() gain made the zoom TARGET jitter (the tween eases toward a
+  // jumpy target but can't hide its jittery velocity; pinch stays smooth because
+  // it rides a continuous 1:1 finger ratio). An EMA on the incoming scroll delta
+  // damps that per-event variance before commitTarget, leaving the shared
+  // ZOOM_LERP_K tween and the pinch path untouched. Shared by the mac-wheel and
+  // HID scroll paths (mutually exclusive platforms, so never in flight at once).
+  const scrollZoomEmaRef = useRef(0);
+  const scrollZoomEmaAtRef = useRef(0);
+  const smoothScrollDelta = useCallback((dy: number): number => {
+    const now = performance.now();
+    const ema = now - scrollZoomEmaAtRef.current > SCROLL_ZOOM_IDLE_MS
+      ? dy                                   // fresh gesture: seed full, don't ramp from a stale flick
+      : scrollZoomEmaRef.current * 0.6 + dy * 0.4;
+    scrollZoomEmaRef.current = ema;
+    scrollZoomEmaAtRef.current = now;
+    return ema;
+  }, []);
+
   // Wheel: zoom around the cursor; Shift (or a sideways wheel) pans.
   const onWheel = useCallback((e: React.WheelEvent) => {
     if (duration <= 0) return;
@@ -444,7 +467,10 @@ export const WaveformView: React.FC<WaveformViewProps> = ({
       commitTarget({ tStart: Math.max(0, s), tEnd: Math.min(duration, t) });
       return;
     }
-    const factor = Math.pow(1.0015, e.deltaY);
+    // exp(deltaY * 0.015): 1.5x the original, matching WAVdesk's mac wheel-scroll
+    // gain so two-finger scroll feels close to pinch-zoom; delta EMA-smoothed
+    // first to kill momentum jitter. Keep in lockstep with WaveformView.tsx.
+    const factor = Math.exp(smoothScrollDelta(e.deltaY) * 0.015);
     const newSpan = Math.max(MIN_SPAN_SEC, Math.min(duration, span * factor));
     const anchor = cur.tStart + frac * span;
     let s = anchor - frac * newSpan;
@@ -510,16 +536,17 @@ export const WaveformView: React.FC<WaveformViewProps> = ({
         s += delta; t += delta;
       }
       // Vertical two-finger drag = zoom around the cursor. Mirrors WAVdesk's
-      // raw-HID handler exactly: newSpan = span * exp(dy * 0.003), so the
+      // raw-HID handler: newSpan = span * exp(dy * HID_SCROLL_ZOOM_K), so the
       // zoom direction matches it (one drives the visible span larger, the
       // other smaller). Without this, vertical swipe was dropped and did
-      // nothing — the reported bug.
+      // nothing (the reported bug). Gain at 0.0045 (1.5x original) in lockstep
+      // with WAVdesk's HID_SCROLL_ZOOM_K; delta EMA-smoothed to kill jitter.
       if (isFinite(dy) && dy !== 0) {
         const rect = containerRef.current?.getBoundingClientRect();
         const frac = lastXRef.current != null && rect && rect.width > 0
           ? Math.max(0, Math.min(1, (lastXRef.current - rect.left) / rect.width))
           : 0.5;
-        const newSpan = Math.max(MIN_SPAN_SEC, Math.min(duration, span * Math.exp(dy * 0.003)));
+        const newSpan = Math.max(MIN_SPAN_SEC, Math.min(duration, span * Math.exp(smoothScrollDelta(dy) * 0.0045)));
         const anchor = s + frac * span;   // anchor in the (possibly panned) view
         s = anchor - frac * newSpan;
         t = s + newSpan;
