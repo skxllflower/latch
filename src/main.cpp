@@ -22,7 +22,7 @@ namespace {
 
 int print_help() {
   std::puts(
-    "latch " "0.4.0" " - URL media extractor (yt-dlp wrapper)\n"
+    "latch " LATCH_VERSION " - URL media extractor (yt-dlp wrapper)\n"
     "\n"
     "Usage:\n"
     "  latch extract <url> <output-dir> [options]\n"
@@ -505,7 +505,7 @@ int run_cli(const std::vector<std::string>& args) {
 
   if (cmd == "--help" || cmd == "-h") return print_help();
   if (cmd == "--version" || cmd == "-v") {
-    std::puts("latch 0.4.0");
+    std::puts("latch " LATCH_VERSION);
     return 0;
   }
 

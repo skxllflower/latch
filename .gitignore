@@ -22,3 +22,12 @@ gui/src-tauri/target/
 gui/src-tauri/gen/
 gui/src-tauri/coredist/*
 !gui/src-tauri/coredist/.gitkeep
+
+# build logs never belong in history
+*.log
+# fetched-at-build binaries (fetch-ffmpeg.ps1 / fetch-ytdlp.ps1) must never be committed
+gui/src-tauri/resources/ffmpeg/*
+!gui/src-tauri/resources/ffmpeg/.gitkeep
+!gui/src-tauri/resources/ffmpeg/LICENSE.txt
+gui/src-tauri/resources/ytdlp/*
+!gui/src-tauri/resources/ytdlp/.gitkeep
