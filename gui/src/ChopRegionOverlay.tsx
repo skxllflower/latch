@@ -53,6 +53,12 @@ interface ChopRegionOverlayProps {
   // fires on release ONLY when the gesture actually changed a region.
   onGestureStart?: () => void;
   onGestureEnd?: (info: { id: string; kind: 'create' | 'resize' | 'move'; edge?: 'start' | 'end' }) => void;
+  // Fired when a gesture that signalled onGestureStart ends WITHOUT a change
+  // (a no-move click, an empty-click create). Hosts release their gesture
+  // latches here (draggingRef etc.) — without it a plain region click left
+  // them stuck until the next moved gesture (hidden playhead, disabled
+  // settle effects).
+  onGestureCancel?: () => void;
   // Pan the waveform viewport by a signed second delta. Backs both the
   // ctrl/cmd+drag pan and the near-edge auto-scroll during a gesture.
   panViewport?: (deltaSec: number) => void;
@@ -114,7 +120,7 @@ type Zone =
 export const ChopRegionOverlay: React.FC<ChopRegionOverlayProps> = ({
   regions, selectedId, viewportStartSec, viewportEndSec, durationSec,
   onChange, onSelect, onSeek, onActivate, onCreateDefault, onDragOut, canExportVideo = false,
-  onGestureStart, onGestureEnd, panViewport, onLiveBounds, createCursor = 'crosshair',
+  onGestureStart, onGestureEnd, onGestureCancel, panViewport, onLiveBounds, createCursor = 'crosshair',
   onContextMenu, onFocusClaim,
 }) => {
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -346,6 +352,7 @@ export const ChopRegionOverlay: React.FC<ChopRegionOverlayProps> = ({
           onActivate(cur.createdId);
           onGestureEnd?.({ id: cur.createdId, kind: 'create' });
         } else {
+          onGestureCancel?.();                  // started a create, drew nothing
           onSelect(null);
           onSeek(secAtClientX(ev.clientX));     // empty click → park + (Space plays whole)
         }
@@ -356,6 +363,9 @@ export const ChopRegionOverlay: React.FC<ChopRegionOverlayProps> = ({
         // retriggers it. Making the edge band retrigger too is the item-2 fix:
         // a click that landed within EDGE_HIT_PX of an edge used to fire a
         // zero-movement resize (a re-snap that clicked but never replayed).
+        // move/resize signalled onGestureStart; release the host's latches
+        // (dragout never signalled, so no cancel there).
+        if (cur.kind !== 'dragout') onGestureCancel?.();
         onActivate(cur.id);
       } else if (cur.kind === 'resize' && cur.moved) {
         onGestureEnd?.({ id: cur.id, kind: 'resize', edge: cur.edge });
@@ -366,7 +376,7 @@ export const ChopRegionOverlay: React.FC<ChopRegionOverlayProps> = ({
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
   }, [regions, durationSec, secAtClientX, secAtClientXLive, onChange, onSelect, onSeek, onActivate, onDragOut,
-      onGestureStart, onGestureEnd]);
+      onGestureStart, onGestureEnd, onGestureCancel]);
 
   // ctrl/cmd + left-drag pans the viewport (mirrors WaveformView's middle-drag
   // pan) instead of starting a region gesture. No undo snapshot; a press that

@@ -421,7 +421,7 @@ export class NativeVideoEngine {
   private async startAudio(startSec = 0): Promise<void> {
     if (this.audioStarted) return;
     this.audioStarted = true;
-    try {
+    if (!this.unlistenAudio) try {
       this.unlistenAudio = await listen('audio_event', (e) => {
         const p = e.payload as { event?: string; sec?: number; active?: boolean } | null;
         if (!p) return;
@@ -443,7 +443,17 @@ export class NativeVideoEngine {
           this.audioPosAt = performance.now();
           this.audioActive = true;
         } else if (p.event === 'vaudio_state' && !p.active) {
-          this.audioActive = false; // confirmed no audio track → wall clock, muted
+          // Two meanings share this event. UN-anchored (no vaudio_pos ever
+          // landed): the start's own verdict - no audio track -> wall clock,
+          // muted. ANCHORED: the LIVE deck was stopped out from under us
+          // (drain, decoder death, an external stop). Reading that as "no
+          // audio track" muted the window forever (audioStarted is a one-way
+          // latch, so play() kept resuming a dead sink); dropping the latch
+          // makes the next play() re-take with a fresh start_video_audio
+          // (lockstep with WAVdesk's sessionLost re-take - latch's
+          // single-deck engine needs no token model).
+          if (this.audioActive) this.audioStarted = false;
+          this.audioActive = false;
           this.audioSeekPending = false;
         }
       });

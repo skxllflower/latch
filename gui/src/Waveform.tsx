@@ -467,10 +467,18 @@ export const WaveformView: React.FC<WaveformViewProps> = ({
       commitTarget({ tStart: Math.max(0, s), tEnd: Math.min(duration, t) });
       return;
     }
-    // exp(deltaY * 0.015): 1.5x the original, matching WAVdesk's mac wheel-scroll
-    // gain so two-finger scroll feels close to pinch-zoom; delta EMA-smoothed
-    // first to kill momentum jitter. Keep in lockstep with WaveformView.tsx.
-    const factor = Math.exp(smoothScrollDelta(e.deltaY) * 0.015);
+    // Device split, lockstep with WAVdesk WaveformView.tsx (and this repo's own
+    // useCanvasViewport.ts): a mouse wheel's chunky ~100px notches need ~1/10th
+    // the gain of a trackpad's fine deltas — exp(deltaY * 0.0014) gives the
+    // house ~1.15x per notch. No EMA on the wheel: its deltas are uniform, so
+    // smoothing only adds latency. Trackpad keeps the EMA + 0.015 gain (1.5x
+    // the original, so two-finger scroll feels close to pinch-zoom).
+    const isMouseWheel = !isMac
+      || e.deltaMode === 1
+      || (e.deltaX === 0 && Number.isInteger(e.deltaY) && Math.abs(e.deltaY) >= 30);
+    const factor = isMouseWheel
+      ? Math.exp(e.deltaY * 0.0014)
+      : Math.exp(smoothScrollDelta(e.deltaY) * 0.015);
     const newSpan = Math.max(MIN_SPAN_SEC, Math.min(duration, span * factor));
     const anchor = cur.tStart + frac * span;
     let s = anchor - frac * newSpan;

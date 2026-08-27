@@ -17,7 +17,7 @@ pub enum Cmd {
     // Atomic region audition. Keeping play + loop bounds in one mailbox
     // command prevents two frontend invokes from arriving in the opposite
     // order (Play intentionally clears any previous loop).
-    PlayLoop { path: String, start_sec: f64, end_sec: f64 },
+    PlayLoop { path: String, start_sec: f64, end_sec: f64, at_sec: Option<f64> },
     Pause,
     Resume,
     Stop,
@@ -54,6 +54,13 @@ struct EngineState {
     sink: Option<rodio::Sink>,
     path: String,
     looping: Option<(f64, f64)>,
+    // Absolute second the sink's position 0 corresponds to. The ffmpeg path
+    // decodes FROM its start_sec (input seek), so its get_pos()/try_seek are
+    // buffer-relative; rodio sinks are absolute (origin 0). Every absolute
+    // position read/seek in the tick below must go through this offset, or
+    // the collision-physics loop compares two different time origins on
+    // Opus/AAC/WebM sources (raw YouTube bestaudio) and pins the playhead.
+    origin: f64,
 }
 
 // stream-audio's forced layout (see lathe's stream_audio): interleaved
@@ -633,20 +640,23 @@ fn va_reader_raw(mut stdout: std::process::ChildStdout, shared: std::sync::Arc<V
 }
 
 
+// Returns the sink plus its position ORIGIN: the absolute second that the
+// sink's get_pos()==0 maps to (ffmpeg buffers start at start_sec; rodio
+// streams are absolute, origin 0).
 fn open_sink(
     handle: &rodio::OutputStreamHandle,
     path: &str,
     start_sec: f64,
-) -> Result<rodio::Sink, String> {
+) -> Result<(rodio::Sink, f64), String> {
     // Containers rodio's symphonia build can't hand off (mp4/m4a PANIC on init;
     // webm + ogg Opus fail) are decoded through ffmpeg to PCM and played from a
     // buffer — the audition fold-out otherwise silently did nothing for every
     // Opus / AAC download. WAV / MP3 / FLAC stay on the fast streaming path.
     if crate::audio_decode::prefers_ffmpeg(path) {
-        return open_sink_ffmpeg(handle, path, start_sec);
+        return open_sink_ffmpeg(handle, path, start_sec).map(|s| (s, start_sec));
     }
     match open_sink_rodio(handle, path, start_sec) {
-        Ok(sink) => Ok(sink),
+        Ok(sink) => Ok((sink, 0.0)),
         Err(e) => {
             // A missing file is a path bug — surface it, don't mask with ffmpeg.
             if !std::path::Path::new(path).exists() {
@@ -655,7 +665,7 @@ fn open_sink(
             crate::logger::log(&format!(
                 "audition play: rodio failed for {path} ({e}); retrying via ffmpeg"
             ));
-            open_sink_ffmpeg(handle, path, start_sec)
+            open_sink_ffmpeg(handle, path, start_sec).map(|s| (s, start_sec))
         }
     }
 }
@@ -707,7 +717,7 @@ fn audio_thread(app: AppHandle, rx: Receiver<Cmd>) {
         return;
     };
 
-    let mut st = EngineState { sink: None, path: String::new(), looping: None };
+    let mut st = EngineState { sink: None, path: String::new(), looping: None, origin: 0.0 };
     let mut vd = VideoDeck::new();
     let mut last_emit = Instant::now() - Duration::from_secs(1);
     let mut last_vemit = Instant::now() - Duration::from_secs(1);
@@ -727,9 +737,10 @@ fn audio_thread(app: AppHandle, rx: Receiver<Cmd>) {
                     if let Some(s) = st.sink.take() { s.stop(); }
                     st.looping = None;
                     match open_sink(&handle, &path, start_sec) {
-                        Ok(sink) => {
+                        Ok((sink, origin)) => {
                             st.sink = Some(sink);
                             st.path = path;
+                            st.origin = origin;
                         }
                         Err(e) => {
                             st.path = String::new();
@@ -740,13 +751,25 @@ fn audio_thread(app: AppHandle, rx: Receiver<Cmd>) {
                         }
                     }
                 }
-                Cmd::PlayLoop { path, start_sec, end_sec } => {
+                Cmd::PlayLoop { path, start_sec, end_sec, at_sec } => {
                     if let Some(s) = st.sink.take() { s.stop(); }
                     st.looping = (end_sec > start_sec).then_some((start_sec, end_sec));
+                    // Resume-from-stop: open inside the loop when asked;
+                    // out-of-bounds falls back to the loop start. The sink is
+                    // ALWAYS opened at the loop start (so a buffer-backed
+                    // ffmpeg sink contains the whole loop and every wrap is an
+                    // in-buffer seek); the resume offset is a seek below.
+                    let open_at = at_sec
+                        .filter(|t| *t > start_sec && *t < end_sec)
+                        .unwrap_or(start_sec);
                     match open_sink(&handle, &path, start_sec) {
-                        Ok(sink) => {
+                        Ok((sink, origin)) => {
+                            if open_at > start_sec {
+                                let _ = sink.try_seek(Duration::from_secs_f64((open_at - origin).max(0.0)));
+                            }
                             st.sink = Some(sink);
                             st.path = path;
+                            st.origin = origin;
                         }
                         Err(e) => {
                             st.path = String::new();
@@ -765,8 +788,28 @@ fn audio_thread(app: AppHandle, rx: Receiver<Cmd>) {
                     st.looping = None;
                 }
                 Cmd::Seek(sec) => {
-                    if let Some(s) = &st.sink {
-                        let _ = s.try_seek(Duration::from_secs_f64(sec.max(0.0)));
+                    let rel = sec.max(0.0) - st.origin;
+                    if rel >= 0.0 {
+                        if let Some(s) = &st.sink {
+                            let _ = s.try_seek(Duration::from_secs_f64(rel));
+                        }
+                    } else if st.sink.is_some() && !st.path.is_empty() {
+                        // Target lies BEFORE a buffer-backed sink's origin (the
+                        // ffmpeg buffer starts at its own start_sec): the only
+                        // way there is a reopen at the target.
+                        let paused = st.sink.as_ref().is_some_and(|s| s.is_paused());
+                        let path = st.path.clone();
+                        match open_sink(&handle, &path, sec.max(0.0)) {
+                            Ok((sink, origin)) => {
+                                if paused { sink.pause(); }
+                                if let Some(old) = st.sink.take() { old.stop(); }
+                                st.sink = Some(sink);
+                                st.origin = origin;
+                            }
+                            Err(e) => crate::logger::log(&format!(
+                                "audition seek: reopen before origin FAILED for {path}: {e}"
+                            )),
+                        }
                     }
                 }
                 Cmd::SetLoop { start_sec, end_sec } => {
@@ -798,9 +841,14 @@ fn audio_thread(app: AppHandle, rx: Receiver<Cmd>) {
                     if vd.persistent { let _ = vd.send("{\"op\":\"play\"}\n"); }
                 }
                 Cmd::VStop => {
+                    // Dying-session notice (daemon parity): an anchored engine
+                    // reads this as "deck stopped externally" and re-takes on
+                    // the next play, instead of resuming a dead sink forever.
+                    let had_deck = vd.sink.is_some() || !vd.path.is_empty();
                     vd.stop();
                     vd.path = String::new();
                     vd.looping = None;
+                    if had_deck { emit_vstate(&app, false); }
                 }
                 Cmd::VSeek { sec, dir } => {
                     // The decoder owns BOTH directions: dir=-1 streams
@@ -841,24 +889,57 @@ fn audio_thread(app: AppHandle, rx: Receiver<Cmd>) {
         // Loop check + position broadcast.
         let mut state = "stopped";
         let mut pos = 0.0f64;
+        // Loop-start dragged BELOW a buffer-backed sink's origin: the buffer
+        // physically lacks that audio, so the wrap must reopen at the new
+        // start (mirrors Cmd::Seek's reopen-before-origin path).
+        let mut reopen_at: Option<f64> = None;
         if let Some(sink) = &st.sink {
             if sink.empty() {
                 st.sink = None;
                 st.looping = None;
             } else {
-                pos = sink.get_pos().as_secs_f64();
+                pos = sink.get_pos().as_secs_f64() + st.origin;
                 state = if sink.is_paused() { "paused" } else { "playing" };
                 if state == "playing" {
                     // Collision-physics loop: the bounds are read LIVE every
                     // tick (SetLoop just updates them — no re-arm), so a drag
                     // that moves a wall reshapes the bounce instantly. Ball
                     // hits the RIGHT wall -> jump to the left; the LEFT wall
-                    // dragged past the ball -> snap it back inside.
+                    // dragged past the ball -> snap it back inside. Both pos
+                    // and the wrap target ride st.origin so ffmpeg (buffer-
+                    // relative) and rodio (absolute) sinks compare in the
+                    // same absolute domain.
                     if let Some((lo, hi)) = st.looping {
                         if pos >= hi || pos < lo - 0.006 {
-                            let _ = sink.try_seek(Duration::from_secs_f64(lo.max(0.0)));
-                            pos = lo;
+                            if lo < st.origin - 0.006 {
+                                reopen_at = Some(lo.max(0.0));
+                            } else {
+                                let _ = sink.try_seek(Duration::from_secs_f64((lo - st.origin).max(0.0)));
+                                pos = lo.max(st.origin);
+                            }
                         }
+                    }
+                }
+            }
+        }
+        if let Some(target) = reopen_at {
+            let path = st.path.clone();
+            match open_sink(&handle, &path, target) {
+                Ok((sink, origin)) => {
+                    if let Some(old) = st.sink.take() { old.stop(); }
+                    st.sink = Some(sink);
+                    st.origin = origin;
+                    pos = target;
+                }
+                Err(e) => {
+                    crate::logger::log(&format!(
+                        "audition loop: reopen below origin FAILED for {path}: {e}"
+                    ));
+                    // Don't retry every tick: the clamped in-buffer wrap is
+                    // the graceful floor.
+                    if let (Some(sink), Some((lo, _))) = (&st.sink, st.looping) {
+                        let _ = sink.try_seek(Duration::from_secs_f64((lo - st.origin).max(0.0)));
+                        pos = lo.max(st.origin);
                     }
                 }
             }
@@ -995,6 +1076,7 @@ pub fn audio_cmd(
     path: Option<String>,
     sec: Option<f64>,
     end_sec: Option<f64>,
+    at_sec: Option<f64>,
 ) -> Result<(), String> {
     let tx = ensure_thread(&app);
     let cmd = match action.as_str() {
@@ -1010,6 +1092,7 @@ pub fn audio_cmd(
                 path: path.ok_or("play-loop needs path")?,
                 start_sec,
                 end_sec,
+                at_sec,
             }
         },
         "pause" => Cmd::Pause,

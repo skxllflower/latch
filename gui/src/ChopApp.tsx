@@ -20,7 +20,7 @@ import { listen, emit } from '@tauri-apps/api/event';
 import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import {
-  Scissors, X, Play, Pause, Square, Loader2,
+  Scissors, X, Play, Pause, Square, Loader2, SkipBack, StepForward,
   Trash2, Film, Music, FolderOpen, Folder, ListMusic, Magnet, Rows2,
 } from 'lucide-react';
 import { useTheme, THEME_BG } from './theme';
@@ -149,6 +149,18 @@ export default function ChopApp() {
   // list grows — the video pane gives up its height first instead.
   const [userWaveH, setUserWaveH] = useState<number | null>(null);
   const [cursorSec, setCursorSec] = useState(0);       // click position → playhead when audio isn't playing
+  // Resume-from-stop toggle (lockstep with WAVdesk's chop Bucket C): ON = the
+  // transport picks up where the last stop/pause left off; OFF = it restarts
+  // from the region top / last clicked position. Persisted per machine.
+  const [resumeFromStop, setResumeFromStop] = useState<boolean>(() => {
+    try { return window.localStorage.getItem('latch-chop-resume-from-stop') === '1'; } catch { return false; }
+  });
+  const resumeFromStopRef = useRef(resumeFromStop); resumeFromStopRef.current = resumeFromStop;
+  useEffect(() => {
+    try { window.localStorage.setItem('latch-chop-resume-from-stop', resumeFromStop ? '1' : '0'); } catch { /* ignore */ }
+  }, [resumeFromStop]);
+  // Captured stop/pause position (video: picture clock; audio: engine secs).
+  const stopResumeRef = useRef<number | null>(null);
   // Speed→pitch mode for exports, PER chop session (reset when a new video
   // loads). 'tape' lets pitch follow speed (asetrate varispeed, like a tape
   // machine); 'preserve' keeps the original pitch (atempo). Defaults to
@@ -662,6 +674,29 @@ export default function ChopApp() {
     void playbackEngine.playLoop(audioPath, r.startSec, r.endSec);
   }, [audioPath]);
 
+  // Capture where playback is NOW so a later Play/Space in resume mode can
+  // pick up here (video sessions store the picture clock; audio the engine
+  // position). Captures from a PAUSED engine too: pause -> Stop -> Play must
+  // not silently restart from the top in resume mode.
+  const captureStopResume = useCallback(() => {
+    if (hasVideoRef.current) {
+      const t = videoRef.current?.getCurrentTime();
+      stopResumeRef.current = t != null ? t : null;
+    } else if (onOurFileRef.current
+        && (playStateRef.current === 'playing' || playStateRef.current === 'paused')) {
+      stopResumeRef.current = playbackEngine.getPosition();
+    }
+  }, []);
+
+  // Restart a region's audition loop AT a captured position (a stale point
+  // outside the region falls back to its top). playLoop carries the position
+  // natively so start + loop bounds still cross the boundary atomically.
+  const resumeRegionFromStop = useCallback((rsel: ChopRegion, sec: number) => {
+    if (!audioPath) return;
+    setAuditionId(rsel.id);
+    void playbackEngine.playLoop(audioPath, rsel.startSec, rsel.endSec, sec);
+  }, [audioPath]);
+
   // Folded play: an ARMED selected region auditions THAT region (looped);
   // otherwise the whole file. Pause/resume when our file is already going.
   // Video links route to VideoView unconditionally — the WAV engine must
@@ -669,18 +704,60 @@ export default function ChopApp() {
   // sources with no way to kill them" field bug: retrigger's no-region
   // fallback landed here with hasVideo true and played the companion WAV
   // alongside the video audio).
-  const playPause = useCallback(() => {
+  // plainResume: K's contract is the plain in-place pause/resume regardless
+  // of the resume-from-stop toggle; the transport button + Space pass nothing
+  // and honor it.
+  const playPause = useCallback((plainResume = false) => {
     if (!audioPath) return;
-    if (hasVideoRef.current) { videoRef.current?.togglePlay(); return; }
+    if (hasVideoRef.current) {
+      // Resume mode: seek the parked video back to the captured point first,
+      // CLAMPED into the currently armed region's span — stop region A then
+      // arm region B must not resume inside A against B's loop.
+      const rpv = stopResumeRef.current;
+      if (resumeFromStopRef.current && rpv != null && !videoPlayingRef.current) {
+        stopResumeRef.current = null;
+        const ar = auditionIdRef.current
+          ? regionsRef.current.find((x) => x.id === auditionIdRef.current) ?? null : null;
+        const pos = ar && !(rpv >= ar.startSec && rpv < ar.endSec - 0.01)
+          ? ar.startSec : rpv;
+        videoRef.current?.seek(pos, true);
+      }
+      videoRef.current?.togglePlay();
+      return;
+    }
     if (isPlaying && onOurFile) { playbackEngine.pause(); return; }
-    if (playState === 'paused' && onOurFile) { void playbackEngine.resume(); return; }
+    if (playState === 'paused' && onOurFile) {
+      // A captured stop point must NOT be shadowed by the in-place resume:
+      // the toolbar Stop leaves the engine PAUSED at the region top (pause +
+      // seek), so resume-from-pause here would replay the top — identical to
+      // toggle OFF. Fall through to the resume block below, which consumes
+      // the point. K (plainResume) keeps the plain in-place resume.
+      if (plainResume || (resumeFromStopRef.current && stopResumeRef.current == null)) {
+        void playbackEngine.resume();
+        return;
+      }
+      // Toggle OFF: the transport restarts from the region top / last click
+      // instead of resuming in place. Fall through to the restart paths.
+    }
+    // Resume mode from a full stop: pick up at the captured point.
+    const rp = stopResumeRef.current;
+    if (resumeFromStopRef.current && rp != null) {
+      stopResumeRef.current = null;
+      const rsel = selectedId && auditionId === selectedId
+        ? regions.find((r) => r.id === selectedId) ?? null : null;
+      if (rsel) { resumeRegionFromStop(rsel, rp); return; }
+      setAuditionId(null);
+      void playbackEngine.play(audioPath, 'full', { startSec: rp });
+      return;
+    }
     const sel = selectedId && auditionId === selectedId
       ? regions.find((r) => r.id === selectedId) ?? null : null;
     if (sel) playRegion(sel); else playWhole();
-  }, [audioPath, isPlaying, onOurFile, playState, selectedId, auditionId, regions, playRegion, playWhole]);
+  }, [audioPath, isPlaying, onOurFile, playState, selectedId, auditionId, regions, playRegion, playWhole, resumeRegionFromStop]);
 
   const stopAll = useCallback(() => {
     setAuditionId(null);
+    stopResumeRef.current = null; // destructive stop: no resume point
     playbackEngine.stop({ fadeMs: 20 });
     if (hasVideo) { videoRef.current?.pause(); videoRef.current?.clearLoop(); }
   }, [hasVideo]);
@@ -690,6 +767,8 @@ export default function ChopApp() {
   // next Space replays it from the top.
   const stopToLoopStart = useCallback(() => {
     if (!audioPath) return;
+    // Capture where playback was BEFORE stopping so a later Play can resume here.
+    captureStopResume();
     const aid = auditionId ?? selectedId;
     const r = aid ? regionsRef.current.find((x) => x.id === aid) ?? null : null;
     const target = r ? r.startSec : 0;
@@ -702,18 +781,19 @@ export default function ChopApp() {
       playbackEngine.pause();
       playbackEngine.seek(target);
     }
-  }, [audioPath, auditionId, selectedId, hasVideo]);
+  }, [audioPath, auditionId, selectedId, hasVideo, captureStopResume]);
 
   // Unified play/pause for the in-waveform transport overlay: video links
   // drive VideoView, audio links drive playbackEngine.
   const transportPlaying = hasVideo ? videoPlaying : (isPlaying && onOurFile);
   const toggleTransport = useCallback(() => {
-    if (hasVideo) {
-      // Belt-and-braces single-source rule: a WAV audition must never
-      // underlap the video session.
-      if (playStateRef.current === 'playing') playbackEngine.stop({ fadeMs: 20 });
-      videoRef.current?.togglePlay();
-    } else playPause();
+    // Belt-and-braces single-source rule: a WAV audition must never underlap
+    // the video session. Then route through playPause (not a bare togglePlay)
+    // so its video branch's resume-from-stop seek applies to this button too.
+    if (hasVideo && playStateRef.current === 'playing') {
+      playbackEngine.stop({ fadeMs: 20 });
+    }
+    playPause();
   }, [hasVideo, playPause]);
 
   // Click OUTSIDE any selection: park the playhead there, un-looped, and
@@ -722,6 +802,7 @@ export default function ChopApp() {
   const onSeek = useCallback((sec: number) => {
     setAuditionId(null);
     select(null);
+    stopResumeRef.current = null; // explicit click supersedes the stop point
     setCursorSec(sec);
     if (hasVideo) { videoRef.current?.clearLoop(); videoRef.current?.seek(sec); }
   }, [hasVideo, select]);
@@ -821,7 +902,9 @@ export default function ChopApp() {
       // STOP: halt EVERY live source (video session AND the WAV engine — the
       // pair must never survive a stop), keep the region selected + armed +
       // loop-cued, and park the playhead at its start so the next Space
-      // retriggers cleanly.
+      // retriggers cleanly. Capture the live position FIRST so a resume-mode
+      // Space can pick up here instead of the region top.
+      captureStopResume();
       setCursorSec(r.startSec);
       if (hasVideoRef.current) {
         videoRef.current?.pause();
@@ -829,9 +912,33 @@ export default function ChopApp() {
       }
       playbackEngine.stop({ fadeMs: 20 });
     } else {
+      // Resume mode: Space picks up where the last stop/pause left off
+      // (inside this region's loop; a stale point falls back to the top).
+      const rp = stopResumeRef.current;
+      if (resumeFromStopRef.current && rp != null) {
+        stopResumeRef.current = null;
+        if (hasVideoRef.current) {
+          // Single-source rule: no WAV may underlap the video session.
+          playbackEngine.stop({ fadeMs: 20 });
+          const pos = rp >= r.startSec && rp < r.endSec - 0.01 ? rp : r.startSec;
+          videoRef.current?.seek(pos, true);
+          videoRef.current?.setLoop(r.startSec, r.endSec);
+          videoRef.current?.play();
+        } else {
+          resumeRegionFromStop(r, rp);
+        }
+        return;
+      }
+      // Resume mode with no captured point but a PAUSED engine (K-pause then
+      // Space): a plain resume, not a retrigger from the top.
+      if (resumeFromStopRef.current && !hasVideoRef.current
+          && playStateRef.current === 'paused' && onOurFileRef.current) {
+        playPause();
+        return;
+      }
       playRegionLooped(r);
     }
-  }, [playRegionLooped, playPause]);
+  }, [playRegionLooped, playPause, captureStopResume, resumeRegionFromStop]);
 
   // Delete a region and keep the audition sane. If the deleted region is the
   // one being auditioned, release its loop and SWAP to the next region in
@@ -1046,7 +1153,7 @@ export default function ChopApp() {
       } else {
         switch (e.code) {
           case 'Space': e.preventDefault(); retriggerSelected(); break;
-          case 'KeyK': e.preventDefault(); playPause(); break;
+          case 'KeyK': e.preventDefault(); playPause(true); break;
           case 'ArrowLeft': e.preventDefault(); nudge(-1); break;
           case 'ArrowRight': e.preventDefault(); nudge(1); break;
         }
@@ -1756,9 +1863,18 @@ export default function ChopApp() {
                           x.id === (armedId === info.id ? info.id : armedId));
                         if (target) videoRef.current?.setLoop(target.startSec, target.endSec);
                         else videoRef.current?.clearLoop();
+                      } else if (onOurFileRef.current) {
+                        // Audio: push the settled bounds once on drop too. The
+                        // cancelled trailing rAF can leave the Rust loop one
+                        // pointermove stale, and the settle effect above only
+                        // re-fires when the zero-cross snap CHANGES the props.
+                        const armedId = info.kind === 'create' ? info.id : auditionIdRef.current;
+                        const target = armedId ? regionsRef.current.find((x) => x.id === armedId) : null;
+                        if (target) playbackEngine.setLoop(target.startSec, target.endSec);
                       }
                       void onGestureEnd(info);
                     }}
+                    onGestureCancel={() => { draggingRef.current = false; }}
                     panViewport={vp.panViewport}
                     onLiveBounds={onLiveBounds}
                   />
@@ -1834,6 +1950,19 @@ export default function ChopApp() {
               <button className={floatBtn} style={{ pointerEvents: 'auto' }} onClick={stopToLoopStart}
                 title="Stop: back to the region start">
                 <Square size={10} />
+              </button>
+              {/* Resume-from-stop toggle (lockstep with WAVdesk): accent when
+                  ON (Play resumes where Stop left off); default when OFF
+                  (Play restarts from the top / last click). */}
+              <button
+                className={`${floatBtn} ${resumeFromStop ? 'text-[color:var(--theme-accent)] hover:text-[color:var(--theme-accent)]' : ''}`}
+                style={{ pointerEvents: 'auto' }}
+                aria-pressed={resumeFromStop}
+                onClick={() => setResumeFromStop((v) => !v)}
+                title={resumeFromStop
+                  ? 'Play resumes from the stop point. Click to restart from the top instead'
+                  : 'Play restarts from the top. Click to resume from the stop point instead'}>
+                {resumeFromStop ? <StepForward size={11} /> : <SkipBack size={11} />}
               </button>
             </div>
           )}

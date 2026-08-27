@@ -53,12 +53,14 @@ export const playbackEngine = {
   // Region start and bounds cross the native boundary atomically. Separate
   // play()/setLoop() invokes can be scheduled out of order in an optimized
   // build, allowing Play's loop reset to win intermittently.
-  playLoop(path: string, startSec: number, endSec: number): Promise<void> {
+  // atSec: open playback at this position INSIDE the loop (resume-from-stop)
+  // instead of the loop start; out-of-bounds values fall back to startSec.
+  playLoop(path: string, startSec: number, endSec: number, atSec?: number): Promise<void> {
     curPath = path;
-    curPos = startSec;
+    curPos = atSec != null && atSec >= startSec && atSec < endSec ? atSec : startSec;
     curState = 'playing';
     notify();
-    cmd('play-loop', { path, sec: startSec, endSec });
+    cmd('play-loop', { path, sec: startSec, endSec, ...(atSec != null ? { atSec } : {}) });
     return Promise.resolve();
   },
   pause(): void { cmd('pause'); },
