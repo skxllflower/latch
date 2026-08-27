@@ -902,6 +902,14 @@ export default function ExtractApp() {
   const parsedUrls = useMemo(
     () => inputQueue.filter(q => q.kind !== 'search' && !q.candidateGroup).map(q => q.url),
     [inputQueue]);
+  // A selection narrows Extract to just the selected rows; no selection
+  // keeps the extract-everything default. Search/candidate rows never
+  // count even when selected, and a selection holding ONLY those falls
+  // back to everything rather than extracting hits the user hasn't picked.
+  const selectedExtractUrls = useMemo(
+    () => inputQueue.filter(q => q.selected && q.kind !== 'search' && !q.candidateGroup).map(q => q.url),
+    [inputQueue]);
+  const extractUrls = selectedExtractUrls.length > 0 ? selectedExtractUrls : parsedUrls;
   const candidateCount = useMemo(
     () => inputQueue.filter(q => !!q.candidateGroup).length,
     [inputQueue]);
@@ -1204,8 +1212,8 @@ export default function ExtractApp() {
 
   const onExtract = useCallback(() => {
     if (!canExtract) return;
-    enqueueExtract(parsedUrls);
-  }, [canExtract, parsedUrls, enqueueExtract]);
+    enqueueExtract(extractUrls);
+  }, [canExtract, extractUrls, enqueueExtract]);
 
   // Prompt key handler — Enter commits the buffer to the queue (with
   // multi-URL splitting in case the user typed/pasted comma-separated
@@ -2287,7 +2295,9 @@ export default function ExtractApp() {
               disabled={!canExtract}
               className="px-4 h-7 bg-zinc-700 hover:bg-zinc-600 text-zinc-100 border border-zinc-600 hover:border-zinc-500 disabled:opacity-30 disabled:hover:bg-zinc-700 text-[0.5625rem] uppercase font-bold transition-none"
             >
-              Extract{parsedUrls.length > 1 ? ` (${parsedUrls.length})` : ''}
+              {selectedExtractUrls.length > 0
+                ? `Extract ${selectedExtractUrls.length} selected`
+                : `Extract${parsedUrls.length > 1 ? ` (${parsedUrls.length})` : ''}`}
             </button>
           </div>
         </div>
