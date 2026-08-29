@@ -226,6 +226,7 @@ pub fn run() {
             chop::latch_chop_alloc_dir,
             chop::latch_chop_cleanup_dir,
             chop::latch_clips_dir,
+            chop::latch_chop_local_clips_dir,
             chop::clip_path_exists,
             chop::latch_clip,
             audio::audio_cmd,

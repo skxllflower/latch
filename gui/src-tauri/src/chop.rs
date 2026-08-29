@@ -97,6 +97,28 @@ pub async fn latch_clips_dir(app: AppHandle) -> Result<String, String> {
     .map_err(|e| format!("clips dir join: {e}"))?
 }
 
+/// Resolve (creating if needed) the "Latch Chops" folder NEXT TO a local
+/// source file — the persistent export dir for a LOCAL-file chop session.
+/// Unlike the temp working dirs this is NEVER wiped, so a clip dragged into
+/// a DAW keeps resolving; unlike latch_clips_dir it sits beside the source,
+/// which is what a user chopping a file already on disk expects. Mirrors
+/// WAVdesk's latch_chop_local_clips_dir ("WAVdesk Chops" there).
+#[tauri::command]
+pub async fn latch_chop_local_clips_dir(source_path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let src = PathBuf::from(&source_path);
+        let parent = src
+            .parent()
+            .ok_or_else(|| "source file has no parent directory".to_string())?;
+        let dir = parent.join("Latch Chops");
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| format!("could not create Latch Chops dir: {e}"))?;
+        Ok(dir.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|e| format!("local clips dir join: {e}"))?
+}
+
 // Pick a non-colliding output path: "<stem> (2).<ext>", … on collision, and
 // ATOMICALLY reserve it. create_new succeeds only if the file doesn't already
 // exist, so two processes racing the same name (e.g. standalone Latch + the

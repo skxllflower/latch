@@ -105,6 +105,10 @@ export default function ChopApp() {
   const playingPath = usePlaybackCurrentPath();
 
   const [seed, setSeed] = useState<ChopSeed | null>(null);
+  // Live seed for stable callbacks that must read localFile (session kind)
+  // without re-binding on every seed change.
+  const seedRef = useRef<ChopSeed | null>(null);
+  seedRef.current = seed;
   const [phase, setPhase] = useState<Phase>('idle');
   const [progress, setProgress] = useState(0);
   const [errorMsg, setErrorMsg] = useState('');
@@ -256,6 +260,12 @@ export default function ChopApp() {
   }, [applySnapshot]);
 
   const tempDirRef = useRef<string | null>(null);
+  // Session generation, bumped per startPipeline run. Detached continuations
+  // (the local companion-WAV derive, clips-dir resolution) compare against it
+  // so a re-seed can't let a stale callback write into the NEW session (e.g.
+  // a cancelled derive's "Waveform unavailable: Cancelled." landing on the
+  // replacement session's toast).
+  const seedGenRef = useRef(0);
   // Duration captured from the download's own `info` event — covers the case
   // where the Chop button was clicked before the Latch probe resolved (so the
   // seed had no duration). Used as the companion-WAV endSec fallback.
@@ -422,13 +432,20 @@ export default function ChopApp() {
 
   // ---- Download pipeline --------------------------------------------------
   const startPipeline = useCallback(async (s: ChopSeed) => {
-    setPhase('downloading'); setProgress(0); setErrorMsg('');
+    const gen = ++seedGenRef.current;
+    setPhase(s.localFile ? 'extracting-audio' : 'downloading'); setProgress(0); setErrorMsg('');
     setAudioPath(null); setVideoPath(null); setVideoFetching(false);
     setHdVideoPath(null); setHdLoading(false); infoDurationRef.current = 0;
+    // Re-resolve the clips folder per session — a local seed exports next to
+    // ITS source, so a cached dir from the previous seed would be wrong.
+    clipsDirRef.current = null;
     setDurationSec(0); setRegions([]); select(null); setAuditionId(null); setExportMsg('');
     setChapters([]); historyRef.current = []; redoRef.current = [];
     lastPushRef.current = { tag: '', at: 0 };
     initialPauseDoneRef.current = false; // new session opens paused at 0
+    // A pending seek armed by a session whose player never reached onReady
+    // must not leak into the next session's first onReady.
+    pendingSeekRef.current = null; pendingPlayRef.current = false;
     // Fresh pitch-mode session for the new clip — back to the 'tape'
     // default, ask again on its first speed-changed export.
     setPitchMode('tape'); pitchModeRef.current = 'tape'; pitchAskedRef.current = false;
@@ -455,6 +472,84 @@ export default function ChopApp() {
     }
 
     binaryPathRef.current = await resolveLatchPath(s);
+
+    // Local-file seed: NO download, NO temp copy — the source file streams
+    // directly as BOTH the preview and the full-res export source (chop is
+    // non-destructive). Video: show the picture IMMEDIATELY (phase→ready off
+    // the video path; hdVideoPath = the local file so video export is
+    // ungated at once) and derive the display waveform's companion WAV in
+    // the BACKGROUND — a failure loses only the waveform/audition, never
+    // the playing video or its exports. Audio: the WAV waveform parser +
+    // audition engine read a .wav source natively; anything else derives
+    // the companion WAV first (clips still cut from the source).
+    if (s.localFile) {
+      const localFile = s.localFile;
+      if (s.includeVideo) {
+        // Open the player at the handoff position, PAUSED, before VideoView
+        // mounts — the chop window NEVER autoplays on open. startSec 0 (or
+        // absent) keeps the plain nativeAutoplay:false paused-at-0 mount.
+        if ((s.startSec ?? 0) > 0) {
+          pendingSeekRef.current = s.startSec!;
+          pendingPlayRef.current = false;
+          initialPauseDoneRef.current = true;
+          setCursorSec(s.startSec!);
+        }
+        setVideoPath(localFile);
+        setHdVideoPath(localFile);
+        if (s.durationSec && s.durationSec > 0) setDurationSec(s.durationSec);
+        setPhase('ready');
+        void (async () => {
+          try {
+            const audio = await extractCompanionWav(localFile, dir, s.durationSec);
+            if (gen !== seedGenRef.current) return; // re-seeded while deriving
+            setAudioPath(audio);
+            try {
+              const meta = await invoke<IpcWaveformData>('generate_waveform', { path: audio, points: 32 });
+              if (gen !== seedGenRef.current) return;
+              if (meta?.success && meta.duration_sec > 0) setDurationSec(meta.duration_sec);
+              else if (s.durationSec) setDurationSec(s.durationSec);
+            } catch { if (gen === seedGenRef.current && s.durationSec) setDurationSec(s.durationSec); }
+          } catch (e: any) {
+            if (gen !== seedGenRef.current) return; // stale failure (e.g. re-seed cancel)
+            // The video still plays + exports; only the waveform/audition is lost.
+            setExportMsg(`Waveform unavailable: ${cleanError(String(e?.message ?? e))}`);
+          }
+        })();
+        return;
+      }
+      // Audio local file: no video pane (the audio-only collapsed mode).
+      try {
+        // The WAV waveform parser only reads what latch itself writes (PCM
+        // s16 / float32) — a studio-format .wav (24-bit etc.) fails it, so
+        // probe first and fall back to the ffmpeg companion instead of
+        // opening a session with a blank waveform and duration 0.
+        let audio: string | null = null;
+        let meta: IpcWaveformData | null = null;
+        if (/\.wave?$/i.test(localFile)) {
+          try {
+            meta = await invoke<IpcWaveformData>('generate_waveform', { path: localFile, points: 32 });
+            if (meta?.success) audio = localFile;
+          } catch { /* not natively decodable — derive the companion below */ }
+        }
+        if (!audio) {
+          meta = null;
+          audio = await extractCompanionWav(localFile, dir, s.durationSec);
+          try {
+            meta = await invoke<IpcWaveformData>('generate_waveform', { path: audio, points: 32 });
+          } catch { /* duration falls back to the seed's */ }
+        }
+        if (gen !== seedGenRef.current) return; // re-seeded while deriving
+        setAudioPath(audio);
+        if (meta?.success && meta.duration_sec > 0) setDurationSec(meta.duration_sec);
+        else if (s.durationSec) setDurationSec(s.durationSec);
+        setPhase('ready');
+      } catch (e: any) {
+        if (gen !== seedGenRef.current) return; // stale failure (e.g. re-seed cancel)
+        setPhase('error');
+        setErrorMsg(cleanError(String(e?.message ?? e)));
+      }
+      return;
+    }
 
     // Chapter probe in parallel with the download — feeds the one-click
     // "seed regions from chapters" affordance. Best-effort: failures and
@@ -550,14 +645,37 @@ export default function ChopApp() {
   // while still calling the latest startPipeline.
   const startPipelineRef = useRef(startPipeline);
   startPipelineRef.current = startPipeline;
+  // One re-seed prompt at a time: seeds arriving while it sits open are
+  // dropped rather than queued (answering one dialog must not fire a chain
+  // of stale session replacements).
+  const reseedAskRef = useRef(false);
   useEffect(() => {
     const un = listen<ChopSeed>('wd-latch-chop-seed', (e) => {
       const s = e.payload;
-      for (const id of activeJobs.current) void invoke('latch_cancel', { jobId: id }).catch(() => {});
-      activeJobs.current.clear();
-      jobHandlers.current.clear();
-      setSeed(s);
-      void startPipelineRef.current(s);
+      void (async () => {
+        // Re-seed guard: drawn regions are user work — confirm before the
+        // pipeline restart wipes them. The INITIAL seed (fresh window, no
+        // session yet) never prompts; declining keeps the current session.
+        if (seedRef.current && regionsRef.current.length > 0) {
+          if (reseedAskRef.current) return; // dropped, not queued
+          reseedAskRef.current = true;
+          let ok = false;
+          try {
+            ok = await confirmInWindow({
+              title: 'Replace the current chop session?',
+              message: 'Drawn regions are discarded.',
+              confirmLabel: 'Replace',
+              cancelLabel: 'Keep session',
+            });
+          } finally { reseedAskRef.current = false; }
+          if (!ok) return;
+        }
+        for (const id of activeJobs.current) void invoke('latch_cancel', { jobId: id }).catch(() => {});
+        activeJobs.current.clear();
+        jobHandlers.current.clear();
+        setSeed(s);
+        void startPipelineRef.current(s);
+      })();
     });
     void emit('wd-latch-chop-ready', {});
     return () => { void un.then((u) => u()).catch(() => {}); };
@@ -597,7 +715,7 @@ export default function ChopApp() {
 
   // Title sync.
   useEffect(() => {
-    const t = seed?.title ? baseName(seed.title) : (seed?.url ?? '');
+    const t = seed?.title ? baseName(seed.title) : (seed?.localFile ? baseName(seed.localFile) : (seed?.url ?? ''));
     getCurrentWindow().setTitle(`LATCH: CHOP${t ? ` · ${t}` : ''}`).catch(() => {});
   }, [seed]);
 
@@ -1266,7 +1384,10 @@ export default function ChopApp() {
     // Audio clip: cut from the low-res preview's bestaudio (full quality) for
     // a video link, else the downloaded audio WAV. NEVER the companion preview
     // WAV (that's the downsampled display-only track = audioPath for video).
-    const audioSrc = videoPath != null ? videoPath : (audioPath as string);
+    // A LOCAL audio session cuts from the source file itself (audioPath may
+    // be the low-rate companion WAV derived for display).
+    const localSrc = seedRef.current?.localFile;
+    const audioSrc = videoPath != null ? videoPath : (localSrc ?? (audioPath as string));
     return { input: audioSrc, video: false, ext: 'wav' };
   }, [videoPath, hdVideoPath, audioPath]);
 
@@ -1293,18 +1414,37 @@ export default function ChopApp() {
     return mode;
   }, []);
 
-  // Resolve (and cache) the persistent clips folder in Documents.
+  // Resolve (and cache) the clips folder: a LOCAL session exports NEXT TO
+  // the source (<sourceDir>/Latch Chops); a URL session uses the persistent
+  // Documents Latch Clips folder. The cache is reset per seed (startPipeline)
+  // so a re-seed can't inherit the previous session's destination.
   const ensureClipsDir = useCallback(async (): Promise<string> => {
     if (clipsDirRef.current) return clipsDirRef.current;
-    const d = await invoke<string>('latch_clips_dir');
-    clipsDirRef.current = d;
+    const local = seedRef.current?.localFile;
+    const gen = seedGenRef.current;
+    const d = local
+      ? await invoke<string>('latch_chop_local_clips_dir', { sourcePath: local })
+      : await invoke<string>('latch_clips_dir');
+    // A re-seed mid-resolve must not repopulate the NEW session's cache with
+    // the OLD session's folder.
+    if (gen === seedGenRef.current) clipsDirRef.current = d;
     return d;
   }, []);
 
   const exportStaged = useCallback(async () => {
     if (!audioPath || !stagedRegions.length) return;
     let defaultPath: string | undefined;
-    try { defaultPath = await ensureClipsDir(); } catch { /* no default */ }
+    // LOCAL session: seed the picker with the SOURCE folder WITHOUT creating
+    // anything — ensureClipsDir here would create <sourceDir>/Latch Chops
+    // before the user has even chosen a destination. URL sessions default to
+    // the persistent Documents/Latch Clips.
+    const local = seedRef.current?.localFile;
+    if (local) {
+      const sep = Math.max(local.lastIndexOf('\\'), local.lastIndexOf('/'));
+      if (sep > 0) defaultPath = local.slice(0, sep);
+    } else {
+      try { defaultPath = await ensureClipsDir(); } catch { /* no default */ }
+    }
     const dir = await openDialog({ directory: true, multiple: false, defaultPath });
     if (!dir || typeof dir !== 'string') return;
     setExporting(true); setExportMsg('');
@@ -1556,7 +1696,7 @@ export default function ChopApp() {
       void emit('wd-latch-clip-exported', { path, title: fileName });
       if (released) {
         void endOverlayDrag();
-        setExportMsg(`Saved to Latch Clips: ${path.split(/[\\/]/).pop()}`);
+        setExportMsg(`Saved to ${seedRef.current?.localFile ? 'Latch Chops' : 'Latch Clips'}: ${path.split(/[\\/]/).pop()}`);
       } else {
         // The clip lives in the persistent clips folder; if this drop lands on
         // a folder/desktop the OS copies it there and the native side deletes
@@ -1690,7 +1830,7 @@ export default function ChopApp() {
         <Scissors size={11} className="shrink-0 text-[color:var(--theme-text-secondary)] pointer-events-none" />
         <span className="text-[0.625rem] font-bold uppercase tracking-tight shrink-0 pointer-events-none">LATCH: CHOP</span>
         <span className="flex-1 truncate text-[0.5625rem] tabular-nums text-[color:var(--theme-text-muted)] pointer-events-none">
-          {seed?.title ? baseName(seed.title) : (seed?.url ?? 'no source')}
+          {seed?.title ? baseName(seed.title) : (seed?.localFile ? baseName(seed.localFile) : (seed?.url || 'no source'))}
           {hasVideo ? ' · video' : ''}
         </span>
         {audioPath && (
@@ -1885,7 +2025,7 @@ export default function ChopApp() {
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 p-4 text-center">
               {phase === 'error' ? (
                 <>
-                  <span className="text-[0.6875rem] text-[color:var(--theme-text-heading)]">Couldn't load this link</span>
+                  <span className="text-[0.6875rem] text-[color:var(--theme-text-heading)]">{seed?.localFile ? "Couldn't load this file" : "Couldn't load this link"}</span>
                   <span className="text-[0.5625rem] text-[color:var(--theme-text-muted)] break-all max-w-[80%]">{errorMsg}</span>
                   {seed && (
                     <button className={railBtn(false)} onClick={() => void startPipeline(seed)}>Retry</button>
@@ -2078,7 +2218,9 @@ export default function ChopApp() {
               </button>
             </div>
           )}
-          {phase === 'ready' && (
+          {/* Local audio sessions have no URL to fetch video from — hide the
+              fetch affordance; a local video session keeps the show/hide toggle. */}
+          {phase === 'ready' && (hasVideo || !seed?.localFile) && (
             <button className={railBtn(hasVideo ? showVideo : false)} onClick={onToggleVideo} disabled={videoFetching && !videoPath}
               title={(videoFetching && !videoPath) ? 'Fetching video…' : hasVideo ? (showVideo ? 'Hide the video preview' : 'Show the video preview') : 'Fetch this link as video and show the preview'}>
               {(videoFetching && !videoPath) ? <Loader2 size={10} className="inline -mt-px mr-1 animate-spin" /> : <Film size={10} className="inline -mt-px mr-1" />}
@@ -2115,7 +2257,9 @@ export default function ChopApp() {
           <button
             className={iconBtn}
             onClick={async () => { try { await invoke('os_open_path', { path: await ensureClipsDir() }); } catch { /* ignore */ } }}
-            title="Open the clips folder (Documents/Latch Clips) where rendered + exported clips are saved"
+            title={seed?.localFile
+              ? 'Open the Latch Chops folder (next to the source file) where rendered + exported clips are saved'
+              : 'Open the clips folder (Documents/Latch Clips) where rendered + exported clips are saved'}
           >
             <Folder size={11} />
           </button>

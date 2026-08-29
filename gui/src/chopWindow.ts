@@ -16,6 +16,19 @@ export interface ChopSeed {
   title?: string;
   durationSec?: number;
   cookiesFromBrowser?: string;
+  // Local-file seed (Chop opened from a landed output, a dropped file, a
+  // prompt path, or the open-file button): when set, the chop window SKIPS
+  // the download pipeline and uses this file directly — the native video
+  // engine plays it (or the audio engine for audio files) and the companion
+  // display audio is extracted from it. Exports land in <sourceDir>/Latch
+  // Chops instead of the Latch Clips folder. `url` is unused in this mode;
+  // `latchPath` may be '' (the chop window resolves latch itself for the
+  // companion-WAV + clip renders).
+  localFile?: string;
+  // Local-file handoff position (seconds): where the opener's player was
+  // when Chop was pressed. The chop window opens its player HERE (paused)
+  // so the two surfaces line up.
+  startSec?: number;
 }
 
 export async function openChopWindow(seed: ChopSeed): Promise<void> {
