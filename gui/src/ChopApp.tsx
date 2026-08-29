@@ -112,7 +112,15 @@ export default function ChopApp() {
   const [phase, setPhase] = useState<Phase>('idle');
   const [progress, setProgress] = useState(0);
   const [errorMsg, setErrorMsg] = useState('');
-  const [audioPath, setAudioPath] = useState<string | null>(null); // drives waveform/audition + audio clips
+  const [audioPath, setAudioPath] = useState<string | null>(null); // AUDIBLE engine source (never the preview companion in an audio session)
+  // Visual peaks source for the waveform strip / zero-cross / drag chips: a
+  // WAV generate_waveform can parse. May be the low-rate preview companion —
+  // that file is display-only and must NEVER reach the playback engine.
+  const [wavePath, setWavePath] = useState<string | null>(null);
+  // Background wave-derive failure: shown in the waveform slot (with Retry)
+  // instead of an endless "Deriving waveform" spinner. Null = not failed.
+  const [waveError, setWaveError] = useState<string | null>(null);
+  const waveRetryRef = useRef<(() => void) | null>(null);
   const [videoPath, setVideoPath] = useState<string | null>(null); // low-res preview (null until fetched)
   const [videoFetching, setVideoFetching] = useState(false);       // initial preview fetch in flight
   const [hdVideoPath, setHdVideoPath] = useState<string | null>(null); // full-res, for video clip export
@@ -284,10 +292,11 @@ export default function ChopApp() {
   const sourceStem = useMemo(() => (seed?.title || '').trim(), [seed]);
 
   // The waveform derives its time axis from audioFile.durationSec — feed
-  // it the duration we already resolved.
+  // it the duration we already resolved. Rides the VISUAL wave path (which
+  // may be the display-only companion), never the audible source.
   const waveAudioFile = useMemo<WaveAudioFile | null>(
-    () => (audioPath ? { path: audioPath, durationSec } : null),
-    [audioPath, durationSec],
+    () => (wavePath ? { path: wavePath, durationSec } : null),
+    [wavePath, durationSec],
   );
 
   // ---- Latch job plumbing -------------------------------------------------
@@ -391,12 +400,17 @@ export default function ChopApp() {
     return s.latchPath?.trim() ?? '';
   }, []);
 
-  const extractCompanionWav = useCallback(async (video: string, dir: string, dur?: number): Promise<string> => {
+  // Default (preview) mode: a small low-rate but STEREO WAV to draw the
+  // waveform (channel-split shows real L / R lanes). DISPLAY-ONLY: it must
+  // never be audible and clips are cut from the full-quality source.
+  // fullQuality mode: the clip path WITHOUT --preview, a source-rate
+  // 24-bit/float WAV. It backs the AUDIBLE lane for local formats rodio
+  // can't stream natively (m4a / ogg / webm / aiff ...), and doubles as the
+  // visual peaks source so only one companion is derived.
+  const extractCompanionWav = useCallback(async (video: string, dir: string, dur?: number, fullQuality?: boolean): Promise<string> => {
     setProgress(0);
     const end = (dur && dur > 0) ? dur : (infoDurationRef.current || 24 * 3600);
-    const wavOut = `${dir}${dir.includes('\\') ? '\\' : '/'}__chop_audio.wav`;
-    // A small low-rate but STEREO WAV to draw the waveform (channel-split shows
-    // real L / R lanes). Clips are cut from the full-quality source, never this.
+    const wavOut = `${dir}${dir.includes('\\') ? '\\' : '/'}${fullQuality ? '__chop_audio_full.wav' : '__chop_audio.wav'}`;
     // Retry with backoff: a just-downloaded file can be momentarily
     // unreadable on Windows (AV scan / flush), which ffmpeg reports as
     // "No such file or directory". Idempotent (overwrite), so retrying is safe.
@@ -404,7 +418,7 @@ export default function ChopApp() {
     for (let attempt = 0; attempt < 4; attempt++) {
       if (attempt > 0) await new Promise((r) => setTimeout(r, 250 * attempt));
       try {
-        return await runClip({ input: video, output: wavOut, startSec: 0, endSec: end, video: false, overwrite: true, preview: true, onProgress: (p) => setProgress(p) });
+        return await runClip({ input: video, output: wavOut, startSec: 0, endSec: end, video: false, overwrite: true, preview: !fullQuality, onProgress: (p) => setProgress(p) });
       } catch (e) { lastErr = e; }
     }
     throw lastErr;
@@ -434,7 +448,8 @@ export default function ChopApp() {
   const startPipeline = useCallback(async (s: ChopSeed) => {
     const gen = ++seedGenRef.current;
     setPhase(s.localFile ? 'extracting-audio' : 'downloading'); setProgress(0); setErrorMsg('');
-    setAudioPath(null); setVideoPath(null); setVideoFetching(false);
+    setAudioPath(null); setWavePath(null); setWaveError(null); waveRetryRef.current = null;
+    setVideoPath(null); setVideoFetching(false);
     setHdVideoPath(null); setHdLoading(false); infoDurationRef.current = 0;
     // Re-resolve the clips folder per session — a local seed exports next to
     // ITS source, so a cached dir from the previous seed would be wrong.
@@ -478,10 +493,15 @@ export default function ChopApp() {
     // non-destructive). Video: show the picture IMMEDIATELY (phase→ready off
     // the video path; hdVideoPath = the local file so video export is
     // ungated at once) and derive the display waveform's companion WAV in
-    // the BACKGROUND — a failure loses only the waveform/audition, never
-    // the playing video or its exports. Audio: the WAV waveform parser +
-    // audition engine read a .wav source natively; anything else derives
-    // the companion WAV first (clips still cut from the source).
+    // the BACKGROUND — a failure loses only the waveform, never the playing
+    // video or its exports. Audio: rule-1 source-direct audition ONLY for
+    // formats the engine streams natively at full quality (rodio/symphonia:
+    // wav/mp3/flac). Everything else would land in the engine's ffmpeg lane
+    // (fixed 48k/16-bit whole-tail RAM decode on EVERY retrigger): those
+    // derive ONE full-quality companion WAV up front instead — source rate,
+    // 24-bit/float — which rodio streams with cheap seeks and which also
+    // serves the visual peaks lane. The slower open is the accepted price:
+    // no audible lane may ever ride a downsampled intermediate.
     if (s.localFile) {
       const localFile = s.localFile;
       if (s.includeVideo) {
@@ -498,11 +518,12 @@ export default function ChopApp() {
         setHdVideoPath(localFile);
         if (s.durationSec && s.durationSec > 0) setDurationSec(s.durationSec);
         setPhase('ready');
-        void (async () => {
+        const deriveWave = async () => {
           try {
             const audio = await extractCompanionWav(localFile, dir, s.durationSec);
             if (gen !== seedGenRef.current) return; // re-seeded while deriving
             setAudioPath(audio);
+            setWavePath(audio);
             try {
               const meta = await invoke<IpcWaveformData>('generate_waveform', { path: audio, points: 32 });
               if (gen !== seedGenRef.current) return;
@@ -511,43 +532,92 @@ export default function ChopApp() {
             } catch { if (gen === seedGenRef.current && s.durationSec) setDurationSec(s.durationSec); }
           } catch (e: any) {
             if (gen !== seedGenRef.current) return; // stale failure (e.g. re-seed cancel)
-            // The video still plays + exports; only the waveform/audition is lost.
-            setExportMsg(`Waveform unavailable: ${cleanError(String(e?.message ?? e))}`);
+            // The video still plays + exports; only the waveform/audition is
+            // lost — surface a failed state (with Retry) in the wave slot.
+            setWaveError(cleanError(String(e?.message ?? e)));
           }
-        })();
+        };
+        waveRetryRef.current = () => { setWaveError(null); void deriveWave(); };
+        void deriveWave();
         return;
       }
       // Audio local file: no video pane (the audio-only collapsed mode).
-      try {
-        // The WAV waveform parser only reads what latch itself writes (PCM
-        // s16 / float32) — a studio-format .wav (24-bit etc.) fails it, so
-        // probe first and fall back to the ffmpeg companion instead of
-        // opening a session with a blank waveform and duration 0.
-        let audio: string | null = null;
-        let meta: IpcWaveformData | null = null;
-        if (/\.wave?$/i.test(localFile)) {
-          try {
-            meta = await invoke<IpcWaveformData>('generate_waveform', { path: localFile, points: 32 });
-            if (meta?.success) audio = localFile;
-          } catch { /* not natively decodable — derive the companion below */ }
-        }
-        if (!audio) {
-          meta = null;
-          audio = await extractCompanionWav(localFile, dir, s.durationSec);
-          try {
-            meta = await invoke<IpcWaveformData>('generate_waveform', { path: audio, points: 32 });
-          } catch { /* duration falls back to the seed's */ }
-        }
-        if (gen !== seedGenRef.current) return; // re-seeded while deriving
-        setAudioPath(audio);
-        if (meta?.success && meta.duration_sec > 0) setDurationSec(meta.duration_sec);
-        else if (s.durationSec) setDurationSec(s.durationSec);
-        setPhase('ready');
-      } catch (e: any) {
-        if (gen !== seedGenRef.current) return; // stale failure (e.g. re-seed cancel)
-        setPhase('error');
-        setErrorMsg(cleanError(String(e?.message ?? e)));
+      if (s.durationSec && s.durationSec > 0) setDurationSec(s.durationSec);
+      // Source-direct (rule 1) only when rodio streams the format natively at
+      // full quality. Extension gate first, then a magic-byte sniff so a
+      // mislabeled ".mp3" that is really an m4a still routes to the
+      // full-quality companion rather than the engine's fixed-48k ffmpeg lane.
+      let rodioNative = /\.(wave?|mp3|flac)$/i.test(localFile);
+      if (rodioNative) {
+        try {
+          rodioNative = !(await invoke<boolean>('audio_prefers_ffmpeg', { path: localFile }));
+        } catch { /* sniff unavailable — trust the extension */ }
+        if (gen !== seedGenRef.current) return;
       }
+      if (!rodioNative) {
+        // Rule 2: derive ONE full-quality companion (source rate, 24-bit or
+        // float) and point BOTH the audible and the visual lane at it. The
+        // session opens only when it lands — audition must never fall back
+        // to a downsampled intermediate in the meantime. Failure restores
+        // the classic error phase with its Retry.
+        try {
+          const full = await extractCompanionWav(localFile, dir, s.durationSec, true);
+          if (gen !== seedGenRef.current) return; // re-seeded while deriving
+          setAudioPath(full);
+          setWavePath(full);
+          try {
+            const meta = await invoke<IpcWaveformData>('generate_waveform', { path: full, points: 32 });
+            if (gen !== seedGenRef.current) return;
+            if (meta?.success && meta.duration_sec > 0) setDurationSec(meta.duration_sec);
+            else if (s.durationSec) setDurationSec(s.durationSec);
+          } catch { if (gen === seedGenRef.current && s.durationSec) setDurationSec(s.durationSec); }
+          setPhase('ready');
+        } catch (e: any) {
+          if (gen !== seedGenRef.current) return; // stale failure (e.g. re-seed cancel)
+          setPhase('error');
+          setErrorMsg(cleanError(String(e?.message ?? e)));
+        }
+        return;
+      }
+      // rodio-native: the AUDIBLE lane is the source file itself; the session
+      // is ready to audition immediately. Only the VISUAL wave path may lag
+      // behind on the companion derive; its failure loses the waveform only.
+      setAudioPath(localFile);
+      setPhase('ready');
+      const deriveWave = async () => {
+        try {
+          // The WAV waveform parser reads what latch itself writes (PCM
+          // s16 / s24 / float32) — an exotic studio .wav can still fail it,
+          // so probe first and fall back to the ffmpeg companion instead of
+          // opening a session with a blank waveform and duration 0.
+          let wave: string | null = null;
+          let meta: IpcWaveformData | null = null;
+          if (/\.wave?$/i.test(localFile)) {
+            try {
+              meta = await invoke<IpcWaveformData>('generate_waveform', { path: localFile, points: 32 });
+              if (meta?.success) wave = localFile;
+            } catch { /* not natively parseable — derive the companion below */ }
+          }
+          if (!wave) {
+            meta = null;
+            wave = await extractCompanionWav(localFile, dir, s.durationSec);
+            try {
+              meta = await invoke<IpcWaveformData>('generate_waveform', { path: wave, points: 32 });
+            } catch { /* duration falls back to the seed's */ }
+          }
+          if (gen !== seedGenRef.current) return; // re-seeded while deriving
+          setWavePath(wave);
+          if (meta?.success && meta.duration_sec > 0) setDurationSec(meta.duration_sec);
+          else if (s.durationSec) setDurationSec(s.durationSec);
+        } catch (e: any) {
+          if (gen !== seedGenRef.current) return; // stale failure (e.g. re-seed cancel)
+          // Audition + exports still run off the source; only the display is
+          // lost — surface a failed state (with Retry) in the wave slot.
+          setWaveError(cleanError(String(e?.message ?? e)));
+        }
+      };
+      waveRetryRef.current = () => { setWaveError(null); void deriveWave(); };
+      void deriveWave();
       return;
     }
 
@@ -588,7 +658,11 @@ export default function ChopApp() {
       } else {
         audio = await runExtract(s.url, dir, false);
       }
+      // URL audio: the extracted bestaudio WAV is full quality — one file
+      // serves both lanes. URL video: `audio` is the display-only companion;
+      // it never becomes audible (VideoView owns audio while hasVideo).
       setAudioPath(audio);
+      setWavePath(audio);
 
       // Authoritative duration from the actual file (peaks are cached).
       try {
@@ -1094,14 +1168,14 @@ export default function ChopApp() {
     // a bound at / within the window of 0 / EOF resolves to the exact edge.
     const edge = edgeSnapExempt(sec, duration);
     if (edge != null) return edge;
-    if (!audioPath) return null;
+    if (!wavePath) return null;
     try {
       const t = await invoke<number>('wav_nearest_zero_cross', {
-        path: audioPath, timeSec: sec, windowMs: 15,
+        path: wavePath, timeSec: sec, windowMs: 15,
       });
       return Number.isFinite(t) && t >= 0 ? t : null;
     } catch { return null; }
-  }, [audioPath]);
+  }, [wavePath]);
 
   const onGestureEnd = useCallback(async (info: { id: string; kind: 'create' | 'resize' | 'move'; edge?: 'start' | 'end' }) => {
     const r = regionsRef.current.find((x) => x.id === info.id);
@@ -1384,8 +1458,8 @@ export default function ChopApp() {
     // Audio clip: cut from the low-res preview's bestaudio (full quality) for
     // a video link, else the downloaded audio WAV. NEVER the companion preview
     // WAV (that's the downsampled display-only track = audioPath for video).
-    // A LOCAL audio session cuts from the source file itself (audioPath may
-    // be the low-rate companion WAV derived for display).
+    // A LOCAL session (audio or video) cuts from the source file itself via
+    // localSrc — audioPath there may be a derived companion, never the input.
     const localSrc = seedRef.current?.localFile;
     const audioSrc = videoPath != null ? videoPath : (localSrc ?? (audioPath as string));
     return { input: audioSrc, video: false, ext: 'wav' };
@@ -1479,10 +1553,10 @@ export default function ChopApp() {
       if (frame) return videoFrameToChipDataUrl(frame);
       // No painted frame → fall through to the waveform chip.
     }
-    if (audioPath) {
+    if (wavePath) {
       try {
         const data = await invoke<IpcWaveformData>('generate_waveform', {
-          path: audioPath, points: 240, startSec: r.startSec, endSec: r.endSec,
+          path: wavePath, points: 240, startSec: r.startSec, endSec: r.endSec,
         });
         if (data?.success && data.points?.length) {
           // generate_waveform now returns [min, max, rms] triplets directly —
@@ -1498,7 +1572,7 @@ export default function ChopApp() {
       return cropCanvasFractionToDataUrl(cv, (r.startSec - vp.tStart) / span, (r.endSec - vp.tStart) / span);
     }
     return null;
-  }, [audioPath]);
+  }, [wavePath]);
 
   // Render a region's clip to the persistent clips folder. Backs both
   // the background PRE-render (so a drag can start instantly inside the
@@ -1833,7 +1907,7 @@ export default function ChopApp() {
           {seed?.title ? baseName(seed.title) : (seed?.localFile ? baseName(seed.localFile) : (seed?.url || 'no source'))}
           {hasVideo ? ' · video' : ''}
         </span>
-        {audioPath && (
+        {wavePath && (
           <button
             onClick={() => setZeroCrossSnap(!zeroCrossSnap)}
             title={zeroCrossSnap
@@ -1848,7 +1922,7 @@ export default function ChopApp() {
             <Magnet size={10} />
           </button>
         )}
-        {audioPath && (
+        {wavePath && (
           <button
             onClick={() => setChannelSplit(!channelSplit)}
             title={channelSplit
@@ -1936,20 +2010,23 @@ export default function ChopApp() {
         )}
         {/* Waveform + region overlay */}
         <div ref={waveContainerRef} className="relative w-full flex-1 border-b border-[color:var(--theme-border)]" style={{ minHeight: waveFloor }}>
-          {phase === 'ready' && audioPath ? (
+          {phase === 'ready' && wavePath ? (
             <WaveformView
               markers={[
                 ...chapters.map((c) => ({ sec: c.startSec, label: c.title })),
                 ...(ioKeyIn != null ? [{ sec: ioKeyIn, label: 'In point', color: 'rgba(52,211,153,0.9)' }] : []),
               ]}
               audioFile={waveAudioFile}
-              filePath={audioPath}
+              filePath={wavePath}
               clickMode="seek"
               channelSplit={channelSplit}
               hideTransport
               playheadGetter={hasVideo
                 ? (() => videoRef.current?.getCurrentTime() ?? cursorSec)
-                : (isPlaying && onOurFile ? undefined : () => cursorSec)}
+                // Explicit engine getter: the waveform's internal fallback
+                // compares the engine path to ITS filePath (the visual wave
+                // path), which no longer matches the audible source path.
+                : (isPlaying && onOurFile ? () => playbackEngine.getPosition() : () => cursorSec)}
               overlay={(vp) => {
                 vpRef.current = { tStart: vp.tStart, tEnd: vp.tEnd };
                 setViewportSecRef.current = vp.setViewportSec;
@@ -2032,15 +2109,25 @@ export default function ChopApp() {
                   )}
                 </>
               ) : phase === 'ready' ? (
-                // Media is up but the display-only companion WAV is still
-                // deriving in the background — show a small hint instead of the
-                // full loading UI, which reads as if the whole window is stuck.
-                <div className="flex items-center gap-2 select-none">
-                  <Loader2 size={11} className="animate-spin text-[color:var(--theme-text-muted)]" />
-                  <span className="text-[0.5625rem] uppercase tracking-tight text-[color:var(--theme-text-muted)]">
-                    Deriving waveform{progress > 0 ? ` · ${progress}%` : ''}
-                  </span>
-                </div>
+                waveError ? (
+                  // Background derive failed: a dead spinner would claim
+                  // progress forever — name the failure and offer a retry.
+                  <>
+                    <span className="text-[0.6875rem] text-[color:var(--theme-text-heading)]">Waveform unavailable</span>
+                    <span className="text-[0.5625rem] text-[color:var(--theme-text-muted)] break-all max-w-[80%]">{waveError}</span>
+                    <button className={railBtn(false)} onClick={() => waveRetryRef.current?.()}>Retry</button>
+                  </>
+                ) : (
+                  // Media is up but the display companion WAV is still
+                  // deriving in the background — show a small hint instead of
+                  // the full loading UI, which reads as if the window is stuck.
+                  <div className="flex items-center gap-2 select-none">
+                    <Loader2 size={11} className="animate-spin text-[color:var(--theme-text-muted)]" />
+                    <span className="text-[0.5625rem] uppercase tracking-tight text-[color:var(--theme-text-muted)]">
+                      Deriving waveform{progress > 0 ? ` · ${progress}%` : ''}
+                    </span>
+                  </div>
+                )
               ) : (
                 <div className="w-full max-w-[440px] flex flex-col items-center gap-2 px-6">
                   <div className="self-stretch flex items-center gap-2">

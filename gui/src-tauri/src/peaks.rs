@@ -1,6 +1,7 @@
 // WAV peak bins + zero-crossing scan for the Chop window. Both walk the
-// same minimal RIFF parser (PCM s16 + float32 — everything latch's own
-// pipeline writes). Peaks are max-abs per bin over an optional
+// same minimal RIFF parser (PCM s16 / s24 + float32 — everything latch's
+// own pipeline writes; s24 is the full-quality companion the chop window
+// derives for formats rodio can't stream). Peaks are max-abs per bin over an optional
 // [start_sec, end_sec) range, so the waveform re-fetches the visible
 // window at zoom time and stays sharp at any scale.
 
@@ -8,11 +9,29 @@ use std::io::{Read, Seek, SeekFrom};
 
 struct WavInfo {
     is_float: bool,
+    bytes_per_sample: usize,
     channels: u16,
     sample_rate: u32,
     data_off: u64,
     total_frames: u64,
     frame_bytes: u64,
+}
+
+impl WavInfo {
+    // One normalized (-1..1) sample; `off` is its byte offset in `buf`.
+    fn sample(&self, buf: &[u8], off: usize) -> f32 {
+        if self.is_float {
+            f32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]])
+        } else if self.bytes_per_sample == 3 {
+            // s24le: sign-extend the top byte.
+            let v = (i32::from(buf[off + 2] as i8) << 16)
+                | (i32::from(buf[off + 1]) << 8)
+                | i32::from(buf[off]);
+            v as f32 / 8_388_608.0
+        } else {
+            i16::from_le_bytes([buf[off], buf[off + 1]]) as f32 / 32768.0
+        }
+    }
 }
 
 fn open_wav(path: &str) -> Result<(std::fs::File, WavInfo), String> {
@@ -56,8 +75,8 @@ fn open_wav(path: &str) -> Result<(std::fs::File, WavInfo), String> {
         return Err("no fmt/data chunk".into());
     }
     let is_float = fmt_tag == 3 || (fmt_tag == 0xFFFE && bits == 32);
-    let is_s16 = (fmt_tag == 1 || fmt_tag == 0xFFFE) && bits == 16;
-    if !is_float && !is_s16 {
+    let is_int = (fmt_tag == 1 || fmt_tag == 0xFFFE) && (bits == 16 || bits == 24);
+    if !is_float && !is_int {
         return Err(format!("unsupported wav format (tag {fmt_tag}, {bits}-bit)"));
     }
     let bytes_per_sample = (bits as u64) / 8;
@@ -65,7 +84,15 @@ fn open_wav(path: &str) -> Result<(std::fs::File, WavInfo), String> {
     let total_frames = data_len / frame_bytes;
     Ok((
         f,
-        WavInfo { is_float, channels, sample_rate, data_off, total_frames, frame_bytes },
+        WavInfo {
+            is_float,
+            bytes_per_sample: bytes_per_sample as usize,
+            channels,
+            sample_rate,
+            data_off,
+            total_frames,
+            frame_bytes,
+        },
     ))
 }
 
@@ -172,13 +199,7 @@ pub async fn generate_waveform(
                 for c in 0..chans {
                     // Signed sample (no abs) — min/max carry the polarity that
                     // makes the envelope asymmetric.
-                    let s = if info.is_float {
-                        let o = off + c * 4;
-                        f32::from_le_bytes([buf[o], buf[o + 1], buf[o + 2], buf[o + 3]])
-                    } else {
-                        let o = off + c * 2;
-                        i16::from_le_bytes([buf[o], buf[o + 1]]) as f32 / 32768.0
-                    };
+                    let s = info.sample(&buf, off + c * info.bytes_per_sample);
                     if s < mins[bin] { mins[bin] = s; }
                     if s > maxs[bin] { maxs[bin] = s; }
                     sumsq[bin] += (s as f64) * (s as f64);
@@ -374,14 +395,7 @@ pub async fn wav_nearest_zero_cross(
         if frames < 2 {
             return Ok(-1.0);
         }
-        let sample = |i: usize| -> f64 {
-            let off = i * frame_bytes;
-            if info.is_float {
-                f32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]]) as f64
-            } else {
-                i16::from_le_bytes([buf[off], buf[off + 1]]) as f64
-            }
-        };
+        let sample = |i: usize| -> f64 { info.sample(&buf, i * frame_bytes) as f64 };
         let mut best: Option<(f64, f64)> = None;
         for i in 0..frames - 1 {
             let a = sample(i);

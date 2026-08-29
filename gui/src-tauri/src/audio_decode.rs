@@ -95,6 +95,18 @@ pub fn prefers_ffmpeg(path: &str) -> bool {
     false
 }
 
+/// Frontend routing probe for the chop window: true when playing this file
+/// source-direct would land in the fixed-48k whole-tail ffmpeg buffer lane
+/// (see `prefers_ffmpeg`) instead of rodio's native streaming — the chop
+/// window then derives a full-quality WAV companion for the audible lane.
+/// Magic-byte sniff, so a mislabeled extension routes correctly.
+#[tauri::command]
+pub async fn audio_prefers_ffmpeg(path: String) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || prefers_ffmpeg(&path))
+        .await
+        .map_err(|e| format!("sniff join: {e}"))
+}
+
 /// Decode any container / codec to interleaved i16 PCM at 48 kHz stereo via
 /// ffmpeg. `start_sec` > 0 fast-seeks before decoding. Returns
 /// (interleaved samples, channels = 2, sample_rate = 48000). A fixed output

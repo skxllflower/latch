@@ -230,6 +230,7 @@ pub fn run() {
             chop::clip_path_exists,
             chop::latch_clip,
             audio::audio_cmd,
+            audio_decode::audio_prefers_ffmpeg,
             mac_video::mac_video_open,
             mac_video::mac_video_command,
             mac_video::mac_video_state,
