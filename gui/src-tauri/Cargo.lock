@@ -2109,6 +2109,7 @@ dependencies = [
  "rodio",
  "serde",
  "serde_json",
+ "symphonia",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",

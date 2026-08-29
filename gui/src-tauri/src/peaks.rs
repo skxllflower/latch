@@ -285,7 +285,7 @@ fn decode_waveform_any(path: &str, points: u32) -> Result<WaveformData, String> 
     // webm + ogg Opus fail) go straight to ffmpeg — never let rodio touch them.
     if crate::audio_decode::prefers_ffmpeg(path) {
         let (samples, ch, sr) = crate::audio_decode::ffmpeg_decode_pcm(path, 0.0)?;
-        return Ok(fold_pcm_i16(&samples, ch as usize, sr, bins));
+        return Ok(fold_pcm_f32(&samples, ch as usize, sr, bins));
     }
 
     // Fast native path for WAV / MP3 / FLAC. On any decode error fall back to
@@ -302,7 +302,7 @@ fn decode_waveform_any(path: &str, points: u32) -> Result<WaveformData, String> 
                 "audition: rodio decode failed for {path} ({e}); retrying via ffmpeg"
             ));
             let (samples, ch, sr) = crate::audio_decode::ffmpeg_decode_pcm(path, 0.0)?;
-            Ok(fold_pcm_i16(&samples, ch as usize, sr, bins))
+            Ok(fold_pcm_f32(&samples, ch as usize, sr, bins))
         }
     }
 }
@@ -322,10 +322,27 @@ fn decode_waveform_rodio(path: &str, bins: usize) -> Result<WaveformData, String
     Ok(fold_pcm_i16(&samples, ch, sr, bins))
 }
 
-/// Fold interleaved i16 PCM into `bins` [min, max, rms] triplets (the shared
+/// Fold interleaved i16 PCM (rodio's native decode) into the shared bin
+/// shape — thin normalization shim over `fold_pcm_f32`'s core.
+fn fold_pcm_i16(samples: &[i16], ch: usize, sr: u32, bins: usize) -> WaveformData {
+    fold_pcm(samples, |v| v as f32 / 32768.0, ch, sr, bins)
+}
+
+/// Fold interleaved f32 PCM (the ffmpeg lane's depth-preserving output).
+fn fold_pcm_f32(samples: &[f32], ch: usize, sr: u32, bins: usize) -> WaveformData {
+    fold_pcm(samples, |v| v, ch, sr, bins)
+}
+
+/// Fold interleaved PCM into `bins` [min, max, rms] triplets (the shared
 /// chip renderer's shape). Per-bin signed min / max carry the asymmetric
 /// envelope; sum-of-squares backs the rms crest line.
-fn fold_pcm_i16(samples: &[i16], ch: usize, sr: u32, bins: usize) -> WaveformData {
+fn fold_pcm<T: Copy>(
+    samples: &[T],
+    to_f32: impl Fn(T) -> f32,
+    ch: usize,
+    sr: u32,
+    bins: usize,
+) -> WaveformData {
     let ch = ch.max(1);
     let sr = sr.max(1);
     let total_frames = samples.len() / ch;
@@ -340,7 +357,7 @@ fn fold_pcm_i16(samples: &[i16], ch: usize, sr: u32, bins: usize) -> WaveformDat
             let bin = ((f as u64 * bins as u64) / total_frames as u64) as usize;
             let bin = bin.min(bins - 1);
             for c in 0..ch {
-                let v = samples[f * ch + c] as f32 / 32768.0;
+                let v = to_f32(samples[f * ch + c]);
                 if v < mins[bin] { mins[bin] = v; }
                 if v > maxs[bin] { maxs[bin] = v; }
                 sumsq[bin] += (v as f64) * (v as f64);

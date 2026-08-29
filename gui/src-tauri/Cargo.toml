@@ -28,6 +28,11 @@ tauri-plugin-single-instance = "2"
 # Latch actually outputs. The video deck still takes PCM from
 # `lathe stream-audio` instead of decoding containers itself.
 rodio = { version = "0.20", default-features = false, features = ["symphonia-all"] }
+# Depth-preserving FLAC audition: rodio's Decoder is hardwired to i16, so
+# >16-bit FLAC drives symphonia DIRECTLY to f32 (src/flac_f32.rs). Same
+# crate + version rodio already pins via symphonia-all — no new build
+# weight, just a direct handle on it.
+symphonia = { version = "0.5", default-features = false, features = ["flac"] }
 log = "0.4"
 # Native drag-source for dragging files OUT into Explorer / DAWs —
 # wraps DoDragDrop / NSDraggingSource / XDND (see os_drag.rs).

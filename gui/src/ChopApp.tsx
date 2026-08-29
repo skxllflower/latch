@@ -58,6 +58,11 @@ const uid = () => `chop${++_seq}_${Math.random().toString(36).slice(2)}`;
 
 const baseName = (p: string) => p.split(/[\\/]/).pop() ?? p;
 
+// Loading-clock readout (m:ss): whole seconds only — centiseconds would
+// just flicker on a once-a-second tick.
+const fmtElapsed = (s: number): string =>
+  `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+
 const fmtTime = (s: number): string => {
   if (!Number.isFinite(s) || s < 0) s = 0;
   const m = Math.floor(s / 60);
@@ -111,6 +116,9 @@ export default function ChopApp() {
   seedRef.current = seed;
   const [phase, setPhase] = useState<Phase>('idle');
   const [progress, setProgress] = useState(0);
+  // Seconds since the current loading stage began — the honest companion to
+  // an indeterminate bar when no genuine percent exists (unknown duration).
+  const [loadingElapsed, setLoadingElapsed] = useState(0);
   const [errorMsg, setErrorMsg] = useState('');
   const [audioPath, setAudioPath] = useState<string | null>(null); // AUDIBLE engine source (never the preview companion in an audio session)
   // Visual peaks source for the waveform strip / zero-cross / drag chips: a
@@ -274,6 +282,19 @@ export default function ChopApp() {
   // a cancelled derive's "Waveform unavailable: Cancelled." landing on the
   // replacement session's toast).
   const seedGenRef = useRef(0);
+  // The in-flight companion-derive clip job, if any — the loading phase's
+  // Cancel aims latch_cancel at it (instead of closing the window) so the
+  // session lands in the error phase with its Retry. Cleared when the job
+  // settles; the seedGenRef guards above make a cancelled derive inert.
+  const deriveJobIdRef = useRef<string | null>(null);
+  // Jobs the user explicitly cancelled. latch_cancel kills the wrapper
+  // process outright (TerminateProcess on Windows), so the wrapper's
+  // {type:'cancelled'} event usually never arrives — the killed job settles
+  // as a generic exit instead (ExtractApp's optimistic cancel documents the
+  // same unreliability). Any settle of a job on this list maps to
+  // 'cancelled' so the retry loop and the error phase see the user's
+  // intent, not a bogus exit code.
+  const cancelledJobsRef = useRef<Set<string>>(new Set());
   // Duration captured from the download's own `info` event — covers the case
   // where the Chop button was clicked before the Latch probe resolved (so the
   // seed had no duration). Used as the companion-WAV endSec fallback.
@@ -313,6 +334,17 @@ export default function ChopApp() {
     });
     return () => { void un.then((u) => u()).catch(() => {}); };
   }, []);
+
+  // Elapsed clock for the loading phases: restarts per stage (download vs
+  // extract), stops outside them. Backs the honest no-percent readout.
+  useEffect(() => {
+    if (phase !== 'downloading' && phase !== 'extracting-audio') { setLoadingElapsed(0); return; }
+    setLoadingElapsed(0);
+    const t0 = performance.now();
+    const id = window.setInterval(
+      () => setLoadingElapsed(Math.floor((performance.now() - t0) / 1000)), 1000);
+    return () => window.clearInterval(id);
+  }, [phase]);
 
   // Run `latch_extract` to a temp dir; resolves with the landed file path.
   // `videoMaxHeight` caps the video resolution (0 = best) for a fast low-res
@@ -370,18 +402,29 @@ export default function ChopApp() {
   const runClip = useCallback((args: {
     input: string; output: string; startSec: number; endSec: number;
     video: boolean; overwrite: boolean; preview?: boolean; speed?: number; pitchMode?: string; onProgress?: (pct: number) => void;
+    // Job-handle hook: called with the jobId when the clip job starts and
+    // with null when it settles — lets the loading UI aim latch_cancel at
+    // the in-flight foreground derive.
+    onJobId?: (id: string | null) => void;
   }): Promise<string> => {
     return new Promise((resolve, reject) => {
       const jobId = uid();
       activeJobs.current.add(jobId);
-      const done = (fn: () => void) => { jobHandlers.current.delete(jobId); activeJobs.current.delete(jobId); fn(); };
+      args.onJobId?.(jobId);
+      // Cancelled-set cleanup must run AFTER fn(): the settle closures read
+      // wasCancelled(), so deleting first would erase the user's cancel.
+      const done = (fn: () => void) => { jobHandlers.current.delete(jobId); activeJobs.current.delete(jobId); args.onJobId?.(null); fn(); cancelledJobsRef.current.delete(jobId); };
+      // The event-based 'cancelled' branch is belt-and-braces only: after
+      // latch_cancel the killed wrapper emits nothing, so a user-cancelled
+      // job must read as 'cancelled' however it settles.
+      const wasCancelled = () => cancelledJobsRef.current.has(jobId);
       jobHandlers.current.set(jobId, (ev) => {
         if (ev.type === 'progress') args.onProgress?.(Math.round(ev.percent ?? 0));
-        else if (ev.type === 'done') done(() => resolve(String(ev.output)));
-        else if (ev.type === 'error') done(() => reject(new Error(ev.message || 'clip failed')));
+        else if (ev.type === 'done') done(() => (wasCancelled() ? reject(new Error('cancelled')) : resolve(String(ev.output))));
+        else if (ev.type === 'error') done(() => reject(new Error(wasCancelled() ? 'cancelled' : (ev.message || 'clip failed'))));
         else if (ev.type === 'cancelled') done(() => reject(new Error('cancelled')));
         else if (ev.type === 'exit' && jobHandlers.current.has(jobId)) {
-          done(() => reject(new Error(`clip exited (code ${ev.code})`)));
+          done(() => reject(new Error(wasCancelled() ? 'cancelled' : `clip exited (code ${ev.code})`)));
         }
       });
       invoke('latch_clip', {
@@ -409,17 +452,34 @@ export default function ChopApp() {
   // visual peaks source so only one companion is derived.
   const extractCompanionWav = useCallback(async (video: string, dir: string, dur?: number, fullQuality?: boolean): Promise<string> => {
     setProgress(0);
-    const end = (dur && dur > 0) ? dur : (infoDurationRef.current || 24 * 3600);
+    const realDur = (dur && dur > 0) ? dur : infoDurationRef.current;
+    const end = realDur || 24 * 3600;
     const wavOut = `${dir}${dir.includes('\\') ? '\\' : '/'}${fullQuality ? '__chop_audio_full.wav' : '__chop_audio.wav'}`;
     // Retry with backoff: a just-downloaded file can be momentarily
     // unreadable on Windows (AV scan / flush), which ffmpeg reports as
     // "No such file or directory". Idempotent (overwrite), so retrying is safe.
     let lastErr: unknown;
+    let myJob: string | null = null;
     for (let attempt = 0; attempt < 4; attempt++) {
       if (attempt > 0) await new Promise((r) => setTimeout(r, 250 * attempt));
       try {
-        return await runClip({ input: video, output: wavOut, startSec: 0, endSec: end, video: false, overwrite: true, preview: !fullQuality, onProgress: (p) => setProgress(p) });
-      } catch (e) { lastErr = e; }
+        return await runClip({
+          input: video, output: wavOut, startSec: 0, endSec: end, video: false, overwrite: true, preview: !fullQuality,
+          // The clip pipeline's percent (ffmpeg -progress out_time over the
+          // requested span) is genuine only when endSec is the real duration.
+          // Against the 24h unknown-duration fallback it would crawl near
+          // zero: a fake percent — leave the bar indeterminate instead.
+          onProgress: realDur ? (p) => setProgress(p) : undefined,
+          onJobId: (id) => {
+            if (id) { myJob = id; deriveJobIdRef.current = id; }
+            else if (deriveJobIdRef.current === myJob) deriveJobIdRef.current = null;
+          },
+        });
+      } catch (e: any) {
+        lastErr = e;
+        // Cancel is a user action, not a transient read failure — no retry.
+        if (String(e?.message ?? e) === 'cancelled') break;
+      }
     }
     throw lastErr;
   }, [runClip]);
@@ -451,6 +511,7 @@ export default function ChopApp() {
     setAudioPath(null); setWavePath(null); setWaveError(null); waveRetryRef.current = null;
     setVideoPath(null); setVideoFetching(false);
     setHdVideoPath(null); setHdLoading(false); infoDurationRef.current = 0;
+    deriveJobIdRef.current = null; // a stale job handle must not eat the new session's Cancel
     // Re-resolve the clips folder per session — a local seed exports next to
     // ITS source, so a cached dir from the previous seed would be wrong.
     clipsDirRef.current = null;
@@ -495,9 +556,9 @@ export default function ChopApp() {
     // ungated at once) and derive the display waveform's companion WAV in
     // the BACKGROUND — a failure loses only the waveform, never the playing
     // video or its exports. Audio: rule-1 source-direct audition ONLY for
-    // formats the engine streams natively at full quality (rodio/symphonia:
-    // wav/mp3/flac). Everything else would land in the engine's ffmpeg lane
-    // (fixed 48k/16-bit whole-tail RAM decode on EVERY retrigger): those
+    // formats the engine streams natively at full quality (f32 WAV / FLAC
+    // sources + rodio: wav/mp3/flac). Everything else would land in the
+    // engine's ffmpeg lane (whole-tail RAM decode on EVERY retrigger): those
     // derive ONE full-quality companion WAV up front instead — source rate,
     // 24-bit/float — which rodio streams with cheap seeks and which also
     // serves the visual peaks lane. The slower open is the accepted price:
@@ -574,8 +635,9 @@ export default function ChopApp() {
           setPhase('ready');
         } catch (e: any) {
           if (gen !== seedGenRef.current) return; // stale failure (e.g. re-seed cancel)
+          const msg = String(e?.message ?? e);
           setPhase('error');
-          setErrorMsg(cleanError(String(e?.message ?? e)));
+          setErrorMsg(msg === 'cancelled' ? 'Cancelled.' : cleanError(msg));
         }
         return;
       }
@@ -2136,7 +2198,9 @@ export default function ChopApp() {
                       Loading
                     </span>
                     <span className="flex-1 text-right text-[0.625rem] tabular-nums text-[color:var(--theme-text-secondary)]">
-                      {progress > 0 ? `${progress}%` : ''}
+                      {/* Genuine percent when the pipeline reports one; otherwise
+                          the elapsed clock — never a made-up number. */}
+                      {progress > 0 ? `${progress}%` : fmtElapsed(loadingElapsed)}
                     </span>
                   </div>
                   {(seed?.title || seed?.url) && (
@@ -2159,7 +2223,22 @@ export default function ChopApp() {
                   <span className="self-stretch text-[0.5rem] leading-snug text-[color:var(--theme-text-muted)]">
                     Longer clips may take a while.
                   </span>
-                  <button className={`${railBtn(false)} mt-1`} onClick={() => { void getCurrentWindow().close(); }}>Cancel</button>
+                  <button className={`${railBtn(false)} mt-1`} onClick={() => {
+                    // A running companion derive cancels through the latch job
+                    // machinery: the session lands in the error phase with its
+                    // Retry (seedGenRef keeps the dead derive inert). Only when
+                    // nothing is cancellable does the button close the window.
+                    const id = deriveJobIdRef.current;
+                    if (id) {
+                      // Record intent BEFORE the kill: the dead wrapper
+                      // emits no 'cancelled' event, so runClip maps this
+                      // job's settle to 'cancelled' by membership.
+                      cancelledJobsRef.current.add(id);
+                      void invoke('latch_cancel', { jobId: id }).catch(() => {});
+                      return;
+                    }
+                    void getCurrentWindow().close();
+                  }}>Cancel</button>
                 </div>
               )}
             </div>

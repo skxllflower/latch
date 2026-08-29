@@ -655,7 +655,7 @@ fn open_sink(
     if crate::audio_decode::prefers_ffmpeg(path) {
         return open_sink_ffmpeg(handle, path, start_sec).map(|s| (s, start_sec));
     }
-    match open_sink_rodio(handle, path, start_sec) {
+    match open_sink_native(handle, path, start_sec) {
         Ok(sink) => Ok((sink, 0.0)),
         Err(e) => {
             // A missing file is a path bug — surface it, don't mask with ffmpeg.
@@ -663,19 +663,43 @@ fn open_sink(
                 return Err(e);
             }
             crate::logger::log(&format!(
-                "audition play: rodio failed for {path} ({e}); retrying via ffmpeg"
+                "audition play: native decode failed for {path} ({e}); retrying via ffmpeg"
             ));
             open_sink_ffmpeg(handle, path, start_sec).map(|s| (s, start_sec))
         }
     }
 }
 
-/// Native streaming playback for WAV / MP3 / FLAC. Seek is a sink try_seek.
-fn open_sink_rodio(
+/// Native streaming playback. WAV rides the hand-rolled f32 source and
+/// FLAC over 16 bits rides symphonia-direct f32 (rodio's Decoder is
+/// hardwired to i16 — see audio_decode::native_route); everything else
+/// keeps rodio's proven decoder. A depth-route parse failure falls back
+/// to rodio here (the ffmpeg last resort stays in open_sink). Seek is a
+/// sink try_seek in every case — the Sink wrapper stack forwards it.
+fn open_sink_native(
     handle: &rodio::OutputStreamHandle,
     path: &str,
     start_sec: f64,
 ) -> Result<rodio::Sink, String> {
+    match crate::audio_decode::native_route(path) {
+        crate::audio_decode::NativeRoute::WavF32 => {
+            match crate::wav_stream::WavF32Source::open(path) {
+                Ok(src) => return append_f32(handle, src, start_sec),
+                Err(e) => crate::logger::log(&format!(
+                    "audition play: wav f32 source failed for {path} ({e}); falling back to rodio"
+                )),
+            }
+        }
+        crate::audio_decode::NativeRoute::FlacF32 => {
+            match crate::flac_f32::FlacF32Source::open(path) {
+                Ok(src) => return append_f32(handle, src, start_sec),
+                Err(e) => crate::logger::log(&format!(
+                    "audition play: flac f32 source failed for {path} ({e}); falling back to rodio"
+                )),
+            }
+        }
+        crate::audio_decode::NativeRoute::Rodio => {}
+    }
     let file = std::fs::File::open(path).map_err(|e| format!("open {path}: {e}"))?;
     let decoder = rodio::Decoder::new(std::io::BufReader::new(file))
         .map_err(|e| format!("decode {path}: {e}"))?;
@@ -688,8 +712,28 @@ fn open_sink_rodio(
     Ok(sink)
 }
 
+/// Sink assembly shared by the f32 depth-preserving sources — identical
+/// transport behavior to the rodio path (append, optional start seek, play).
+fn append_f32<S>(
+    handle: &rodio::OutputStreamHandle,
+    src: S,
+    start_sec: f64,
+) -> Result<rodio::Sink, String>
+where
+    S: rodio::Source<Item = f32> + Send + 'static,
+{
+    let sink = rodio::Sink::try_new(handle).map_err(|e| format!("sink: {e}"))?;
+    sink.append(src);
+    if start_sec > 0.0 {
+        let _ = sink.try_seek(Duration::from_secs_f64(start_sec.max(0.0)));
+    }
+    sink.play();
+    Ok(sink)
+}
+
 /// ffmpeg-decoded playback for Opus / AAC / WebM etc. The whole track (a bounded
-/// download) is decoded to 48k stereo PCM and played from a SamplesBuffer;
+/// download) is decoded to f32 stereo PCM at the SOURCE sample rate (probed;
+/// 48k only when the probe fails) and played from a SamplesBuffer;
 /// `start_sec` is applied by ffmpeg's input seek, so no sink seek is needed. The
 /// fold-out's own seek re-invokes play() with a new start, so in-sink seeking
 /// isn't required for this path.

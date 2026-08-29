@@ -2,6 +2,7 @@ mod audio;
 mod audio_decode;
 #[cfg(target_os = "windows")]
 mod chip_bitmap_server;
+mod flac_f32;
 mod chop;
 mod cookie_prefs;
 mod drag_overlay;
@@ -22,6 +23,7 @@ mod registry;
 #[cfg(target_os = "windows")]
 mod touchpad_raw_input;
 mod video_stream_server;
+mod wav_stream;
 
 use tauri::{WebviewUrl, WebviewWindowBuilder};
 
