@@ -13,6 +13,12 @@ Short hashes are optional and get backfilled; never block a commit on one.
 
 ## 2026-08-30
 
+- **Mac builds are Developer ID signed and notarized**: the mac release script only ad-hoc signed
+  (`codesign --deep -s -`), so every DMG it produced was refusable by Gatekeeper on any machine but
+  the one that built it, and `--deep` is the flag the notary service rejects outright. It now signs
+  inside-out per nested binary with a hardened runtime and secure timestamp, seals the bundle last,
+  signs the DMG container, then notarizes and staples. Stapling is what lets an offline tester open
+  it without a live round trip to Apple. `--skip-notarize` keeps the fast local path.
 - **The prompt opens paths dragged in from Terminal**: a file dragged into Terminal arrives shell
   escaped (`/Users/me/My\ File.wav`), and the path parser, written against Explorer's quoted form,
   kept the backslashes and then could not find the file. Bare POSIX paths are unescaped now, and
