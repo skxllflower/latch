@@ -11,6 +11,14 @@ Short hashes are optional and get backfilled; never block a commit on one.
 
 - **A freshly drawn chop region no longer auto-plays** (shared overlay synced from WAVdesk): drawing selects the region and leaves it silent until you trigger it. The drop path that assumed a just-drawn region was already armed now cages playback only on a region that actually is, so dropping a fresh region no longer loops it.
 
+## 2026-08-30
+
+- **The prompt opens paths dragged in from Terminal**: a file dragged into Terminal arrives shell
+  escaped (`/Users/me/My\ File.wav`), and the path parser, written against Explorer's quoted form,
+  kept the backslashes and then could not find the file. Bare POSIX paths are unescaped now, and
+  single-quoted paths strip like double-quoted ones. Windows paths and `file://` URIs are untouched,
+  since a backslash there is a separator, not an escape. Kept in lockstep with WAVdesk's copy.
+
 ## 2026-08-28
 
 - **Depth-preserving audition path** (`3ad4ae6`): both engine lanes were 16-bit sample paths, so

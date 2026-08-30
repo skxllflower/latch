@@ -95,14 +95,36 @@ const formatDuration = (sec: number) => {
 // fire probes on partial input. The wrapper does the real validation.
 const looksLikeUrl = (s: string) => /^https?:\/\/\S+$/i.test(s.trim());
 
-// Explorer's "Copy as path" wraps the path in double quotes — strip them
-// before the path sniff.
-const stripQuotes = (s: string) => s.replace(/^"(.*)"$/, '$1').trim();
+// Explorer's "Copy as path" wraps the path in double quotes; single quotes are
+// the common mac clipboard shape. Strip either before the path sniff.
+const stripQuotes = (s: string) => {
+  const m = s.match(/^"(.*)"$/) ?? s.match(/^'(.*)'$/);
+  return (m ? m[1] : s).trim();
+};
 
 // Path-like input: drive letter, UNC, absolute POSIX, or file:// URL.
 // Checked BEFORE the yt-dlp search fallback so a pasted local path never
 // silently becomes a search query.
 const looksLikePath = (s: string) => /^([A-Za-z]:[\\/]|\\\\|\/|file:\/\/)/.test(s);
+
+// A macOS Terminal drag (and several other mac producers) yields a POSIX path
+// with the shell metacharacters escaped: /Users/me/My\ File.wav. Only ever
+// applied to a bare single-leading-slash path: on Windows the backslash IS the
+// separator, and a // prefix is the forward-slash UNC form, so unescaping
+// either would destroy the path. Quoted input is exempt too, since a quoted
+// shell word carries its backslashes literally.
+const unescapePosixPath = (s: string): string =>
+  s.startsWith('/') && !s.startsWith('//') ? s.replace(/\\([ ()&'";$\\])/g, '$1') : s;
+
+// Prompt/paste text normalized to a path, or null when it isn't path-like.
+// file:// URIs pass through untouched here: fileUrlToPath decodes them later.
+const pathFromPromptText = (raw: string): string | null => {
+  const trimmed = raw.trim();
+  const quoted = trimmed.length > 1 && /^"(.*)"$|^'(.*)'$/.test(trimmed);
+  const s = stripQuotes(trimmed);
+  if (!s || !looksLikePath(s)) return null;
+  return quoted ? s : unescapePosixPath(s);
+};
 
 const fileUrlToPath = (s: string): string => {
   if (!/^file:\/\//i.test(s)) return s;
@@ -935,8 +957,8 @@ export default function ExtractApp() {
   const parsePathChunk = useCallback((text: string): string[] => {
     const out: string[] = [];
     for (const raw of text.split(/[\r\n]+/)) {
-      const line = stripQuotes(raw.trim());
-      if (line && looksLikePath(line)) out.push(line);
+      const line = pathFromPromptText(raw);
+      if (line) out.push(line);
     }
     return out;
   }, []);
@@ -1322,9 +1344,9 @@ export default function ExtractApp() {
       }
       // Local file path (quoted by Explorer's "Copy as path" or bare) —
       // checked before the URL/search routing so it never becomes a search.
-      const stripped = stripQuotes(inputBuffer.trim());
-      if (stripped && looksLikePath(stripped)) {
-        void enqueueLocalPath(stripped);
+      const localPath = pathFromPromptText(inputBuffer);
+      if (localPath) {
+        void enqueueLocalPath(localPath);
         setInputBuffer('');
         return;
       }
