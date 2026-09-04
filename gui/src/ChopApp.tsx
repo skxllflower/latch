@@ -2131,15 +2131,16 @@ export default function ChopApp() {
                       // the gesture). One re-arm on drop, never per move. When
                       // a NON-armed region was dragged (video arm-on-grab moved
                       // the live walls there), restore the ARMED region's cage.
-                      // A CREATE was armed by onActivate a beat ago (the
-                      // auditionId ref is still stale here) — treat it as the
-                      // armed target. NO armed region at all → release the
-                      // gesture cage entirely, or liveLoopActive dangles at
-                      // the drag bounds and cages whole-file playback.
+                      // A CREATE is selected but NOT armed (the overlay no
+                      // longer activates a freshly drawn region: it stays
+                      // silent until the user triggers it), so it is never
+                      // the armed target here. NO armed region at all →
+                      // release the gesture cage entirely, or liveLoopActive
+                      // dangles at the drag bounds and cages whole-file
+                      // playback.
                       if (hasVideoRef.current) {
-                        const armedId = info.kind === 'create' ? info.id : auditionIdRef.current;
-                        const target = regionsRef.current.find((x) =>
-                          x.id === (armedId === info.id ? info.id : armedId));
+                        const armedId = auditionIdRef.current;
+                        const target = armedId ? regionsRef.current.find((x) => x.id === armedId) : null;
                         if (target) videoRef.current?.setLoop(target.startSec, target.endSec);
                         else videoRef.current?.clearLoop();
                       } else if (onOurFileRef.current) {
@@ -2147,7 +2148,7 @@ export default function ChopApp() {
                         // cancelled trailing rAF can leave the Rust loop one
                         // pointermove stale, and the settle effect above only
                         // re-fires when the zero-cross snap CHANGES the props.
-                        const armedId = info.kind === 'create' ? info.id : auditionIdRef.current;
+                        const armedId = auditionIdRef.current;
                         const target = armedId ? regionsRef.current.find((x) => x.id === armedId) : null;
                         if (target) playbackEngine.setLoop(target.startSec, target.endSec);
                       }

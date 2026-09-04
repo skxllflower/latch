@@ -2,8 +2,8 @@
 // the single-region TrimOverlay to N non-overlapping, individually-
 // coloured regions, and implements the audition + edit model:
 //
-//   • drag empty space           → draw a new region (auto-loops on release)
-//   • double-click empty space    → add a default-width region (auto-loops)
+//   • drag empty space           → draw a new region (selected, stays silent)
+//   • double-click empty space    → add a default-width region (selected, silent)
 //   • click INSIDE a region        → make it the active loop (swap)
 //   • click OUTSIDE any region     → play the whole file from there, no loop
 //   • drag a region EDGE           → resize that edge
@@ -346,10 +346,11 @@ export const ChopRegionOverlay: React.FC<ChopRegionOverlayProps> = ({
       if (!cur) return;
       if (cur.kind === 'create') {
         if (cur.createdId != null) {
-          // Drew a region → arm it, and suppress the spurious dblclick the
-          // release can fire at the end point (which would spawn a phantom).
+          // Drew a region → select it (done live during the drag), but do
+          // NOT audition it: a freshly drawn region stays silent until the
+          // user triggers it. Still suppress the spurious dblclick the release
+          // can fire at the end point (which would spawn a phantom).
           suppressDblRef.current = performance.now() + 400;
-          onActivate(cur.createdId);
           onGestureEnd?.({ id: cur.createdId, kind: 'create' });
         } else {
           onGestureCancel?.();                  // started a create, drew nothing
@@ -488,6 +489,15 @@ export const ChopRegionOverlay: React.FC<ChopRegionOverlayProps> = ({
           viewBox="0 0 100 100"
           preserveAspectRatio="none"
         >
+          {/* Diagonal hatch for STALE regions (clipState 'error') — a POST-native
+              tail the palette bake shrank under. Dimmed + hatched so it reads as
+              "no longer fully backed by audio" without touching storage. */}
+          <defs>
+            <pattern id="wd-chop-stale" width={3} height={3} patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+              <line x1={0} y1={0} x2={0} y2={3} style={{ stroke: 'rgba(150,150,150,0.45)' }} strokeWidth={0.7} />
+            </pattern>
+          </defs>
+
           {/* Dim everything outside the active selection. */}
           {sel && (() => {
             const sx = Math.max(0, Math.min(100, secToPct(sel.startSec)));
@@ -507,8 +517,21 @@ export const ChopRegionOverlay: React.FC<ChopRegionOverlayProps> = ({
             if (w <= 0 && (r.endSec < viewportStartSec || r.startSec > viewportEndSec)) return null;
             const isSel = r.id === selectedId;
             const isHover = r.id === hoverId;
+            const isStale = r.clipState === 'error';
             const showStart = r.startSec > viewportStartSec && r.startSec < viewportEndSec;
             const showEnd = r.endSec > viewportStartSec && r.endSec < viewportEndSec;
+            // Stale (bake shrank under a tail region): dimmed gray + hatch fill,
+            // dashed muted edges. Display-only; the region still selects/plays.
+            if (isStale) {
+              return (
+                <g key={r.id} style={{ opacity: 0.7 }}>
+                  <rect x={x0} y={0} width={w} height={100} style={{ fill: 'rgba(80,80,80,0.22)' }} />
+                  <rect x={x0} y={0} width={w} height={100} style={{ fill: 'url(#wd-chop-stale)' }} />
+                  {showStart && <line x1={x0} y1={0} x2={x0} y2={100} style={{ stroke: 'rgba(160,160,160,0.6)' }} strokeWidth={isSel ? 1.1 : 0.7} strokeDasharray="2 2" vectorEffect="non-scaling-stroke" />}
+                  {showEnd && <line x1={x1} y1={0} x2={x1} y2={100} style={{ stroke: 'rgba(160,160,160,0.6)' }} strokeWidth={isSel ? 1.1 : 0.7} strokeDasharray="2 2" vectorEffect="non-scaling-stroke" />}
+                </g>
+              );
+            }
             return (
               <g key={r.id}>
                 <rect x={x0} y={0} width={w} height={100} style={{ fill: r.color + (isSel ? '4a' : isHover ? '34' : '24') }} />

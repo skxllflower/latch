@@ -28,6 +28,14 @@ Owner: skxllflower. Default branch: `master` (NOT main).
 - Logging: always-on file log at `%LOCALAPPDATA%\Vacant Systems\Latch\logs\latch.log`
   (+ About -> Open Log File). Extend it rather than adding printlns.
 
+## Changelog (required)
+`CHANGELOG.md` at the repo root is a running log, newest first. Every commit that changes behavior
+adds its entry to the top dated section IN THAT COMMIT: one or two lines, what changed for the user
+plus the non-obvious why. It is not a copy of the commit body: the commit is the detail, the
+changelog is the skim layer. Pure chores (formatting, ignore files) are exempt. A cross-repo round
+adds a line in every repo it touched. Write it while the reasoning is fresh: a later session reading
+the diff cannot reconstruct the why.
+
 ## Coordination
 This repo is coordinated together with WAVdesk. The agent-workflow playbook, verification bars, and
 the full cross-repo gotcha list live in the WAVdesk repo: `C:\Users\bansh\Dev\wavdesk\.claude\memory\`
