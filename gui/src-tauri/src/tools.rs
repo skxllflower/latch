@@ -26,20 +26,37 @@ fn latch_jobs() -> &'static JobMap {
     LATCH_JOBS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-// Dev-checkout candidates at %USERPROFILE%\Dev\{name}\build\{Release,Debug}.
-// See build_tiers for the full ordering — this tier is DEBUG-ONLY (a stray dev
-// core must not shadow the installed binary in a shipped build). Release first
-// within the tier: a Debug-built decoder can't sustain realtime video (decode
-// throughput caps near 1x — shuttle/reverse starve), so it must win over Debug.
+// Dev-checkout candidates at <home>/Dev/{name}/build (USERPROFILE on Windows,
+// HOME elsewhere), mirroring lathe's tools.rs. See build_tiers for the full
+// ordering: this tier is DEBUG-ONLY (a stray dev core must not shadow the
+// installed binary in a shipped build). Release first within the tier: a
+// Debug-built decoder can't sustain realtime video (decode throughput caps near
+// 1x, shuttle/reverse starve), so it must win over Debug. The single-config
+// makefile build (mac) lands at build/{name} with no config subdir. Our own core
+// is looked up in THIS checkout first, so a worktree runs its own build; without
+// a mac entry here a debug run fell through to a weeks-old coredist copy.
 fn dev_tool_fallbacks(name: &str) -> Vec<PathBuf> {
-    let Some(home) = std::env::var_os("USERPROFILE") else {
-        return Vec::new();
+    let exe_name = if cfg!(windows) { format!("{}.exe", name) } else { name.to_string() };
+    let per_build = |base: PathBuf| {
+        let mut out = vec![base.join("Release").join(&exe_name)];
+        #[cfg(not(windows))]
+        out.push(base.join(&exe_name));
+        out.push(base.join("Debug").join(&exe_name));
+        out
     };
-    let base = PathBuf::from(home).join("Dev").join(name).join("build");
-    vec![
-        base.join("Release").join(format!("{}.exe", name)),
-        base.join("Debug").join(format!("{}.exe", name)),
-    ]
+    let mut out = Vec::new();
+    if name == "latch" {
+        let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
+        out.extend(per_build(repo.join("build")));
+    }
+    #[cfg(windows)]
+    let home = std::env::var_os("USERPROFILE");
+    #[cfg(not(windows))]
+    let home = std::env::var_os("HOME");
+    if let Some(home) = home {
+        out.extend(per_build(PathBuf::from(home).join("Dev").join(name).join("build")));
+    }
+    out
 }
 
 fn tool_dir_name(name: &str) -> String {
@@ -1350,6 +1367,20 @@ mod tests {
         let want =
             PathBuf::from(r"C:\Program Files\Vacant Systems\Lathe\coredist\lathe.exe");
         assert!(cands.contains(&want), "expected {want:?} among {cands:?}");
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn dev_fallbacks_find_this_checkouts_mac_core_first() {
+        let cands = dev_tool_fallbacks("latch");
+        let repo_build = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../build");
+        assert_eq!(cands.first(), Some(&repo_build.join("Release").join("latch")));
+        assert!(cands.contains(&repo_build.join("latch")), "{cands:?}");
+        let home = PathBuf::from(std::env::var_os("HOME").unwrap());
+        assert!(cands.contains(&home.join("Dev/latch/build/latch")), "{cands:?}");
+        assert!(cands.iter().all(|c| c.extension().is_none()), "{cands:?}");
+        let lathe = dev_tool_fallbacks("lathe");
+        assert_eq!(lathe.first(), Some(&home.join("Dev/lathe/build/Release/lathe")));
     }
 
     #[test]

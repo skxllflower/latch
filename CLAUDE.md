@@ -12,9 +12,9 @@ macOS (Developer ID signed + notarized DMG). Day-to-day development happens on t
   from Homebrew rustup; there is no `~/.cargo/bin`).
 - C++ helper: `cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j6` -> `build/latch`.
 - Dev GUI: `cd gui && pnpm tauri dev` (port 5175). No codesigning needed in dev.
-  Landmine: the dev tool fallback (`tools.rs` `dev_tool_fallbacks`) only probes Windows `.exe`
-  paths, so a mac debug build runs whatever `latch` sits in `gui/src-tauri/target/debug/coredist/`,
-  which can be weeks old. Set `LATCH_EXE=$PWD/build/latch` after rebuilding the core.
+  A debug build resolves the core from this checkout's `build/` first (`tools.rs`
+  `dev_tool_fallbacks`), then `~/Dev/latch/build`, so rebuild the core before `tauri dev`;
+  `LATCH_EXE` still overrides.
 - Release: `tools/build-release-mac.sh [--skip-notarize]` (`SKIP_CPP=1` reuses the core build).
   Signs nested binaries inside-out (never `--deep`), builds the DMG with `hdiutil`, notarizes with
   keychain profile `wavdesk-notary` (override `NOTARY_PROFILE`). Needs
