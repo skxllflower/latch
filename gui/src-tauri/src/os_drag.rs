@@ -452,3 +452,19 @@ pub fn start_os_file_drag(
     }
     res
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn mac_drag_operations_map_to_real_effects() {
+        use drag::{ns_drag_operation_result as map, DragOperation, DragResult};
+        assert!(matches!(map(0), DragResult::Cancel));
+        assert!(matches!(map(1), DragResult::Dropped(DragOperation::Copy)));
+        assert!(matches!(map(4), DragResult::Dropped(DragOperation::Copy)));
+        assert!(matches!(map(2), DragResult::Dropped(DragOperation::Link)));
+        assert!(matches!(map(16), DragResult::Dropped(DragOperation::Move)));
+        assert!(matches!(map(32), DragResult::Dropped(DragOperation::Delete)));
+        assert!(matches!(map(1 | 32), DragResult::Dropped(DragOperation::Delete)));
+        assert!(matches!(map(8), DragResult::Dropped(DragOperation::Unknown)));
+    }
+}

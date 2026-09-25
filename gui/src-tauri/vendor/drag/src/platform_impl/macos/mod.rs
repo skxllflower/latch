@@ -20,7 +20,7 @@ use objc::{
 };
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
-use crate::{CursorPosition, DragItem, DragMode, DragOperation, DragResult, Image, Options};
+use crate::{CursorPosition, DragItem, DragMode, DragResult, Image, Options};
 
 const UTF8_ENCODING: usize = 4;
 
@@ -387,16 +387,12 @@ pub fn start_drag<W: HasWindowHandle, F: Fn(DragResult, CursorPosition) + Send +
                             let callback_closure =
                                 &*(*callback as *mut Box<dyn Fn(DragResult, CursorPosition)>);
 
-                            if operation == 0 {
-                                // NSDragOperationNone
-                                callback_closure(DragResult::Cancel, mouse_location);
-                            } else if operation == 0x20 {
-                                // NSDragOperationDelete — the Dock Trash took
-                                // the drop; the source owns the disposal.
-                                callback_closure(DragResult::Dropped(DragOperation::Delete), mouse_location);
-                            } else {
-                                callback_closure(DragResult::Dropped(DragOperation::Unknown), mouse_location);
-                            }
+                            // Dock Trash answers Delete (the source owns the
+                            // disposal).
+                            callback_closure(
+                                crate::ns_drag_operation_result(operation as u64),
+                                mouse_location,
+                            );
 
                             drop(Box::from_raw(*callback as *mut Box<dyn Fn(DragResult)>));
                         }

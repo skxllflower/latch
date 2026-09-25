@@ -7,6 +7,10 @@ non-obvious why. The commit body is the detail; this file is the skim layer.
 (formatting, ignore files) are exempt. Cross-repo rounds add a line in each repo they touched.
 Short hashes are optional and get backfilled; never block a commit on one.
 
+## 2026-09-25
+
+- **Mac drag-outs report what the drop actually did** (vendored drag crate, synced with WAVdesk): a DAW or Finder drop used to come back as an "unknown" result because only Cancel and Trash were mapped. Copy, Generic, Link and Move are now read correctly; in WAVdesk the old mapping let the chop reaper delete a file a DAW was still using, Latch's clips were not at risk but share the crate.
+
 ## 2026-09-04
 
 - **A freshly drawn chop region no longer auto-plays** (shared overlay synced from WAVdesk): drawing selects the region and leaves it silent until you trigger it. The drop path that assumed a just-drawn region was already armed now cages playback only on a region that actually is, so dropping a fresh region no longer loops it.

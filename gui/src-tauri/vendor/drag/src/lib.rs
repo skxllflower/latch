@@ -120,7 +120,7 @@ pub enum DragResult {
     /// Dropped successfully. Carries the drop-effect the TARGET performed
     /// (Windows: from DoDragDrop's out-parameter). A source that offered
     /// `Move` uses this to know when it must delete the original.
-    /// macOS/Linux report `DragOperation::Unknown`.
+    /// macOS: see `ns_drag_operation_result`. Linux reports `Unknown`.
     Dropped(DragOperation),
     Cancel,
 }
@@ -140,6 +140,35 @@ pub enum DragOperation {
     /// delete, and the source is expected to dispose of the dragged items.
     /// Only ever reported on macOS.
     Delete,
+}
+
+/// Maps the NSDragOperation an NSDraggingSession ended with to a drag result.
+/// Pure (no AppKit) so the mapping is unit-testable on every platform.
+///
+/// NSDragOperation bits: None 0, Copy 1, Link 2, Generic 4, Private 8,
+/// Move 16, Delete 32. A DAW or a Finder folder answers Copy/Generic, and
+/// reporting those as Unknown once made a caller treat a delivered chop as
+/// "nothing delivered" and reap the file from under the DAW. Priority picks
+/// the most consequential bit if a destination ever reports a combination.
+pub fn ns_drag_operation_result(operation: u64) -> DragResult {
+    const COPY: u64 = 1;
+    const LINK: u64 = 2;
+    const GENERIC: u64 = 4;
+    const MOVE: u64 = 16;
+    const DELETE: u64 = 32;
+    if operation == 0 {
+        DragResult::Cancel
+    } else if operation & DELETE != 0 {
+        DragResult::Dropped(DragOperation::Delete)
+    } else if operation & MOVE != 0 {
+        DragResult::Dropped(DragOperation::Move)
+    } else if operation & (COPY | GENERIC) != 0 {
+        DragResult::Dropped(DragOperation::Copy)
+    } else if operation & LINK != 0 {
+        DragResult::Dropped(DragOperation::Link)
+    } else {
+        DragResult::Dropped(DragOperation::Unknown)
+    }
 }
 
 pub type DataProvider = Box<dyn Fn(&str) -> Option<Vec<u8>>>;
