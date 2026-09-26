@@ -7,6 +7,10 @@ non-obvious why. The commit body is the detail; this file is the skim layer.
 (formatting, ignore files) are exempt. Cross-repo rounds add a line in each repo they touched.
 Short hashes are optional and get backfilled; never block a commit on one.
 
+## 2026-09-26
+
+- **Version 0.1.7.** Ships this repo's fixes from the WAVdesk 0.1.8 stabilization round (see the 2026-09-25 entries below).
+
 ## 2026-09-25
 
 - **Mac drag-outs report what the drop actually did** (vendored drag crate, synced with WAVdesk): a DAW or Finder drop used to come back as an "unknown" result because only Cancel and Trash were mapped. Copy, Generic, Link and Move are now read correctly; in WAVdesk the old mapping let the chop reaper delete a file a DAW was still using, Latch's clips were not at risk but share the crate.
