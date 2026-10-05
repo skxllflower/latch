@@ -12,6 +12,7 @@ mod job_object;
 mod logger;
 mod mac_video;
 mod mac_input;
+mod mac_scroll_source;
 #[cfg(target_os = "windows")]
 mod native_drag_chip;
 mod cursor;
@@ -153,6 +154,10 @@ pub fn run() {
             // Always-on file log (About → Open Log File). Init first so any
             // setup-phase failure below is captured.
             logger::init();
+            // macOS: tag each webview with the scroll device (notched mouse vs
+            // trackpad) so a mouse wheel zooms the waveform like on Windows.
+            #[cfg(target_os = "macos")]
+            mac_scroll_source::install(app.handle());
             // Startup sweep of the chop temp root: a crash or hard-kill never
             // runs the window-destroy / app-exit sweeps, so downloaded previews
             // and HD files can strand in %TEMP%\latch-chop across launches.
@@ -208,6 +213,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            mac_scroll_source::mac_scroll_source,
             tools::latch_extract,
             tools::latch_cancel,
             tools::latch_probe,

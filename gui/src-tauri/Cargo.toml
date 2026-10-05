@@ -48,6 +48,10 @@ device_query = "2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
+# mac_scroll_source.rs: NSEvent monitor handler block + NSString for evaluateJavaScript
+# (lockstep with WAVdesk's copy of the module).
+block2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString"] }
 
 # Job Objects tie every spawned latch.exe (and its yt-dlp/ffmpeg
 # children, by job inheritance) to this process's lifetime — same

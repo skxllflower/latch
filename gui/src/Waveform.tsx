@@ -18,6 +18,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { playbackEngine } from './playbackEngine';
 import { isMac } from './platform';
+import { classifyVizWheel } from './macWheel';
 import { logToFile } from './frontendLog';
 
 export interface WaveAudioFile {
@@ -473,11 +474,10 @@ export const WaveformView: React.FC<WaveformViewProps> = ({
     // house ~1.15x per notch. No EMA on the wheel: its deltas are uniform, so
     // smoothing only adds latency. Trackpad keeps the EMA + 0.015 gain (1.5x
     // the original, so two-finger scroll feels close to pinch-zoom).
-    const isMouseWheel = !isMac
-      || e.deltaMode === 1
-      || (e.deltaX === 0 && Number.isInteger(e.deltaY) && Math.abs(e.deltaY) >= 30);
+    const wheel = classifyVizWheel(e.nativeEvent, 'waveform');
+    const isMouseWheel = wheel.isMouseWheel;
     const factor = isMouseWheel
-      ? Math.exp(e.deltaY * 0.0014)
+      ? Math.exp(wheel.zoomDeltaY * 0.0014)
       : Math.exp(smoothScrollDelta(e.deltaY) * 0.015);
     const newSpan = Math.max(MIN_SPAN_SEC, Math.min(duration, span * factor));
     const anchor = cur.tStart + frac * span;

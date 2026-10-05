@@ -7,6 +7,10 @@ non-obvious why. The commit body is the detail; this file is the skim layer.
 (formatting, ignore files) are exempt. Cross-repo rounds add a line in each repo they touched.
 Short hashes are optional and get backfilled; never block a commit on one.
 
+## 2026-10-05
+
+- **A mouse wheel zooms the waveform and image/video views on Mac**: the app now asks macOS whether each scroll came from a notched wheel or a trackpad (WebKit reports a slow wheel notch exactly like a small trackpad swipe, so the old guess panned instead of zooming). Trackpad pan and pinch are unchanged; a receipt line in latch.log records each classification. Port of WAVdesk's fix.
+
 ## 2026-09-26
 
 - **Version 0.1.7.** Ships this repo's fixes from the WAVdesk 0.1.8 stabilization round (see the 2026-09-25 entries below).

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { isMac } from './platform';
+import { classifyVizWheel } from './macWheel';
 
 // Shared zoom/pan/pinch engine for canvas content viewers (ImageView,
 // VideoView). Extracted from the image viewer so both get the exact same
@@ -289,15 +290,16 @@ export function useCanvasViewport({ containerRef, contentW, contentH, enabled = 
       const rect = el.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) return;
       const cx = e.clientX - rect.left, cy = e.clientY - rect.top;
-      const isMouseWheel = !isMac || e.deltaMode === 1
-        || (e.deltaX === 0 && Number.isInteger(e.deltaY) && Math.abs(e.deltaY) >= 30);
+      const wheel = classifyVizWheel(e, 'canvas');
+      const isMouseWheel = wheel.isMouseWheel;
       // Image/video are true 2D canvases, so plain trackpad scroll keeps
       // panning both axes; ctrlKey is trackpad pinch and Cmd+wheel is the mac
       // opt-in zoom (both fall through to the cursor-anchored zoom below).
       if (!isMouseWheel && !e.ctrlKey && !(isMac && e.metaKey)) { panSmoothBy(-e.deltaX, -e.deltaY); return; }
       const base = directGestures || isMouseWheel ? viewRef.current : (targetRef.current ?? viewRef.current);
       const k = isMouseWheel ? WHEEL_K : PINCH_WHEEL_K;
-      const next = zoomAround(base, base.s * Math.exp(-e.deltaY * k), cx, cy);
+      const dy = isMouseWheel ? wheel.zoomDeltaY : e.deltaY;
+      const next = zoomAround(base, base.s * Math.exp(-dy * k), cx, cy);
       if (directGestures) { cancelTween(); setView(next); }
       else easeTo(next);
     };

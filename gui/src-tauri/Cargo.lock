@@ -2102,10 +2102,12 @@ dependencies = [
 name = "latch-gui"
 version = "0.1.7"
 dependencies = [
+ "block2",
  "device_query",
  "drag",
  "log",
  "objc2",
+ "objc2-foundation",
  "rodio",
  "serde",
  "serde_json",
