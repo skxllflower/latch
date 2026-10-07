@@ -153,6 +153,16 @@ void make_executable_mac(const fs::path& bin) {
   };
   run_subprocess(argv, [](const std::string&) {});
 }
+
+// SHA-256 of a file via /usr/bin/shasum (ships with every macOS); empty on failure.
+std::string sha256_mac(const fs::path& file) {
+  std::string out;
+  std::vector<std::string> argv = {"shasum", "-a", "256", file.string()};
+  int rc = run_subprocess(argv, [&](const std::string& line) {
+    if (out.empty()) out = line.substr(0, line.find(' '));
+  });
+  return rc == 0 ? out : std::string();
+}
 #endif
 
 }
@@ -274,10 +284,15 @@ bool ensure_ffmpeg() {
   emit_bootstrap("done", "ffmpeg");
   return true;
 #elif defined(__APPLE__)
-  // evermeet.cx publishes static, standalone ffmpeg/ffprobe CLI builds for
-  // macOS — each a zip holding one binary at the root. Two downloads (separate
+  // Only runs when the Vacant Systems shared bin lacks ffmpeg or ffprobe (WAVdesk
+  // provisions its arm64 pair there). Static, standalone ffmpeg/ffprobe CLI builds
+  // for macOS — each a zip holding one binary at the root. Two downloads (separate
   // archives), unlike Windows' single BtbN bundle. GPL is fine here: these are
   // spawned as subprocesses, same as the Windows gpl build.
+  // Apple Silicon gets NATIVE arm64 builds: evermeet.cx publishes Intel only,
+  // which runs under Rosetta, or not at all on a Mac without it. Those are pinned
+  // (martin-riedl.de build 1783011502_8.1.2, the build WAVdesk <= 0.1.9 bundled)
+  // and checksum-verified; Intel Macs keep evermeet's latest.
   fs::path ff_zip    = bin_dir / "_ffmpeg_download.zip";
   fs::path fp_zip    = bin_dir / "_ffprobe_download.zip";
   fs::path ff_ex     = bin_dir / "_ffmpeg_extract";
@@ -291,8 +306,18 @@ bool ensure_ffmpeg() {
   fs::remove_all(ff_ex, ec);
   fs::remove_all(fp_ex, ec);
 
+#if defined(__aarch64__) || defined(__arm64__)
+  const std::string ff_url =
+    "https://ffmpeg.martin-riedl.de/download/macos/arm64/1783011502_8.1.2/ffmpeg.zip";
+  const std::string fp_url =
+    "https://ffmpeg.martin-riedl.de/download/macos/arm64/1783011502_8.1.2/ffprobe.zip";
+  const std::string ff_sha = "ef1aa60006c7b77ce170c1608c08d8e4ba1c30c5746f2ac986ded932d0ac2c3c";
+  const std::string fp_sha = "c39787f4af7a3932502d2d48db6f6feaaa836b48a73ef78c32cc3285df61dfaf";
+#else
   const std::string ff_url = "https://evermeet.cx/ffmpeg/getrelease/zip";
   const std::string fp_url = "https://evermeet.cx/ffmpeg/getrelease/ffprobe/zip";
+  const std::string ff_sha, fp_sha;
+#endif
 
   bool ok = download_with_progress(ff_url, ff_zip,
     [&](uint64_t bytes, uint64_t total) {
@@ -306,6 +331,13 @@ bool ensure_ffmpeg() {
   }
   if (!ok) {
     emit_bootstrap("failed", "ffmpeg", 0, 0, "download failed");
+    fs::remove(ff_zip, ec);
+    fs::remove(fp_zip, ec);
+    return false;
+  }
+  if ((!ff_sha.empty() && sha256_mac(ff_zip) != ff_sha) ||
+      (!fp_sha.empty() && sha256_mac(fp_zip) != fp_sha)) {
+    emit_bootstrap("failed", "ffmpeg", 0, 0, "download checksum mismatch");
     fs::remove(ff_zip, ec);
     fs::remove(fp_zip, ec);
     return false;

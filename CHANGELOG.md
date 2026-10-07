@@ -7,6 +7,10 @@ non-obvious why. The commit body is the detail; this file is the skim layer.
 (formatting, ignore files) are exempt. Cross-repo rounds add a line in each repo they touched.
 Short hashes are optional and get backfilled; never block a commit on one.
 
+## 2026-10-07
+
+- **Apple Silicon downloads a native ffmpeg + ffprobe**: when the shared bin lacks them, `latch` now fetches pinned, checksum-verified arm64 builds (martin-riedl.de 1783011502_8.1.2) instead of evermeet.cx's Intel-only ones, which needed Rosetta (or failed without it). Intel Macs keep evermeet. Normally WAVdesk provisions the suite's arm64 pair first, so this is the standalone fallback.
+
 ## 2026-10-05
 
 - **A mouse wheel zooms the waveform and image/video views on Mac**: the app now asks macOS whether each scroll came from a notched wheel or a trackpad (WebKit reports a slow wheel notch exactly like a small trackpad swipe, so the old guess panned instead of zooming). Trackpad pan and pinch are unchanged; a receipt line in latch.log records each classification. Port of WAVdesk's fix.
