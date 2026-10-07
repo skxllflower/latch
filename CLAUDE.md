@@ -3,7 +3,7 @@
 Standalone media downloader (yt-dlp front-end) + clip chopper. Tauri v2: React/Vite frontend
 (`gui/src`), Rust host (`gui/src-tauri`), C++ helper (`src/`, the `latch` CLI: probe/expand/download).
 Fork-and-owned from WAVdesk scaffolding; also embedded inside WAVdesk as the Latch window.
-Owner: skxllflower. Default branch: `master` (NOT main). Version 0.1.7. Ships on Windows (NSIS) and
+Owner: skxllflower. Default branch: `master` (NOT main). Version 0.1.8. Ships on Windows (NSIS) and
 macOS (Developer ID signed + notarized DMG). Day-to-day development happens on the Mac.
 
 ## Build / run

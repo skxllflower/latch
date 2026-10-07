@@ -9,6 +9,7 @@ Short hashes are optional and get backfilled; never block a commit on one.
 
 ## 2026-10-07
 
+- **Version 0.1.8.** Ships the native arm64 ffmpeg + ffprobe bootstrap on Apple Silicon (no more Intel-only download that needed Rosetta) and the mac mouse-wheel zoom fix.
 - **Apple Silicon downloads a native ffmpeg + ffprobe**: when the shared bin lacks them, `latch` now fetches pinned, checksum-verified arm64 builds (martin-riedl.de 1783011502_8.1.2) instead of evermeet.cx's Intel-only ones, which needed Rosetta (or failed without it). Intel Macs keep evermeet. Normally WAVdesk provisions the suite's arm64 pair first, so this is the standalone fallback.
 
 ## 2026-10-05
