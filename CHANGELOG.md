@@ -7,6 +7,10 @@ non-obvious why. The commit body is the detail; this file is the skim layer.
 (formatting, ignore files) are exempt. Cross-repo rounds add a line in each repo they touched.
 Short hashes are optional and get backfilled; never block a commit on one.
 
+## 2026-11-01
+
+- **The Mac build runs on macOS 12 and later**: the `latch` core was built for the build Mac's own OS (minos 26.0), so dyld refused it on macOS 12-25 and Latch (and WAVdesk's bundled copy) could not download or chop. CMake now defaults the deployment target to 12.0, the GUI declares `LSMinimumSystemVersion` 12.0, and the release script aborts on any Mach-O above that floor.
+
 ## 2026-10-07
 
 - **Version 0.1.8.** Ships the native arm64 ffmpeg + ffprobe bootstrap on Apple Silicon (no more Intel-only download that needed Rosetta) and the mac mouse-wheel zoom fix.

@@ -1,4 +1,10 @@
 cmake_minimum_required(VERSION 3.20)
+
+# The Mac floor (WAVdesk's, macOS 12): without it clang targets the build host's OS and dyld refuses
+# the core on any older macOS. Must precede project(). -DCMAKE_OSX_DEPLOYMENT_TARGET or MACOSX_DEPLOYMENT_TARGET wins.
+if (CMAKE_HOST_APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET AND NOT DEFINED ENV{MACOSX_DEPLOYMENT_TARGET})
+  set(CMAKE_OSX_DEPLOYMENT_TARGET "12.0" CACHE STRING "Minimum macOS version" FORCE)
+endif()
 project(latch LANGUAGES CXX VERSION 0.1.8)
 
 set(CMAKE_CXX_STANDARD 17)

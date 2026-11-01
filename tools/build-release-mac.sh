@@ -8,6 +8,11 @@
 # binary inside the .app. ffmpeg + yt-dlp are NOT bundled: the core self-
 # provisions them at runtime (bootstrap.cpp: evermeet ffmpeg/ffprobe + yt-dlp_macos).
 #
+# macOS floor: every Mach-O in the bundle targets MACOS_MIN (12.0, WAVdesk's
+# floor, which ships this .app in its dmg). Unset, clang targets the build
+# host's OS and dyld refuses the core on every older macOS; step 3 aborts on
+# any Mach-O above the floor.
+#
 # The Windows bundle config is untouched: we pass --bundles app,dmg on the CLI
 # (tauri.conf still says nsis) so Windows builds stay byte-identical.
 #
@@ -49,6 +54,20 @@ COREDIST="$TAURI/coredist"
 CORE="latch"
 PRODUCT="Latch"
 BUNDLE="$TAURI/target/release/bundle"
+MACOS_MIN="${MACOS_MIN:-12.0}"
+export MACOSX_DEPLOYMENT_TARGET="$MACOS_MIN"
+
+# The minos of a Mach-O (LC_BUILD_VERSION, or the older LC_VERSION_MIN_MACOSX).
+minos_of() {
+  otool -l "$1" | awk '
+    /LC_BUILD_VERSION|LC_VERSION_MIN_MACOSX/ { b = 1 }
+    b && $1 == "minos"   { print $2; exit }
+    b && $1 == "version" { print $2; exit }'
+}
+# True when version $1 <= $2 (dotted, numeric per component).
+version_le() {
+  [ "$(printf '%s\n%s\n' "$1" "$2" | sort -t. -k1,1n -k2,2n -k3,3n | head -1)" = "$1" ]
+}
 
 step() { printf '\n\033[36m[%s] %s\033[0m\n' "$1" "$2"; }
 
@@ -63,7 +82,7 @@ step 1 "C++ core (Release)"
 if [ "${SKIP_CPP:-0}" = "1" ]; then
   echo "  SKIP_CPP=1: reusing existing build/"
 else
-  cmake -B "$BUILD" -S "$REPO" -DCMAKE_BUILD_TYPE=Release
+  cmake -B "$BUILD" -S "$REPO" -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_DEPLOYMENT_TARGET="$MACOS_MIN"
   cmake --build "$BUILD" -j6
 fi
 CORE_SRC="$BUILD/$CORE"
@@ -94,14 +113,34 @@ APP="$(find "$BUNDLE/macos" -maxdepth 1 -name '*.app' 2>/dev/null | head -1)"
 
 # Self-resolution belt-and-suspenders: tools.rs looks for the core at
 # <dir-of-GUI-binary>/coredist/latch (i.e. Contents/MacOS/coredist). Tauri
-# resources land in Contents/Resources/. If the MacOS-side coredist is absent,
-# mirror it there so the installed tier finds the core.
+# resources land in Contents/Resources/. Mirror it there so the installed tier
+# finds the core; always rewritten, so a stale core from an earlier build
+# cannot survive into the bundle.
 MACOS_DIR="$APP/Contents/MacOS"
-if [ ! -e "$MACOS_DIR/coredist/$CORE" ]; then
-  echo "  mirroring coredist next to the GUI binary (Contents/MacOS/coredist)"
-  mkdir -p "$MACOS_DIR/coredist"
-  cp -f "$COREDIST/$CORE" "$MACOS_DIR/coredist/$CORE"
-  chmod 0755 "$MACOS_DIR/coredist/$CORE"
+echo "  mirroring coredist next to the GUI binary (Contents/MacOS/coredist)"
+rm -rf "$MACOS_DIR/coredist"
+mkdir -p "$MACOS_DIR/coredist"
+cp -f "$COREDIST/$CORE" "$MACOS_DIR/coredist/$CORE"
+chmod 0755 "$MACOS_DIR/coredist/$CORE"
+
+echo "  macOS floor (every Mach-O must target <= $MACOS_MIN):"
+FLOOR_BAD=0
+while IFS= read -r -d '' bin; do
+  file -b "$bin" | grep -q 'Mach-O' || continue
+  min="$(minos_of "$bin")"
+  echo "    ${bin#"$APP"/}: $min"
+  if [ -z "$min" ] || ! version_le "$min" "$MACOS_MIN"; then FLOOR_BAD=1; fi
+  if otool -L "$bin" | tail -n +2 | grep -qE '/opt/homebrew/|/usr/local/'; then
+    echo "    ^ links a Homebrew library" >&2; FLOOR_BAD=1
+  fi
+done < <(find "$APP" -type f -print0)
+LSMIN="$(defaults read "$APP/Contents/Info" LSMinimumSystemVersion 2>/dev/null || echo unset)"
+echo "    LSMinimumSystemVersion: $LSMIN"
+[ "$LSMIN" = "$MACOS_MIN" ] || FLOOR_BAD=1
+if [ "$FLOOR_BAD" = "1" ]; then
+  echo "ERROR: a Mach-O targets a macOS above $MACOS_MIN or links Homebrew (or" >&2
+  echo "  LSMinimumSystemVersion differs): dyld refuses it on older macOS." >&2
+  exit 1
 fi
 
 # ---- Step 4: codesign (Developer ID when available, else ad-hoc) ----------
