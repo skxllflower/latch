@@ -62,7 +62,7 @@ bool AudioOut::openNow() {
     rate_ = (uint32_t)std::lround(audio_->sampleRate());
     latency_ = audio_->bufferSize() > 0 ? 2.0 * audio_->bufferSize() / audio_->sampleRate() : 0.0;
     idle_ = false;
-    log("audio: " + audio_->outputName() + " at " + std::to_string(rate_.load()) + " Hz");
+    log("audio: " + audio_->outputName() + " (" + audio_->driverName() + ") at " + std::to_string(rate_.load()) + " Hz, " + std::to_string(audio_->bufferSize()) + "-frame blocks");
     return true;
 }
 

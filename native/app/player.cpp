@@ -117,6 +117,7 @@ struct PlayerFeed {
     vpf::AudioRing ring;
     std::atomic<uint64_t> played{0};   // frames out since the last flush
     std::atomic<bool> flushAsked{false}, eof{false};
+    std::atomic<int64_t> firstHeard{0};   // (steady_clock ticks of the first block with sound in it: the log's start delay)
     float l[2048], r[2048];            // (the pull's planar scratch)
 };
 
@@ -167,6 +168,8 @@ void Player::pull(float* out, uint32_t frames, uint32_t channels, void* user) {
         float* planes[2] = {f.l, f.r};
         const size_t got = f.ring.read(planes, 2, n);
         f.played.fetch_add(got, std::memory_order_relaxed);
+        if (got && !f.firstHeard.load(std::memory_order_relaxed))
+            f.firstHeard.store(std::chrono::steady_clock::now().time_since_epoch().count(), std::memory_order_relaxed);
         for (uint32_t i = 0; i < n; ++i) {
             float* o = out + (size_t)(done + i) * channels;
             const float L = i < got ? f.l[i] : 0.f, R = i < got ? f.r[i] : 0.f;
@@ -187,12 +190,14 @@ Player::~Player() {
 bool Player::play(const std::string& path, std::string* err) {
     stop();
     endedEmpty_ = false;
+    asked_ = std::chrono::steady_clock::now();
     const std::string ffmpeg = toolPath("ffmpeg");
     if (ffmpeg.empty()) { if (err) *err = "No ffmpeg yet: extract something first"; return false; }
     if (!out_.openEngine() || out_.engineRate() == 0) {
         if (err) *err = out_.status().empty() ? "No audio output" : out_.status();
         return false;
     }
+    deviceMs_ = (int)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - asked_).count();
     rate_ = out_.engineRate();
     feed_ = std::make_unique<PlayerFeed>();
     feed_->ring.allocate(2, 1 << 18);   // (~5 s at 48 k)
@@ -281,6 +286,12 @@ bool Player::poll() {
         }
         stop();
         return true;
+    }
+    if (const int64_t at = feed_->firstHeard.load(std::memory_order_relaxed); deviceMs_ >= 0 && at) {
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::time_point(std::chrono::steady_clock::duration(at)) - asked_).count();
+        log("audition: first sound after " + std::to_string(ms) + " ms (device " + std::to_string(deviceMs_) + " ms)");
+        deviceMs_ = -1;
     }
     if (feed_->eof && feed_->ring.available() == 0) {
         endedEmpty_ = from_ == 0 && feed_->played == 0;

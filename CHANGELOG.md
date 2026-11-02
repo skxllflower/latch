@@ -9,6 +9,7 @@ Short hashes are optional and get backfilled; never block a commit on one.
 
 ## 2026-11-01
 
+- **Native Latch: Mac thumbnails, start-delay logging**: the Mac build fetches card thumbnails with the system's curl (Windows keeps URLMon). The log now names the audio driver and block size and how long Audition took to sound (about 90 ms here); the ~1 s chop delay seen earlier came from the headless test runner, not the app.
 - **Native Latch on WAVdesk 4e84795**: a 4 px gap between a row's icon buttons (Play, Chop, Reveal, X), which touched in the VX, Focused and Zen Dark looks.
 - **Native Latch card thumbnails and the audition waveform** (`native/app/thumbs.*`, `latch_app.cpp`): a link's card shows its image (downloaded once, cropped square by the suite's ffmpeg, which reads YouTube's WebP as well as JPEG / PNG, cached under the data folder); the row that is playing folds out its waveform with the played part and the playhead, and a click there seeks.
 - **Native Latch chops** (`native/app/audio_out.*`, main.cpp): a row's Chop button opens WAVdesk's own Latch chop window (its `wdn_latch_chop` library over Etch, from the pinned commit, no stems or palette): regions on the waveform, the picture for a video, play, Speed, Export of audio and video clips. It plays through Latch's one audio output, which Audition now shares: one stream at a time (opening chop stops Audition), the device closed after 10 s with nothing playing. A headless run's chop sidecars follow `--data-dir` instead of landing in the real Latch folder.

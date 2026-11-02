@@ -45,6 +45,8 @@ macOS (Developer ID signed + notarized DMG). Day-to-day development happens on t
   closes it, then `ChopEngine::shutdown()`, then the output (LatchApp's destructor in any other teardown).
   Headless: `LATCH_CHOP=<file>` opens it, `WDN_SAVE_DIR` answers Export's folder; always pass `--data-dir`
   (the chop sidecars go under the data root, which follows it).
+  A headless `wait` step does not tick: anything a tick drives (chop's deferred Play, drags) stalls until the next
+  `ticks`, so time playback with `{"ticks":1},{"wait":16}` pairs, not one long wait.
 - Settings (`app/settings_window.*`): settings.json under the Tauri keys (ytdlpPath, ffmpegPath, lathePath,
   downloadDir, clipsDir); `tool_paths.cpp` turns the overrides into LATCH_* for the children. `tauri_import.cpp`
   reads the Tauri webview's localStorage (wd-latch-*) into native_ui.json once (flag `tauriImported`), then

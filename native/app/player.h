@@ -4,6 +4,7 @@
 // time. Another stream taking the output (the chop window) stops it.
 #pragma once
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -39,6 +40,8 @@ private:
     std::string path_;
     double from_ = 0, rate_ = 0;
     bool endedEmpty_ = false;
+    std::chrono::steady_clock::time_point asked_{};   // (play() called: the first sound's delay goes to the log)
+    int deviceMs_ = -1;
     AudioOut& out_;
     uint64_t token_ = 0;
     std::unique_ptr<PlayerFeed> feed_;

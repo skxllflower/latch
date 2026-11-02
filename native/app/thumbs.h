@@ -1,4 +1,4 @@
-// The cards' thumbnails (LatchWindow::drawThumbnail): a link's image (latch expand's `thumbnail` URL) downloaded once,
+// The cards' thumbnails (LatchWindow::drawThumbnail): a link's image (latch expand's `thumbnail` URL) downloaded once (URLMon; the Mac: /usr/bin/curl),
 // cropped square by the suite's ffmpeg (YouTube serves WebP; ffmpeg reads it, JPEG and PNG alike) to 80 x 80 BGRA, kept
 // under <data root>/cache/thumbs, drawn from memory. One worker, a URL at a time; a failed one is not tried again this
 // run. The worker owns only shared state, so quitting never waits on a download.

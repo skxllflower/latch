@@ -46,13 +46,16 @@ std::string key(const std::string& url) {
     return b;
 }
 
-bool download(const std::string& url, const fs::path& to) {
-#if defined(_WIN32)
+bool download(const std::string& url, const fs::path& to, const std::atomic<bool>& stop) {
     if (url.rfind("https://", 0) != 0 && url.rfind("http://", 0) != 0) return false;
+#if defined(_WIN32)
+    (void)stop;
     return SUCCEEDED(URLDownloadToFileW(nullptr, fs::u8path(url).wstring().c_str(), to.wstring().c_str(), 0, nullptr));
 #else
-    (void)url; (void)to;
-    return false;   // (the Mac build: NSURLSession, not yet)
+    // (the system's curl, on every macOS: -f fails an HTTP error rather than keep its page)
+    if (!runPiped("/usr/bin/curl", {"-fsSL", "--max-time", "20", "-o", to.u8string(), url}, [](const char*, size_t) {}, stop)) return false;
+    std::error_code ec;
+    return fs::file_size(to, ec) > 0 && !ec;
 #endif
 }
 
@@ -83,7 +86,7 @@ vpf::gui::Bitmap fetch(const std::string& url, const std::atomic<bool>& stop) {
     std::error_code ec;
     fs::create_directories(dir, ec);
     const fs::path src = dir / (key(url) + ".src");
-    if (!download(url, src)) { fs::remove(src, ec); return {}; }
+    if (!download(url, src, stop)) { fs::remove(src, ec); return {}; }
     const std::string n = std::to_string(Thumbs::kSize);
     std::string out;
     runPiped(ffmpeg, {"-nostdin", "-v", "error", "-i", src.u8string(), "-frames:v", "1",
