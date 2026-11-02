@@ -211,7 +211,9 @@ Editor* createEditor(vpf::gui::EditorHost& host) {
         *chopWin = cw;
         cw->synchronous = quiet;
         cw->onClosed = [ed, chopWin, chopOpen] { if (chopOpen()) ed->closePopup(*chopWin); *chopWin = nullptr; };
-        cw->onLanded = [](const std::vector<std::string>& outs) { for (const std::string& o : outs) latch::log("chop landed: " + o); };
+        cw->onLanded = [app](const std::vector<std::string>& outs) {   // (Tauri's wd-latch-clip-exported: the clips join Outputs)
+            for (const std::string& o : outs) { latch::log("chop landed: " + o); app->addOutput(o); }
+        };
         cw->onToast = [app](const std::string& t) { latch::log("toast: " + t); app->toast(t); };
         const int W = wdn::LatchChopWindow::kWidth, H = wdn::LatchChopWindow::kHeight;
         cw->bounds = {(app->bounds.w - W) / 2, (app->bounds.h - H) / 2, W, H};

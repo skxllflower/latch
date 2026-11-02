@@ -7,6 +7,10 @@ non-obvious why. The commit body is the detail; this file is the skim layer.
 (formatting, ignore files) are exempt. Cross-repo rounds add a line in each repo they touched.
 Short hashes are optional and get backfilled; never block a commit on one.
 
+## 2026-11-02
+
+- **Native Latch parity, main window (WAVdesk dbd5bf9a)**: drop files from Explorer (one media file opens Chop, several queue), Backspace on an empty prompt removes the last row, local rows show their length, and Chop's exports join Outputs as they did in Tauri.
+
 ## 2026-11-01
 
 - **Native Latch on WAVdesk c381b77**: a child process inherits only its own std handles, so a tool's answer no longer waits seconds for an unrelated child started at the same moment (ffprobe beside an ffmpeg decode took ~4 s).
