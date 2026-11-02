@@ -31,3 +31,6 @@ gui/src-tauri/resources/ffmpeg/*
 !gui/src-tauri/resources/ffmpeg/LICENSE.txt
 gui/src-tauri/resources/ytdlp/*
 !gui/src-tauri/resources/ytdlp/.gitkeep
+
+# Native GUI (vpf) build trees
+native/build-release/

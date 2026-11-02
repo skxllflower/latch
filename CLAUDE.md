@@ -2,6 +2,7 @@
 
 Standalone media downloader (yt-dlp front-end) + clip chopper. Tauri v2: React/Vite frontend
 (`gui/src`), Rust host (`gui/src-tauri`), C++ helper (`src/`, the `latch` CLI: probe/expand/download).
+Being replaced by a native vpf GUI (`native/`, branch `feat/native-vpf`, Windows first; see "Native GUI" below).
 Fork-and-owned from WAVdesk scaffolding; also embedded inside WAVdesk as the Latch window.
 Owner: skxllflower. Default branch: `master` (NOT main). Version 0.1.8. Ships on Windows (NSIS) and
 macOS (Developer ID signed + notarized DMG). Day-to-day development happens on the Mac.
@@ -24,6 +25,25 @@ macOS (Developer ID signed + notarized DMG). Day-to-day development happens on t
 **Windows**
 - Dev GUI: `cd gui && export PATH="/c/Program Files/nodejs:$HOME/AppData/Roaming/npm:$PATH" && pnpm tauri dev`.
 - Release: `& .\tools\build-release.ps1` (NSIS only).
+
+**Native GUI (vpf, `native/`)**
+- WAVdesk native's own Latch window (`native/shell/latch_window.*` + ExtWindow, the skins, dialogs,
+  tool runner) compiled UNCHANGED from a pinned WAVdesk commit; `native/app/` adds the app frame,
+  Minimize, About (+ Open Log File), the look chooser, launch args (URLs / files queued as typed),
+  one-instance handoff, registry self-registration, the file log (`app_log.cpp`: `logs/latch.log`),
+  the first-launch copy of the installer's bundled yt-dlp / ffmpeg, and `host_stubs.cpp` (the 6
+  WAVdesk-library calls those files make: data root = Latch's folder). Same shape as native Lathe.
+  vpf and WAVdesk are FetchContent-pinned to commits (`native/CMakeLists.txt`): a fix to the window
+  lands in WAVdesk first, then this pin moves. The pin must be a pushed commit (release fetches it).
+- Not yet: Audition opens the system player (no engine of its own); Chop is not wired (WAVdesk's
+  `latch_chop_*` needs its chop code split from the library first); no Settings window; no Mac build.
+- Dev: `cmake -S native -B native/build -A x64 -DFETCHCONTENT_SOURCE_DIR_WAVDESK=<wavdesk checkout>`
+  then `cmake --build native/build --config Release` -> `native/build/bin/Release/latch-gui.exe`.
+  A dev run (exe in a build tree) uses the repo's `build/Release/latch.exe` via LATCH_EXE and does not
+  self-register; an installed run uses `<exe>/coredist/latch.exe` and registers it in registry.json.
+  Headless (`--steps`, `--screenshot`) runs write nothing and never hand off to a running window.
+- Data: `%LOCALAPPDATA%\Vacant Systems\Latch` (settings.json: the Tauri keys + `skin`; native_ui.json:
+  the window's settings under the Tauri localStorage key names; logs/latch.log).
 
 **Checks (both):** `pnpm typecheck`; `cargo check` + `cargo test` in `gui/src-tauri`.
 
