@@ -31,6 +31,12 @@ std::string toolOverride(const std::string& name);   // (the Settings field, tri
 // each Settings change
 void applyToolEnv();
 
+// the Tauri app's window settings (its webview's localStorage, wd-latch-*) into native_ui.json, once, then its old
+// webview profile removed (tauri_import.cpp); and Settings' downloadDir for a window with no folder of its own yet.
+// Both before the window is made (it reads them as it is built)
+void importTauriState();
+void seedDownloadDir();
+
 // logger.rs: <data root>/logs/latch.log, one "[YYYY-MM-DD HH:MM:SSZ] line" per event, appended (also to stderr);
 // logInit starts a session (the file dropped past 1 MB). Never written in a headless run (setWritable(false))
 std::string logPath();

@@ -8,6 +8,7 @@
 // window (which comes to the front and queues them) and exits before anything opens. The latch CLI does every
 // download (latch_window.h: `latch extract`, two at once); this process never downloads anything itself.
 #include "about_window.h"
+#include "settings_window.h"
 #include "data_root.h"
 #include "dev_run.h"
 #include "dialog_window.h"
@@ -152,6 +153,8 @@ Editor* createEditor(vpf::gui::EditorHost& host) {
     latch::provisionBundled();
     latch::applyToolEnv();
     wdn::ui_state::setEnabled(!quiet);   // (the checks start from the defaults and leave nothing behind)
+    latch::importTauriState();
+    latch::seedDownloadDir();
     wdn::ext::setSharedWritable(!quiet);
 
     // this app's own CLI: in a dev run through LATCH_EXE (the tiers' env override, dev runs only); installed, through
@@ -198,32 +201,44 @@ Editor* createEditor(vpf::gui::EditorHost& host) {
     app->onLanded = [](const std::string& out) { latch::log("landed: " + out); };
     app->onAudition = [app](const std::string& path) { app->audition(path); };
 
-    // About: one window, raised when open
+    // About and Settings: one window each, raised when open
     auto about = std::make_shared<latch::AboutWindow*>(nullptr);
-    app->onAbout = [ed, about] {
-        if (*about && wdn::liveWindow(*ed, *about)) { ed->raisePopup(*about); return; }
-        auto w = std::make_unique<latch::AboutWindow>();
-        latch::AboutWindow* raw = w.get();
-        *about = raw;
-        raw->bounds = {(latch::LatchApp::kWidth - latch::AboutWindow::kWidth) / 2, 0, latch::AboutWindow::kWidth, latch::AboutWindow::kHeight};
+    auto settings = std::make_shared<latch::SettingsWindow*>(nullptr);
+    auto openOne = [ed](auto slot, auto make, int w, int h) {
+        if (*slot && wdn::liveWindow(*ed, *slot)) { ed->raisePopup(*slot); return; }
+        auto win = make();
+        auto* raw = win.get();
+        *slot = raw;
+        raw->bounds = {(latch::LatchApp::kWidth - w) / 2, 0, w, h};
         raw->onBoundsChanged();
-        raw->onClose = [ed, raw, about] { if (wdn::liveWindow(*ed, raw)) ed->closePopup(raw); *about = nullptr; };
+        raw->onClose = [ed, raw, slot] { if (wdn::liveWindow(*ed, raw)) ed->closePopup(raw); *slot = nullptr; };
         vpf::gui::PopupOptions o;
         o.window = true;
         o.detached = true;
         o.activates = true;
         o.corners = vpf::gui::CornerStyle::Round;
-        wdn::openWindow(*ed, std::move(w), o);
+        wdn::openWindow(*ed, std::move(win), o);
         ed->setFocus(raw);
+    };
+    app->onAbout = [openOne, about] {
+        openOne(about, [] { return std::make_unique<latch::AboutWindow>(); }, latch::AboutWindow::kWidth, latch::AboutWindow::kHeight);
+    };
+    app->onSettings = [openOne, settings] {
+        openOne(settings, [] {
+            auto w = std::make_unique<latch::SettingsWindow>();
+            w->onToolsChanged = [] { latch::applyToolEnv(); };
+            return w;
+        }, latch::SettingsWindow::kWidth, latch::SettingsWindow::kHeight);
     };
 
     // another look: applied at once, kept in settings.json
-    app->onSkin = [app, about, ed](const std::string& name) {
+    app->onSkin = [app, about, settings, ed](const std::string& name) {
         applySkin(name);
         wdn::settings::set("skin", name);
         app->skinName = name;
         app->onBoundsChanged();
         if (*about && wdn::liveWindow(*ed, *about)) (*about)->onBoundsChanged();
+        if (*settings && wdn::liveWindow(*ed, *settings)) (*settings)->onBoundsChanged();
         ed->requestRepaint();
     };
 

@@ -35,8 +35,15 @@ macOS (Developer ID signed + notarized DMG). Day-to-day development happens on t
   WAVdesk-library calls those files make: data root = Latch's folder). Same shape as native Lathe.
   vpf and WAVdesk are FetchContent-pinned to commits (`native/CMakeLists.txt`): a fix to the window
   lands in WAVdesk first, then this pin moves. The pin must be a pushed commit (release fetches it).
-- Not yet: Audition opens the system player (no engine of its own); Chop is not wired (WAVdesk's
-  `latch_chop_*` needs its chop code split from the library first); no Settings window; no Mac build.
+- Audition (`app/player.*`): the Shared ffmpeg decodes to f32 on a pipe (polled, never a blocking read:
+  a sibling child can inherit the write end) into an AudioRing drained by vpf's StandaloneAudio, whose
+  device is open only while something plays. Not WAVdesk's engine (that needs wavdesk_core).
+- Settings (`app/settings_window.*`): settings.json under the Tauri keys (ytdlpPath, ffmpegPath, lathePath,
+  downloadDir, clipsDir); `tool_paths.cpp` turns the overrides into LATCH_* for the children. `tauri_import.cpp`
+  reads the Tauri webview's localStorage (wd-latch-*) into native_ui.json once (flag `tauriImported`), then
+  deletes `%LOCALAPPDATA%\com.vacantsystems.latch`; a dev run skips it unless LATCH_TAURI_IMPORT is set.
+- Not yet: Chop is not wired (WAVdesk's `latch_chop_*` needs its chop code split from the library
+  first); no Mac build.
 - Dev: `cmake -S native -B native/build -A x64 -DFETCHCONTENT_SOURCE_DIR_WAVDESK=<wavdesk checkout>`
   then `cmake --build native/build --config Release` -> `native/build/bin/Release/latch-gui.exe`.
   A dev run (exe in a build tree) uses the repo's `build/Release/latch.exe` via LATCH_EXE and does not

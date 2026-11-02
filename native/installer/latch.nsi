@@ -133,12 +133,9 @@ Section "Install"
   !insertmacro WAIT_UNLOCKED "$INSTDIR\${MAINEXE}" "Latch"
   !insertmacro WAIT_UNLOCKED "$INSTDIR\coredist\latch.exe" "A Latch download (Latch, or WAVdesk using it)"
 
-  ; a clean coredist\ each install, and the Tauri app's WebView2 profile when this installs over it
+  ; a clean coredist\ each install (the Tauri app's WebView2 profile stays: the app reads its settings from it once,
+  ; then removes it: tauri_import.cpp)
   !insertmacro SAFE_RMDIR_R "$INSTDIR\coredist" "\${PRODUCT}\coredist"
-  ReadEnvStr $0 "LOCALAPPDATA"
-  ${If} $0 != ""
-    !insertmacro SAFE_RMDIR_R "$0\com.vacantsystems.latch" "\com.vacantsystems.latch"
-  ${EndIf}
 
   SetOutPath "$INSTDIR"
   File /r "${STAGE}\*.*"
@@ -245,6 +242,9 @@ Section "Uninstall"
 
   ; the user's data only when asked (the shared cookies are logins: last one out and asked)
   ReadEnvStr $1 "LOCALAPPDATA"
+  ${If} $1 != ""
+    !insertmacro SAFE_RMDIR_R "$1\com.vacantsystems.latch" "\com.vacantsystems.latch"   ; (a Tauri webview profile never imported)
+  ${EndIf}
   ${If} $1 != ""
   ${AndIf} $DeleteData == ${BST_CHECKED}
     !insertmacro SAFE_RMDIR_R "$1\Vacant Systems\Latch" "\Vacant Systems\Latch"

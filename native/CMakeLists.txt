@@ -63,7 +63,7 @@ set(LATCH_SHARED_SOURCES
     ${WD}/ui_state.cpp ${WD}/settings_store.cpp ${WD}/core_process.cpp ${WD}/dev_run.cpp
     ${WD}/menus.cpp ${WD}/context_menu.cpp)
 set(LATCH_APP_SOURCES app/main.cpp app/latch_app.cpp app/about_window.cpp app/host_stubs.cpp app/self_register.cpp app/app_log.cpp
-    app/player.cpp app/tool_paths.cpp)
+    app/player.cpp app/tool_paths.cpp app/settings_window.cpp app/tauri_import.cpp)
 
 if(APPLE)
     set(LATCH_EXE_NAME Latch)        # (Latch.app, as the Tauri bundle was named)

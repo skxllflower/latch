@@ -1,6 +1,6 @@
 // The standalone Latch: WAVdesk's native Latch window (latch_window.h, shared, unchanged) as the whole of an app's
 // window instead of a popup over WAVdesk's main one. What it adds is what the Tauri ExtractApp's own frame had:
-//   the title strip as the window's frame (dragged to move it), Minimize beside the X, the look chooser (the skins:
+//   the title strip as the window's frame (dragged to move it), Minimize beside the X, Settings (settings_window.h), the look chooser (the skins:
 //   Dev look, VX, Focused, Zen Dark) and About (about_window.h); the window's own refresh (latch update) stays
 //   the window's toasts (onToast: in WAVdesk they go to its status line), a short line over the status bar
 //   take: a launch's URLs and files (the command line, a second launch's handoff) queued as if typed into the prompt
@@ -18,7 +18,7 @@ class LatchApp : public wdn::LatchWindow {
 public:
     static constexpr int kWidth = 700, kHeight = 440;   // (tauri.conf's main window: its size and its minimum)
     LatchApp();
-    std::function<void()> onAbout;
+    std::function<void()> onAbout, onSettings;
     std::function<void(const std::string& skin)> onSkin;   // (a look picked: the app applies it and keeps it)
     std::string skinName = "dev";
 

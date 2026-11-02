@@ -154,7 +154,7 @@ void LatchApp::draw(const Paint& p) {
     wdn::look::text(p, r.x + 10, wdn::look::baselineIn(p, r.y, r.h, false), toast_, t.ink);
 }
 
-// right to left, left of the X: Minimize, the window's own refresh (latch update), the look, About
+// right to left, left of the X: Minimize, the window's own refresh (latch update), the look, Settings, About
 void LatchApp::titleExtras(std::vector<El>& out, int& right) {
     const Rect all{0, 0, bounds.w, bounds.h};
     const Style& t = skin().style("tool.titlebar");
@@ -183,12 +183,14 @@ void LatchApp::titleExtras(std::vector<El>& out, int& right) {
     std::string lookLabel = skinName;
     for (const auto& c : wdn::skinChoices()) if (c.first == skinName) lookLabel = c.second;
     textButton("app:skin", upper(lookLabel));
+    textButton("app:settings", "SETTINGS");
     textButton("app:about", "ABOUT");
 }
 
 void LatchApp::act(const std::string& id, const vpf::gui::MouseEvent& e) {
     if (id == "app:minimize") { if (editor()) editor()->minimizeWindow(); return; }
     if (id == "app:about") { if (onAbout) onAbout(); return; }
+    if (id == "app:settings") { if (onSettings) onSettings(); return; }
     if (id == "app:skin") {
         std::vector<Opt> opts;
         for (const auto& c : wdn::skinChoices()) opts.push_back({c.first, c.second});
