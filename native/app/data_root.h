@@ -7,6 +7,7 @@ namespace latch {
 std::string dataRoot();          // Latch's data folder, '/' separated (settings.json, native_ui.json)
 void setWritable(bool on);       // false: settings.json is never written (headless runs)
 bool isWritable();
+bool writeFileAtomic(const std::string& path, const std::string& text);   // (temp sibling, renamed over)
 
 // This app's own latch CLI: <exe dir>/coredist/latch (the installed layout on both platforms), then beside the exe;
 // in a dev run (the exe in a CMake build tree) the repo's own build (build/Release, then build/, build/Debug).

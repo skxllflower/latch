@@ -1,6 +1,7 @@
-// The WAVdesk-library calls the shared window files make (WAVdesk's native/shell/library.cpp and commands.cpp define
+// The WAVdesk-library calls the shared window files and the chop library make (WAVdesk's native/shell/library.cpp and commands.cpp define
 // them there), here for Latch: its data root is Latch's own folder, not WAVdesk's index copy. settings.json (the skin,
 // the Tauri app's tool paths and folders) and native_ui.json (the window's settings, under the Tauri localStorage key names) live in it.
+#include "app_data.h"
 #include "library.h"
 #include "commands.h"
 #include "data_root.h"
@@ -39,6 +40,27 @@ std::string readFile(const std::string& path) {
 
 std::atomic<bool> writable{true};
 }  // namespace
+
+// a temp sibling written whole, then renamed over (a reader never sees half of it)
+bool writeFileAtomic(const std::string& path, const std::string& text) {
+    std::error_code ec;
+    fs::create_directories(fs::u8path(path).parent_path(), ec);
+#if defined(_WIN32)
+    const unsigned long pid = GetCurrentProcessId();
+#else
+    const unsigned long pid = (unsigned long)getpid();
+#endif
+    const fs::path file = fs::u8path(path), tmp = fs::u8path(path + ".tmp." + std::to_string(pid));
+    {
+        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+        if (!out) return false;
+        out << text;
+        if (!out) return false;
+    }
+    fs::rename(tmp, file, ec);
+    if (ec) { fs::remove(tmp, ec); return false; }
+    return true;
+}
 
 // %LOCALAPPDATA%\Vacant Systems\Latch (the uninstaller's "delete app data" folder), ~/Library/Application
 // Support/Vacant Systems/Latch on the Mac; LATCH_DATA_ROOT another (a test's scratch folder)
@@ -81,23 +103,13 @@ bool writeSettings(const std::vector<std::pair<std::string, std::string>>& keyJs
         if (v.is_discarded()) return false;
         doc[kv.first] = std::move(v);
     }
-    std::error_code ec;
-    fs::create_directories(fs::u8path(appDataRoot()), ec);
-#if defined(_WIN32)
-    const unsigned long pid = GetCurrentProcessId();
-#else
-    const unsigned long pid = (unsigned long)getpid();
-#endif
-    const fs::path file = fs::u8path(path), tmp = fs::u8path(path + ".tmp." + std::to_string(pid));
-    {
-        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
-        if (!out) return false;
-        out << doc.dump(4);
-        if (!out) return false;
-    }
-    fs::rename(tmp, file, ec);
-    if (ec) { fs::remove(tmp, ec); return false; }
-    return true;
+    return latch::writeFileAtomic(path, doc.dump(4));
+}
+
+// (app_data.h: the chop library's grade store, beside settings.json)
+bool writeDataFile(const std::string& name, const std::string& text) {
+    if (!latch::isWritable()) return false;
+    return latch::writeFileAtomic(appDataRoot() + "/" + name, text);
 }
 
 std::string upperAscii(std::string s) {
@@ -110,5 +122,6 @@ std::string menuLabel(const std::string& label) { return label; }
 
 // (commands.cpp: "Ctrl+Enter" in a hint written as the Mac's chord there; the Mac build still owes that form)
 std::string keyText(const std::string& text) { return text; }
+std::string hostedKeyText(const std::string& text) { return text; }   // (the chop library's hints: as written)
 
 }  // namespace wdn
