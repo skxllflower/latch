@@ -22,6 +22,15 @@ void registerSelf(const std::string& core);
 // installer, a dev run) leaves the first extract to download them (the window shows that progress). Windows only.
 void provisionBundled();
 
+// the yt-dlp / ffmpeg / ffprobe the core runs (paths.cpp resolve_binary): the Settings override (settings.json
+// ytdlpPath / ffmpegPath, the Tauri app's keys; ffprobe beside a custom ffmpeg), its LATCH_* variable, beside the
+// core, the managed home (Shared/bin, Latch/bin). `source`: override / env / portable / managed / missing ("" path)
+std::string toolPath(const std::string& name, std::string* source = nullptr);
+std::string toolOverride(const std::string& name);   // (the Settings field, trimmed: "" = auto)
+// the overrides as the LATCH_* variables every child core inherits (settings.rs apply_tool_env): at launch and after
+// each Settings change
+void applyToolEnv();
+
 // logger.rs: <data root>/logs/latch.log, one "[YYYY-MM-DD HH:MM:SSZ] line" per event, appended (also to stderr);
 // logInit starts a session (the file dropped past 1 MB). Never written in a headless run (setWritable(false))
 std::string logPath();

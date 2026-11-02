@@ -4,9 +4,11 @@
 //   Dev look, VX, Focused, Zen Dark) and About (about_window.h); the window's own refresh (latch update) stays
 //   the window's toasts (onToast: in WAVdesk they go to its status line), a short line over the status bar
 //   take: a launch's URLs and files (the command line, a second launch's handoff) queued as if typed into the prompt
+//   Audition (onAudition): the player (player.h) and its strip over the status bar: stop, the file, a seek track, the time
 //   Escape: nothing (in WAVdesk it closes the tool window; here it would quit the app)
 #pragma once
 #include "latch_window.h"
+#include "player.h"
 #include <functional>
 #include <string>
 
@@ -22,7 +24,11 @@ public:
 
     void toast(const std::string& message);
     void take(const std::vector<std::string>& args);
+    void audition(const std::string& path);   // (the same file again, or "": stop)
+    void stopAudition() { player_.stop(); repaint(); }
     bool onMouseDown(const vpf::gui::MouseEvent& e) override;
+    void onMouseDrag(const vpf::gui::MouseEvent& e) override;
+    void onMouseUp(const vpf::gui::MouseEvent& e) override;
     bool onKey(const vpf::gui::KeyEvent& e) override;
     void tick() override;
     void draw(const vpf::gui::Paint& p) override;
@@ -34,6 +40,12 @@ protected:
 private:
     std::string toast_;
     double toastUntil_ = 0;
+    Player player_;
+    bool seeking_ = false;
+    vpf::gui::Rect stripRect() const;
+    vpf::gui::Rect stopRect() const;
+    vpf::gui::Rect trackRect() const;
+    void seekTo(int x);
 };
 
 }  // namespace latch

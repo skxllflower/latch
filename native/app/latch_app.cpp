@@ -1,7 +1,10 @@
 #include "latch_app.h"
+#include "data_root.h"
 #include "look.h"
 #include "skin.h"
 #include <algorithm>
+#include <cstdio>
+#include <filesystem>
 #include <vpf/app/text_field.h>
 #include <vpf/gui/editor.h>
 
@@ -15,7 +18,58 @@ using wdn::skin;
 LatchApp::LatchApp() { name = "latch-app"; }
 
 // the title strip is the window's frame: a press on it (not on a button) moves the window, as the Tauri drag region did
+namespace {
+std::string clock(double s) {
+    const int t = (int)std::max(0.0, s);
+    char b[24];
+    if (t >= 3600) std::snprintf(b, sizeof b, "%d:%02d:%02d", t / 3600, t / 60 % 60, t % 60);
+    else std::snprintf(b, sizeof b, "%d:%02d", t / 60, t % 60);
+    return b;
+}
+bool inside(const Rect& r, int x, int y) { return x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h; }
+}  // namespace
+
+void LatchApp::audition(const std::string& path) {
+    if (path.empty() || path == player_.path()) { stopAudition(); return; }
+    std::string err;
+    if (!player_.play(path, &err)) toast(err);
+    repaint();
+}
+
+// the strip: 12 px in from the sides, over the status bar
+Rect LatchApp::stripRect() const { return {12, bounds.h - kStatus - 34, bounds.w - 24, 26}; }
+Rect LatchApp::stopRect() const { const Rect s = stripRect(); return {s.x + 3, s.y + 3, 20, 20}; }
+Rect LatchApp::trackRect() const {
+    const Rect s = stripRect();
+    const int timeW = measure("00:00 / 00:00", 9) + 16, nameW = std::min(220, s.w / 3);
+    const int x = s.x + 28 + nameW + 8;
+    return {x, s.y + 8, std::max(20, s.x + s.w - timeW - x), 10};
+}
+
+void LatchApp::seekTo(int x) {
+    const Rect t = trackRect();
+    if (player_.duration() <= 0 || t.w <= 0) return;
+    player_.seek(std::clamp((x - t.x) / (double)t.w, 0.0, 1.0) * player_.duration());
+    repaint();
+}
+
+void LatchApp::onMouseDrag(const vpf::gui::MouseEvent& e) {
+    if (seeking_) { seekTo(e.x); return; }
+    LatchWindow::onMouseDrag(e);
+}
+
+void LatchApp::onMouseUp(const vpf::gui::MouseEvent& e) {
+    if (seeking_) { seeking_ = false; return; }
+    LatchWindow::onMouseUp(e);
+}
+
 bool LatchApp::onMouseDown(const vpf::gui::MouseEvent& e) {
+    if (player_.playing() && inside(stripRect(), e.x, e.y)) {
+        if (inside(stopRect(), e.x, e.y)) { stopAudition(); return true; }
+        const Rect t = trackRect();
+        if (e.x >= t.x - 4 && e.x < t.x + t.w + 4) { seeking_ = true; seekTo(e.x); }
+        return true;
+    }
     if (e.y < kTitle && hit(e.x, e.y).empty() && editor()) { editor()->beginWindowDrag(); return true; }
     return LatchWindow::onMouseDown(e);
 }
@@ -51,18 +105,52 @@ void LatchApp::take(const std::vector<std::string>& args) {
 
 void LatchApp::tick() {
     LatchWindow::tick();
+    if (player_.playing()) {
+        if (player_.poll() && player_.endedEmpty()) toast("This file did not play");
+        repaint();
+    }
     if (!toast_.empty() && vpf::gui::Editor::now() > toastUntil_) { toast_.clear(); repaint(); }
 }
 
 void LatchApp::draw(const Paint& p) {
     LatchWindow::draw(p);
-    if (toast_.empty()) return;
     const Style& t = skin().style("tool.titlebar");
+    const vpf::gui::Color line = skin().style("tool.footer").line;
+    auto box = [&](const Rect& r) {
+        p.canvas.fillRect(p.dev(r), line);
+        p.canvas.fillRect(p.dev({r.x + 1, r.y + 1, r.w - 2, r.h - 2}), t.fill);
+    };
+    if (player_.playing()) {
+        const Rect s = stripRect(), st = stopRect(), tr = trackRect();
+        box(s);
+        p.canvas.fillRect(p.dev({st.x + 6, st.y + 6, 8, 8}), t.ink);
+        const wdn::look::TextScope ts(9);
+        std::string name = std::filesystem::u8path(player_.path()).filename().u8string();
+        const int nameW = tr.x - 8 - (s.x + 28);
+        if (measure(name, 9) > nameW) {
+            while (!name.empty() && measure(name + "...", 9) > nameW) {
+                name.pop_back();
+                while (!name.empty() && ((unsigned char)name.back() & 0xC0) == 0x80) name.pop_back();
+            }
+            name += "...";
+        }
+        const int base = wdn::look::baselineIn(p, s.y, s.h, false);
+        wdn::look::text(p, s.x + 28, base, name, t.ink);
+        p.canvas.fillRect(p.dev({tr.x, tr.y + 4, tr.w, 2}), line);
+        const double d = player_.duration(), at = std::min(player_.position(), d > 0 ? d : 1e9);
+        if (d > 0) {
+            const int fx = tr.x + (int)(tr.w * std::clamp(at / d, 0.0, 1.0));
+            p.canvas.fillRect(p.dev({tr.x, tr.y + 4, fx - tr.x, 2}), t.ink);
+            p.canvas.fillRect(p.dev({fx - 1, tr.y, 3, tr.h}), t.ink);
+        }
+        const std::string time = clock(at) + (d > 0 ? " / " + clock(d) : "");
+        wdn::look::text(p, s.x + s.w - 8 - measure(time, 9), base, time, t.soft);
+    }
+    if (toast_.empty()) return;
     const wdn::look::TextScope ts(9);
     const int w = std::min(bounds.w - 24, measure(toast_, 9) + 20), h = 20;
-    const Rect r{(bounds.w - w) / 2, bounds.h - kStatus - h - 8, w, h};
-    p.canvas.fillRect(p.dev(r), skin().style("tool.footer").line);
-    p.canvas.fillRect(p.dev({r.x + 1, r.y + 1, r.w - 2, r.h - 2}), t.fill);
+    const Rect r{(bounds.w - w) / 2, (player_.playing() ? stripRect().y : bounds.h - kStatus) - h - 8, w, h};
+    box(r);
     wdn::look::text(p, r.x + 10, wdn::look::baselineIn(p, r.y, r.h, false), toast_, t.ink);
 }
 

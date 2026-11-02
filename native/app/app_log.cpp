@@ -50,7 +50,7 @@ void provisionBundled() {
     if (own.empty()) return;
     const fs::path res = fs::u8path(own) / "resources";
     const wchar_t* pd = _wgetenv(L"ProgramData");
-    const fs::path vendor = fs::path(pd && *pd ? pd : L"C:\ProgramData") / L"Vacant Systems";
+    const fs::path vendor = fs::path(pd && *pd ? pd : L"C:\\ProgramData") / L"Vacant Systems";
     auto seed = [](const fs::path& src, const fs::path& dst) {
         std::error_code ec;
         if (fs::exists(dst, ec) || !fs::is_regular_file(src, ec)) return;

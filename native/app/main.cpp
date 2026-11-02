@@ -150,6 +150,7 @@ Editor* createEditor(vpf::gui::EditorHost& host) {
     latch::setWritable(!quiet);
     latch::logInit();
     latch::provisionBundled();
+    latch::applyToolEnv();
     wdn::ui_state::setEnabled(!quiet);   // (the checks start from the defaults and leave nothing behind)
     wdn::ext::setSharedWritable(!quiet);
 
@@ -195,10 +196,7 @@ Editor* createEditor(vpf::gui::EditorHost& host) {
 
     app->onToast = [app](const std::string& t) { latch::log("toast: " + t); app->toast(t); };
     app->onLanded = [](const std::string& out) { latch::log("landed: " + out); };
-    // Audition: no player of its own yet (WAVdesk plays it through its engine): the system's default player
-    app->onAudition = [app](const std::string& path) {
-        if (!latch::AboutWindow::openUrl(std::filesystem::u8path(path).make_preferred().u8string())) app->toast("No app opens this file");
-    };
+    app->onAudition = [app](const std::string& path) { app->audition(path); };
 
     // About: one window, raised when open
     auto about = std::make_shared<latch::AboutWindow*>(nullptr);

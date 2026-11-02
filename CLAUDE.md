@@ -42,7 +42,7 @@ macOS (Developer ID signed + notarized DMG). Day-to-day development happens on t
   A dev run (exe in a build tree) uses the repo's `build/Release/latch.exe` via LATCH_EXE and does not
   self-register; an installed run uses `<exe>/coredist/latch.exe` and registers it in registry.json.
   Headless (`--steps`, `--screenshot`) runs write nothing and never hand off to a running window.
-- Release (Windows): `& .	oolsuild-release-native.ps1` -> `native/build-release/Latch_<ver>_x64-setup.exe`
+- Release (Windows): `& .\tools\build-release-native.ps1` -> `native/build-release/Latch_<ver>_x64-setup.exe`
   (standalone: bundles yt-dlp + ffmpeg) and `native/build-release/embedded/` (no ffmpeg: the copy WAVdesk
   ships), both from `native/installer/latch.nsi` (the Tauri install folder, uninstall key and exe name);
   copied to `gui/src-tauri/target/release/bundle/nsis{,-embedded}/` where WAVdesk's release picks them up.
