@@ -197,6 +197,7 @@ Editor* createEditor(vpf::gui::EditorHost& host) {
     static std::unique_ptr<latch::AudioOut> out;
     out = std::make_unique<latch::AudioOut>(ed->uiQueue());
     app->setAudio(out.get());
+    app->wireHooks(ed->uiQueue());
 
     // the chop window (WAVdesk's app/mw_latch_chop.cpp): one, a second Chop re-seeds it
     if (!quiet) wdn::LatchChopWindow::sweepStale();

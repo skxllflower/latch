@@ -69,7 +69,7 @@ set(LATCH_SHARED_SOURCES
     ${WD}/ui_state.cpp ${WD}/settings_store.cpp ${WD}/core_process.cpp ${WD}/dev_run.cpp
     ${WD}/menus.cpp ${WD}/context_menu.cpp)
 set(LATCH_APP_SOURCES app/main.cpp app/latch_app.cpp app/about_window.cpp app/host_stubs.cpp app/self_register.cpp app/app_log.cpp
-    app/player.cpp app/tool_paths.cpp app/settings_window.cpp app/tauri_import.cpp app/audio_out.cpp)
+    app/player.cpp app/tool_paths.cpp app/settings_window.cpp app/tauri_import.cpp app/audio_out.cpp app/thumbs.cpp)
 
 if(APPLE)
     set(LATCH_EXE_NAME Latch)        # (Latch.app, as the Tauri bundle was named)
@@ -92,7 +92,7 @@ if(WIN32)
     # the UTF-8 active code page: the CRT opens UTF-8 paths as such (the core binary's pair)
     target_sources(latch_gui PRIVATE app/latch_gui.manifest)
     target_compile_definitions(latch_gui PRIVATE UNICODE _UNICODE)
-    target_link_libraries(latch_gui PRIVATE shell32 ole32)
+    target_link_libraries(latch_gui PRIVATE shell32 ole32 urlmon)
 elseif(APPLE)
     target_link_libraries(latch_gui PRIVATE "-framework Foundation" "-framework AppKit")
 endif()

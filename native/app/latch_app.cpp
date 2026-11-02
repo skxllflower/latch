@@ -1,11 +1,13 @@
 #include "latch_app.h"
 #include "data_root.h"
+#include "pipe_run.h"
 #include "chop_engine.h"
 #include "look.h"
 #include "skin.h"
 #include <algorithm>
 #include <cstdio>
 #include <filesystem>
+#include <thread>
 #include <vpf/gui/editor.h>
 
 namespace latch {
@@ -29,7 +31,85 @@ std::string clock(double s) {
 bool inside(const Rect& r, int x, int y) { return x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h; }
 }  // namespace
 
+struct LatchApp::Peaks {
+    std::string path;
+    std::vector<float> lo, hi;   // (kBins columns, -1..1)
+    bool ready = false;
+    std::atomic<bool> stop{false};
+    static constexpr int kBins = 600;
+};
+
+// one ffmpeg pass at 8 kHz mono, min / max per column
+void LatchApp::readPeaks(const std::string& path) {
+    if (peaks_ && peaks_->path == path) return;
+    if (peaks_) peaks_->stop = true;
+    peaks_ = std::make_shared<Peaks>();
+    peaks_->path = path;
+    const std::string ffmpeg = toolPath("ffmpeg");
+    if (ffmpeg.empty() || !ui_) return;
+    std::thread([pk = peaks_, ffmpeg, ui = ui_, this] {
+        std::string raw;
+        runPiped(ffmpeg, {"-nostdin", "-v", "error", "-i", pk->path, "-vn", "-ac", "1", "-ar", "8000", "-f", "f32le", "-"},
+                 [&raw](const char* d, size_t n) { raw.append(d, n); }, pk->stop);
+        if (pk->stop) return;
+        const size_t n = raw.size() / sizeof(float);
+        const float* f = reinterpret_cast<const float*>(raw.data());
+        std::vector<float> lo(Peaks::kBins, 0.f), hi(Peaks::kBins, 0.f);
+        for (size_t i = 0; i < n; ++i) {
+            const size_t b = std::min<size_t>(Peaks::kBins - 1, i * Peaks::kBins / std::max<size_t>(1, n));
+            lo[b] = std::min(lo[b], f[i]);
+            hi[b] = std::max(hi[b], f[i]);
+        }
+        ui->post([pk, lo = std::move(lo), hi = std::move(hi), this]() mutable {
+            if (pk->stop) return;
+            pk->lo = std::move(lo);
+            pk->hi = std::move(hi);
+            pk->ready = true;
+            repaint();
+        });
+    }).detach();
+}
+
+void LatchApp::wireHooks(std::shared_ptr<vpf::gui::UiQueue> ui) {
+    ui_ = ui;
+    thumbs_ = std::make_unique<Thumbs>(ui, [this] { refresh(); });
+    drawThumbnail = [this](const Paint& p, const Rect& slot, const std::string&, const std::string& thumb) {
+        const vpf::gui::Bitmap* bm = thumbs_ ? thumbs_->get(thumb) : nullptr;
+        if (!bm) return false;
+        p.canvas.drawBitmapScaled(*bm, {0, 0, bm->w, bm->h}, p.dev(slot));
+        return true;
+    };
+    auditionFoldHeight = [this](const std::string& output) { return playing() && player_->path() == output ? 30 : 0; };
+    drawAuditionFold = [this](const Paint& p, const Rect& r, const std::string& output) {
+        struct { vpf::gui::Color ink, soft; } t{skin().style("tool.grid").ink, skin().style("tool.label").ink};   // (the list's own text tones)
+        const vpf::gui::Color line = skin().style("tool.footer").line;
+        const Rect box{r.x + 6, r.y + 2, r.w - 12, r.h - 6};
+        p.canvas.fillRect(p.dev(box), line);
+        p.canvas.fillRect(p.dev({box.x + 1, box.y + 1, box.w - 2, box.h - 2}), skin().style("tool.head").fill);
+        const bool mine = playing() && player_->path() == output;
+        const double d = mine ? player_->duration() : 0, frac = d > 0 ? std::clamp(player_->position() / d, 0.0, 1.0) : 0.0;
+        const int inner = box.w - 4, mid = box.y + box.h / 2, half = box.h / 2 - 3;
+        const int playX = box.x + 2 + (int)(inner * frac);
+        if (peaks_ && peaks_->ready && peaks_->path == output) {
+            for (int x = 0; x < inner; ++x) {
+                const size_t b = std::min<size_t>(Peaks::kBins - 1, (size_t)x * Peaks::kBins / std::max(1, inner));
+                const int y0 = mid - (int)std::lround(peaks_->hi[b] * half), y1 = mid - (int)std::lround(peaks_->lo[b] * half);
+                p.canvas.fillRect(p.dev({box.x + 2 + x, y0, 1, std::max(1, y1 - y0)}), box.x + 2 + x < playX ? t.ink : t.soft);
+            }
+        } else {
+            const wdn::look::TextScope ts(8);
+            wdn::look::text(p, box.x + 8, wdn::look::baselineIn(p, box.y, box.h, false), "Reading the waveform...", t.soft);
+        }
+        if (d > 0) p.canvas.fillRect(p.dev({playX, box.y + 1, 1, box.h - 2}), t.ink);
+    };
+    onAuditionSeek = [this](const std::string& output, double fraction) {
+        if (playing() && player_->path() == output && player_->duration() > 0) { player_->seek(fraction * player_->duration()); repaint(); }
+    };
+}
+
 LatchApp::~LatchApp() {
+    if (peaks_) peaks_->stop = true;
+    thumbs_.reset();
     if (auto f = std::move(onTeardown)) f();
     player_.reset();
 }
@@ -39,7 +119,8 @@ void LatchApp::audition(const std::string& path) {
     if (path.empty() || path == player_->path()) { stopAudition(); return; }
     std::string err;
     if (!player_->play(path, &err)) toast(err);
-    repaint();
+    else readPeaks(path);
+    refresh();
 }
 
 // the strip: 12 px in from the sides, over the status bar
@@ -104,6 +185,10 @@ void LatchApp::tick() {
     if (playing()) {
         if (player_->poll() && player_->endedEmpty()) toast("This file did not play");
         repaint();
+    }
+    if (const std::string now = playing() ? player_->path() : std::string(); now != folded_) {   // (stopped, or another file)
+        folded_ = now;
+        refresh();
     }
     if (!toast_.empty() && vpf::gui::Editor::now() > toastUntil_) { toast_.clear(); repaint(); }
 }

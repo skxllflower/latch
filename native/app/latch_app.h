@@ -5,11 +5,13 @@
 //   the window's toasts (onToast: in WAVdesk they go to its status line), a short line over the status bar
 //   take: a launch's URLs and files (the command line, a second launch's handoff) queued as if typed into the prompt
 //   Audition (onAudition): the player (player.h) and its strip over the status bar: stop, the file, a seek track, the time
+//   the cards' thumbnails (thumbs.h) and, under the playing row, its waveform: a click there seeks (wireHooks)
 //   Escape: nothing (in WAVdesk it closes the tool window; here it would quit the app)
 #pragma once
 #include "latch_window.h"
 #include "audio_out.h"
 #include "player.h"
+#include "thumbs.h"
 #include <memory>
 #include <functional>
 #include <string>
@@ -27,8 +29,9 @@ public:
     void toast(const std::string& message);
     void take(const std::vector<std::string>& args);
     void audition(const std::string& path);   // (the same file again, or "": stop)
-    void stopAudition() { if (player_) player_->stop(); repaint(); }
+    void stopAudition() { if (player_) player_->stop(); refresh(); }
     void setAudio(AudioOut* out) { player_.reset(); out_ = out; if (out) player_ = std::make_unique<Player>(*out); }   // (null: gone)
+    void wireHooks(std::shared_ptr<vpf::gui::UiQueue> ui);   // (thumbnails, the fold-out: once the editor is up)
     std::function<void()> onTeardown;   // (the destructor: the chop engine and the output let go, once)
     ~LatchApp() override;
     bool onMouseDown(const vpf::gui::MouseEvent& e) override;
@@ -49,6 +52,12 @@ private:
     std::unique_ptr<Player> player_;
     bool playing() const { return player_ && player_->playing(); }
     bool seeking_ = false;
+    std::unique_ptr<Thumbs> thumbs_;
+    struct Peaks;
+    std::shared_ptr<Peaks> peaks_;
+    std::shared_ptr<vpf::gui::UiQueue> ui_;
+    std::string folded_;   // (the output the fold-out was laid out for: a change relays out)
+    void readPeaks(const std::string& path);
     vpf::gui::Rect stripRect() const;
     vpf::gui::Rect stopRect() const;
     vpf::gui::Rect trackRect() const;

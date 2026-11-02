@@ -1,4 +1,5 @@
 #include "player.h"
+#include "pipe_run.h"
 #include "data_root.h"
 #include "external_tools.h"
 #include <algorithm>
@@ -23,18 +24,6 @@ extern char** environ;
 namespace fs = std::filesystem;
 
 namespace latch {
-
-// what the decoder thread and the device's thread share
-struct PlayerFeed {
-    vpf::AudioRing ring;
-    std::atomic<uint64_t> played{0};   // frames out since the last flush
-    std::atomic<bool> flushAsked{false}, eof{false};
-    float l[2048], r[2048];            // (the pull's planar scratch)
-};
-
-namespace {
-
-std::string seconds(double s) { char b[32]; std::snprintf(b, sizeof b, "%.3f", std::max(0.0, s)); return b; }
 
 // `exe args` with its stdout handed to onData until it exits or *stop (then killed); its stderr dropped. Polled, never
 // a blocking read: another child spawned meanwhile may inherit the pipe's write end, so its EOF can come late; the
@@ -122,6 +111,18 @@ bool runPiped(const std::string& exe, const std::vector<std::string>& args, cons
 #endif
     return true;
 }
+
+// what the decoder thread and the device's thread share
+struct PlayerFeed {
+    vpf::AudioRing ring;
+    std::atomic<uint64_t> played{0};   // frames out since the last flush
+    std::atomic<bool> flushAsked{false}, eof{false};
+    float l[2048], r[2048];            // (the pull's planar scratch)
+};
+
+namespace {
+
+std::string seconds(double s) { char b[32]; std::snprintf(b, sizeof b, "%.3f", std::max(0.0, s)); return b; }
 
 // ffmpeg's f32le stereo at `rate` from `from` seconds, into the ring until the end or *stop
 void decode(const std::string& ffmpeg, const std::string& path, double from, double rate, PlayerFeed& feed, const std::atomic<bool>& stop) {
