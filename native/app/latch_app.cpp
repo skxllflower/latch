@@ -249,6 +249,7 @@ void LatchApp::titleExtras(std::vector<El>& out, int& right) {
             if (hot) p.canvas.fillRect(p.dev({rr.x + 7, rr.y + 7, 14, 14}), skin().style("tool.button", wdn::SkinState::Hover).fill);
             p.canvas.fillRect(p.dev({rr.x + rr.w / 2 - 4, rr.y + rr.h / 2, 9, 1}), hot ? t.ink : t.soft);
         });
+        tip("Minimize");   // (ExtractApp.tsx's title)
     }
     LatchWindow::titleExtras(out, right);
     auto textButton = [&](const std::string& id, const std::string& text) {

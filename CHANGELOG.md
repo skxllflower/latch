@@ -9,6 +9,7 @@ Short hashes are optional and get backfilled; never block a commit on one.
 
 ## 2026-11-02
 
+- **Native Latch: Minimize has its tooltip** (Tauri's "Minimize"), the one title-strip button Latch draws itself.
 - **Native Latch on WAVdesk 813b9a8a**: Tauri's tooltips on the main window, chop and its video preview (about 88 parts), shown after a short rest, including over the picture and the waveform.
 - **Native Latch on WAVdesk 336717f7**: the main and chop windows run their own tooltips (a 0.7 s rest), as the Lathe app does; the windows' tip texts are still to come.
 - **Native Latch parity, chop video (WAVdesk a1b7d262)**: a region row drags out as an audio file, Shift+arrows wrap through regions, and the video preview gains volume / mute, fullscreen (F), frame step, IN / OUT / loop, HDR, palette and histogram, pop-out and zoom / pan, which Tauri's preview had.
