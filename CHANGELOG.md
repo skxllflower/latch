@@ -9,6 +9,7 @@ Short hashes are optional and get backfilled; never block a commit on one.
 
 ## 2026-11-02
 
+- **Native Latch parity round 2 (WAVdesk ae44fc0b)**: chop drag-outs go to the clips folder (Video and Speed honored) and join Outputs, Tauri's resume-from-stop rules, IN / OUT loop with a time readout, the vertical volume fader, opus / webm / mkv lengths, the Drop to chop cover, chapter ticks, and the Close / Close audition tips.
 - **Native Latch: Minimize has its tooltip** (Tauri's "Minimize"), the one title-strip button Latch draws itself.
 - **Native Latch on WAVdesk 813b9a8a**: Tauri's tooltips on the main window, chop and its video preview (about 88 parts), shown after a short rest, including over the picture and the waveform.
 - **Native Latch on WAVdesk 336717f7**: the main and chop windows run their own tooltips (a 0.7 s rest), as the Lathe app does; the windows' tip texts are still to come.
