@@ -8,7 +8,9 @@
 //   Escape: nothing (in WAVdesk it closes the tool window; here it would quit the app)
 #pragma once
 #include "latch_window.h"
+#include "audio_out.h"
 #include "player.h"
+#include <memory>
 #include <functional>
 #include <string>
 
@@ -25,7 +27,10 @@ public:
     void toast(const std::string& message);
     void take(const std::vector<std::string>& args);
     void audition(const std::string& path);   // (the same file again, or "": stop)
-    void stopAudition() { player_.stop(); repaint(); }
+    void stopAudition() { if (player_) player_->stop(); repaint(); }
+    void setAudio(AudioOut* out) { player_.reset(); out_ = out; if (out) player_ = std::make_unique<Player>(*out); }   // (null: gone)
+    std::function<void()> onTeardown;   // (the destructor: the chop engine and the output let go, once)
+    ~LatchApp() override;
     bool onMouseDown(const vpf::gui::MouseEvent& e) override;
     void onMouseDrag(const vpf::gui::MouseEvent& e) override;
     void onMouseUp(const vpf::gui::MouseEvent& e) override;
@@ -40,7 +45,9 @@ protected:
 private:
     std::string toast_;
     double toastUntil_ = 0;
-    Player player_;
+    AudioOut* out_ = nullptr;
+    std::unique_ptr<Player> player_;
+    bool playing() const { return player_ && player_->playing(); }
     bool seeking_ = false;
     vpf::gui::Rect stripRect() const;
     vpf::gui::Rect stopRect() const;

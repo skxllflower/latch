@@ -53,6 +53,12 @@ endforeach()
 FetchContent_MakeAvailable(nlohmann_json)
 set(VPF_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 add_subdirectory(${vacantlabs_SOURCE_DIR}/vpf ${CMAKE_BINARY_DIR}/vpf)
+# Etch (the chop window's waveform, regions and sound: etch_ui) and WAVdesk's chop library over it (wdn_latch_chop,
+# native/chop/README.md in the pinned commit). ETCH_DR_LIBS=PRIVATE as WAVdesk builds it; EXCLUDE_FROM_ALL: only what
+# Latch links is built (not Etch's own plugins and app)
+set(ETCH_DR_LIBS PRIVATE CACHE STRING "" FORCE)
+add_subdirectory(${vacantlabs_SOURCE_DIR}/plugins/etch ${CMAKE_BINARY_DIR}/etch EXCLUDE_FROM_ALL)
+include(${wavdesk_SOURCE_DIR}/native/chop/latch_chop.cmake)
 
 # WAVdesk's shell files the window is made of (each one unchanged; native/shell in the pinned commit)
 set(WD ${wavdesk_SOURCE_DIR}/native/shell)
@@ -63,7 +69,7 @@ set(LATCH_SHARED_SOURCES
     ${WD}/ui_state.cpp ${WD}/settings_store.cpp ${WD}/core_process.cpp ${WD}/dev_run.cpp
     ${WD}/menus.cpp ${WD}/context_menu.cpp)
 set(LATCH_APP_SOURCES app/main.cpp app/latch_app.cpp app/about_window.cpp app/host_stubs.cpp app/self_register.cpp app/app_log.cpp
-    app/player.cpp app/tool_paths.cpp app/settings_window.cpp app/tauri_import.cpp)
+    app/player.cpp app/tool_paths.cpp app/settings_window.cpp app/tauri_import.cpp app/audio_out.cpp)
 
 if(APPLE)
     set(LATCH_EXE_NAME Latch)        # (Latch.app, as the Tauri bundle was named)
@@ -75,7 +81,7 @@ vpf_add_standalone_app(latch_gui NAME ${LATCH_EXE_NAME} BUNDLE_ID com.vacantsyst
     PLIST ${CMAKE_CURRENT_SOURCE_DIR}/app/Info.plist.in
     WIN_RC ${CMAKE_CURRENT_BINARY_DIR}/latch_gui.rc)
 target_include_directories(latch_gui PRIVATE ${WD} ${CMAKE_CURRENT_SOURCE_DIR}/compat)
-target_link_libraries(latch_gui PRIVATE vpf::app nlohmann_json::nlohmann_json)
+target_link_libraries(latch_gui PRIVATE vpf::app nlohmann_json::nlohmann_json wdn_latch_chop)
 target_compile_definitions(latch_gui PRIVATE LATCH_VERSION="${LATCH_VERSION}")
 # the VX skin's packs, embedded as WAVdesk embeds them (skin_vx.cpp reads kWavdeskVx)
 file(GLOB LATCH_VX_FILES CONFIGURE_DEPENDS ${wavdesk_SOURCE_DIR}/native/assets/vx/*.json ${wavdesk_SOURCE_DIR}/native/assets/vx/*.pack)

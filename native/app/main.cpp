@@ -8,6 +8,9 @@
 // window (which comes to the front and queues them) and exits before anything opens. The latch CLI does every
 // download (latch_window.h: `latch extract`, two at once); this process never downloads anything itself.
 #include "about_window.h"
+#include "audio_out.h"
+#include "chop_engine.h"
+#include "latch_chop_window.h"
 #include "settings_window.h"
 #include "data_root.h"
 #include "dev_run.h"
@@ -189,13 +192,76 @@ Editor* createEditor(vpf::gui::EditorHost& host) {
     ed->onResize = [app](int w, int h) { app->bounds = {0, 0, w, h}; app->onBoundsChanged(); };
     ed->setFocus(app);
 
+    // the one output (audio_out.h): Audition's stream and the chop window's engine take turns on it. It outlives every
+    // window: the chop engine is shut down on it first (quit below)
+    static std::unique_ptr<latch::AudioOut> out;
+    out = std::make_unique<latch::AudioOut>(ed->uiQueue());
+    app->setAudio(out.get());
+
+    // the chop window (WAVdesk's app/mw_latch_chop.cpp): one, a second Chop re-seeds it
+    if (!quiet) wdn::LatchChopWindow::sweepStale();
+    auto chopWin = std::make_shared<wdn::LatchChopWindow*>(nullptr);
+    auto chopOpen = [ed, chopWin] { return *chopWin && ed->isOverlay(*chopWin); };
+    auto openChop = [ed, app, chopWin, chopOpen, quiet](const wdn::LatchChopSeed& seed) {
+        if (chopOpen()) { ed->raisePopup(*chopWin); (*chopWin)->seed(seed); return; }
+        app->stopAudition();   // (the window's sound is the chop engine's)
+        auto w = std::make_unique<wdn::LatchChopWindow>(*out);
+        wdn::LatchChopWindow* cw = w.get();
+        *chopWin = cw;
+        cw->synchronous = quiet;
+        cw->onClosed = [ed, chopWin, chopOpen] { if (chopOpen()) ed->closePopup(*chopWin); *chopWin = nullptr; };
+        cw->onLanded = [](const std::vector<std::string>& outs) { for (const std::string& o : outs) latch::log("chop landed: " + o); };
+        cw->onToast = [app](const std::string& t) { latch::log("toast: " + t); app->toast(t); };
+        const int W = wdn::LatchChopWindow::kWidth, H = wdn::LatchChopWindow::kHeight;
+        cw->bounds = {(app->bounds.w - W) / 2, (app->bounds.h - H) / 2, W, H};
+        cw->onBoundsChanged();
+        vpf::gui::PopupOptions o;
+        o.window = true;
+        o.detached = true;
+        o.activates = true;
+        o.corners = vpf::gui::CornerStyle::Round;
+        o.resizeEdge = wdn::look::kWindowEdge;
+        o.minW = wdn::LatchChopWindow::kMinWidth;
+        o.minH = wdn::LatchChopWindow::kMinHeight;
+        wdn::openWindow(*ed, std::move(w), o);
+        ed->setFocus(cw);
+        cw->seed(seed);
+    };
+    app->onChop = openChop;
+    // (a headless run: LATCH_CHOP=<local file> opens it once the window is up, the screenshots' fixture)
+    if (const char* f = std::getenv("LATCH_CHOP"); f && *f && quiet) {
+        wdn::LatchChopSeed s;
+        s.localFile = f;
+        s.includeVideo = wdn::ext::isVideoPath(f);
+        s.title = std::filesystem::u8path(f).filename().u8string();
+        ed->uiQueue()->post([openChop, s] { openChop(s); });
+    }
+    // quitting: the chop session let go, then the engine, then the output. On a close the window is still up (it is
+    // closed first); in any other teardown (a headless run's end) the editor took the windows before the root, and
+    // LatchApp's destructor runs the rest
+    auto teardown = std::make_shared<bool>(false);
+    auto finish = [app, teardown] {
+        if (*teardown) return;
+        *teardown = true;
+        app->stopAudition();
+        wdn::ChopEngine::shutdown();
+        app->setAudio(nullptr);
+        out.reset();
+    };
+    app->onTeardown = finish;
+    auto quit = [chopWin, chopOpen, finish] {
+        if (chopOpen()) { (*chopWin)->onClosed = nullptr; (*chopWin)->onEngineGiven = nullptr; (*chopWin)->closeNow(); }
+        *chopWin = nullptr;
+        finish();
+    };
+
     // the close (the X, Alt+F4, Cmd+Q): asked first while downloading or updating, as WAVdesk's Latch window asks
-    ed->onCloseRequest = [ed, app] {
-        if (!app->busy()) return true;
-        wdn::askConfirm(*ed, "Stop downloading?", "Closing Latch stops the downloads in progress.", "Stop and Close", [ed] { ed->closeStandaloneWindow(); });
+    ed->onCloseRequest = [ed, app, quit] {
+        if (!app->busy()) { quit(); return true; }
+        wdn::askConfirm(*ed, "Stop downloading?", "Closing Latch stops the downloads in progress.", "Stop and Close", [ed, quit] { quit(); ed->closeStandaloneWindow(); });
         return false;
     };
-    app->onClose = [ed] { if (ed->closeRequested()) ed->closeStandaloneWindow(); };
+    app->onClose = [ed, quit] { if (ed->closeRequested()) { quit(); ed->closeStandaloneWindow(); } };
 
     app->onToast = [app](const std::string& t) { latch::log("toast: " + t); app->toast(t); };
     app->onLanded = [](const std::string& out) { latch::log("landed: " + out); };

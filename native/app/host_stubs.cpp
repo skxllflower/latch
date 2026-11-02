@@ -12,6 +12,7 @@
 #include <fstream>
 #include <mutex>
 #include <nlohmann/json.hpp>
+#include <vpf/preset.h>
 #include <sstream>
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
@@ -63,10 +64,11 @@ bool writeFileAtomic(const std::string& path, const std::string& text) {
 }
 
 // %LOCALAPPDATA%\Vacant Systems\Latch (the uninstaller's "delete app data" folder), ~/Library/Application
-// Support/Vacant Systems/Latch on the Mac; LATCH_DATA_ROOT another (a test's scratch folder)
+// Support/Vacant Systems/Latch on the Mac; LATCH_DATA_ROOT another (a test's scratch folder), as is the runner's --data-dir
 std::string dataRoot() {
     static const std::string root = [] {
         if (const char* d = std::getenv("LATCH_DATA_ROOT"); d && *d) return slashes(d);
+        if (const std::string d = vpf::dataFolderOverride(); !d.empty()) return slashes(d) + "/Vacant Systems/Latch";   // (a headless --data-dir)
 #if defined(_WIN32)
         const wchar_t* la = _wgetenv(L"LOCALAPPDATA");
         const fs::path base = la && *la ? fs::path(la) : fs::path(L"C:\\Users\\Default\\AppData\\Local");

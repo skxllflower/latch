@@ -35,15 +35,21 @@ macOS (Developer ID signed + notarized DMG). Day-to-day development happens on t
   WAVdesk-library calls those files make: data root = Latch's folder). Same shape as native Lathe.
   vpf and WAVdesk are FetchContent-pinned to commits (`native/CMakeLists.txt`): a fix to the window
   lands in WAVdesk first, then this pin moves. The pin must be a pushed commit (release fetches it).
-- Audition (`app/player.*`): the Shared ffmpeg decodes to f32 on a pipe (polled, never a blocking read:
-  a sibling child can inherit the write end) into an AudioRing drained by vpf's StandaloneAudio, whose
-  device is open only while something plays. Not WAVdesk's engine (that needs wavdesk_core).
+- Sound: `app/audio_out.*` is the one output (vpf's StandaloneAudio, default device, closed after 10 s
+  with no stream) and implements WAVdesk's `wdn::ChopSound`: one pulled stream at a time, tape speed by a
+  linear resampler. Audition (`app/player.*`) is one stream: the Shared ffmpeg decodes to f32 on a pipe
+  (polled, never a blocking read: a sibling child can inherit the write end) into an AudioRing.
+- Chop: WAVdesk's `wdn_latch_chop` library (`native/chop/latch_chop.cmake` in the pin, over Etch from
+  vacant-labs) linked as is, `chopHooks()` unset (Etch's chop alone: no stems / palette / Apply). main.cpp
+  opens one `LatchChopWindow(AudioOut)` per `onChop` (as WAVdesk's `app/mw_latch_chop.cpp`); quitting
+  closes it, then `ChopEngine::shutdown()`, then the output (LatchApp's destructor in any other teardown).
+  Headless: `LATCH_CHOP=<file>` opens it, `WDN_SAVE_DIR` answers Export's folder; always pass `--data-dir`
+  (the chop sidecars go under the data root, which follows it).
 - Settings (`app/settings_window.*`): settings.json under the Tauri keys (ytdlpPath, ffmpegPath, lathePath,
   downloadDir, clipsDir); `tool_paths.cpp` turns the overrides into LATCH_* for the children. `tauri_import.cpp`
   reads the Tauri webview's localStorage (wd-latch-*) into native_ui.json once (flag `tauriImported`), then
   deletes `%LOCALAPPDATA%\com.vacantsystems.latch`; a dev run skips it unless LATCH_TAURI_IMPORT is set.
-- Not yet: Chop is not wired (WAVdesk's `latch_chop_*` needs its chop code split from the library
-  first); no Mac build.
+- Not yet: no Mac build.
 - Dev: `cmake -S native -B native/build -A x64 -DFETCHCONTENT_SOURCE_DIR_WAVDESK=<wavdesk checkout>`
   then `cmake --build native/build --config Release` -> `native/build/bin/Release/latch-gui.exe`.
   A dev run (exe in a build tree) uses the repo's `build/Release/latch.exe` via LATCH_EXE and does not

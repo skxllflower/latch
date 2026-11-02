@@ -1,23 +1,23 @@
-// Audition: one file played through vpf's standalone audio (the system's default output), decoded by the suite's
-// ffmpeg as a child (the decoder that handles YouTube bestaudio, opus and m4a: CLAUDE.md's audio iron rule), born in
-// a kill-on-close job like every other child. The ffmpeg pipe feeds an AudioRing the device's thread drains; a seek
-// restarts the decoder at that time. The device is open only while something plays (stop closes it), so Latch never
-// holds an output it does not use.
+// Audition: one file played as a stream on Latch's output (audio_out.h), decoded by the suite's ffmpeg as a child (the
+// decoder that handles YouTube bestaudio, opus and m4a: CLAUDE.md's audio iron rule), born in a kill-on-close job like
+// every other child. The ffmpeg pipe feeds an AudioRing the stream's pull drains; a seek restarts the decoder at that
+// time. Another stream taking the output (the chop window) stops it.
 #pragma once
 #include <atomic>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <thread>
 
-namespace vpf::audio { class StandaloneAudio; class ProcessorDriver; }
 
 namespace latch {
 
 struct PlayerFeed;
+class AudioOut;
 
 class Player {
 public:
-    Player();
+    explicit Player(AudioOut& out);
     ~Player();
     Player(const Player&) = delete;
     Player& operator=(const Player&) = delete;
@@ -39,9 +39,10 @@ private:
     std::string path_;
     double from_ = 0, rate_ = 0;
     bool endedEmpty_ = false;
-    std::shared_ptr<PlayerFeed> feed_;
-    std::unique_ptr<vpf::audio::ProcessorDriver> driver_;
-    std::unique_ptr<vpf::audio::StandaloneAudio> audio_;
+    AudioOut& out_;
+    uint64_t token_ = 0;
+    std::unique_ptr<PlayerFeed> feed_;
+    static void pull(float* out, uint32_t frames, uint32_t channels, void* user);
     std::thread decoder_, prober_;
     std::atomic<bool> stopDecoder_{false}, stopProbe_{false};
     std::atomic<double> duration_{0};

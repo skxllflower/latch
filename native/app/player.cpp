@@ -7,7 +7,7 @@
 #include <filesystem>
 #include <functional>
 #include <vector>
-#include <vpf/audio/standalone_audio.h>
+#include "audio_out.h"
 #include <vpf/audio_ring.h>
 #if defined(_WIN32)
 #include "win_spawn.h"
@@ -25,48 +25,14 @@ namespace fs = std::filesystem;
 namespace latch {
 
 // what the decoder thread and the device's thread share
-struct PlayerFeed : vpf::PluginShared {
+struct PlayerFeed {
     vpf::AudioRing ring;
     std::atomic<uint64_t> played{0};   // frames out since the last flush
     std::atomic<bool> flushAsked{false}, eof{false};
+    float l[2048], r[2048];            // (the pull's planar scratch)
 };
 
 namespace {
-
-class FeedProcessor : public vpf::Processor {
-public:
-    void setShared(std::shared_ptr<vpf::PluginShared> s) override { feed_ = std::static_pointer_cast<PlayerFeed>(s); }
-    void prepare(double, int) override {}
-    void reset() override {}
-    void setParameter(uint32_t, double) override {}
-    void process(const float* const*, float* const* out, int nch, int frames) override {
-        size_t n = 0;
-        if (feed_) {
-            if (feed_->flushAsked.load(std::memory_order_acquire)) {
-                feed_->ring.discard();
-                feed_->played.store(0, std::memory_order_relaxed);
-                feed_->flushAsked.store(false, std::memory_order_release);
-            } else {
-                n = feed_->ring.read(out, nch, (size_t)frames);
-                feed_->played.fetch_add(n, std::memory_order_relaxed);
-            }
-        }
-        for (int c = 0; c < nch; ++c) std::fill(out[c] + n, out[c] + frames, 0.f);
-    }
-private:
-    std::shared_ptr<PlayerFeed> feed_;
-};
-
-const vpf::PluginDef& feedDef() {
-    static vpf::PluginDef d = [] {
-        vpf::PluginDef p;
-        p.info.id = "com.vacantsystems.latch.audition";
-        p.info.name = "Latch";
-        p.createProcessor = [] { return std::unique_ptr<vpf::Processor>(new FeedProcessor()); };
-        return p;
-    }();
-    return d;
-}
 
 std::string seconds(double s) { char b[32]; std::snprintf(b, sizeof b, "%.3f", std::max(0.0, s)); return b; }
 
@@ -187,7 +153,30 @@ void decode(const std::string& ffmpeg, const std::string& path, double from, dou
 
 }  // namespace
 
-Player::Player() = default;
+// the device's thread: the ring into the stream's interleaved block (a flush asked: emptied first)
+void Player::pull(float* out, uint32_t frames, uint32_t channels, void* user) {
+    PlayerFeed& f = *static_cast<PlayerFeed*>(user);
+    if (f.flushAsked.load(std::memory_order_acquire)) {
+        f.ring.discard();
+        f.played.store(0, std::memory_order_relaxed);
+        f.flushAsked.store(false, std::memory_order_release);
+    }
+    for (uint32_t done = 0; done < frames;) {
+        const uint32_t n = std::min<uint32_t>(frames - done, 2048);
+        float* planes[2] = {f.l, f.r};
+        const size_t got = f.ring.read(planes, 2, n);
+        f.played.fetch_add(got, std::memory_order_relaxed);
+        for (uint32_t i = 0; i < n; ++i) {
+            float* o = out + (size_t)(done + i) * channels;
+            const float L = i < got ? f.l[i] : 0.f, R = i < got ? f.r[i] : 0.f;
+            if (channels == 1) o[0] = 0.5f * (L + R);
+            else { o[0] = L; o[1] = R; for (uint32_t c = 2; c < channels; ++c) o[c] = 0.f; }
+        }
+        done += n;
+    }
+}
+
+Player::Player(AudioOut& out) : out_(out) {}
 Player::~Player() {
     stop();
     stopProbe_ = true;
@@ -199,19 +188,15 @@ bool Player::play(const std::string& path, std::string* err) {
     endedEmpty_ = false;
     const std::string ffmpeg = toolPath("ffmpeg");
     if (ffmpeg.empty()) { if (err) *err = "No ffmpeg yet: extract something first"; return false; }
-    feed_ = std::make_shared<PlayerFeed>();
-    feed_->ring.allocate(2, 1 << 18);   // (before the device runs: its thread reads it; ~5 s at 48 k)
-    driver_ = std::make_unique<vpf::audio::ProcessorDriver>(feedDef(), feed_);
-    audio_ = std::make_unique<vpf::audio::StandaloneAudio>(vpf::audio::systemBackends(), "", driver_.get());
-    audio_->appName = "Latch";
-    if (!audio_->start() || audio_->sampleRate() <= 0) {
-        if (err) *err = audio_->status().empty() ? "No audio output" : audio_->status();
-        audio_.reset();
-        driver_.reset();
-        feed_.reset();
+    if (!out_.openEngine() || out_.engineRate() == 0) {
+        if (err) *err = out_.status().empty() ? "No audio output" : out_.status();
         return false;
     }
-    rate_ = audio_->sampleRate();
+    rate_ = out_.engineRate();
+    feed_ = std::make_unique<PlayerFeed>();
+    feed_->ring.allocate(2, 1 << 18);   // (~5 s at 48 k)
+    token_ = out_.streamBeginPull((int)rate_, 2, &Player::pull, feed_.get());
+    if (!token_) { feed_.reset(); if (err) *err = "No audio output"; return false; }
     path_ = path;
     startDecoder(0);
 
@@ -235,7 +220,7 @@ void Player::startDecoder(double from) {
     from_ = from;
     feed_->eof = false;
     stopDecoder_ = false;
-    decoder_ = std::thread([ffmpeg = toolPath("ffmpeg"), path = path_, from, rate = rate_, feed = feed_, this] {
+    decoder_ = std::thread([ffmpeg = toolPath("ffmpeg"), path = path_, from, rate = rate_, feed = feed_.get(), this] {
         decode(ffmpeg, path, from, rate, *feed, stopDecoder_);
     });
 }
@@ -245,10 +230,10 @@ void Player::stopDecoderNow() {
     if (decoder_.joinable()) decoder_.join();
 }
 
-// the ring emptied by the device's thread (it is the reader); without one running, here
+// the ring emptied by the device's thread (it is the reader); with the stream gone, here
 void Player::flush() {
     if (!feed_) return;
-    if (audio_ && audio_->running()) {
+    if (out_.streamLive(token_)) {
         feed_->flushAsked.store(true, std::memory_order_release);
         for (int i = 0; i < 100 && feed_->flushAsked.load(std::memory_order_acquire); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(2));
         if (!feed_->flushAsked.exchange(false)) return;
@@ -259,9 +244,8 @@ void Player::flush() {
 
 void Player::stop() {
     stopDecoderNow();
-    if (audio_) audio_->stop();
-    audio_.reset();
-    driver_.reset();
+    out_.streamEnd(token_);
+    token_ = 0;
     feed_.reset();
     path_.clear();
     from_ = 0;
@@ -281,16 +265,21 @@ double Player::position() const {
 }
 
 bool Player::poll() {
-    if (!audio_) return false;
-    audio_->poll();
-    // another rate (the device changed under it): the decoder again at the new one, from here
-    if (audio_->running() && audio_->sampleRate() > 0 && audio_->sampleRate() != rate_) {
-        const double at = position();
-        stopDecoderNow();
-        flush();
-        rate_ = audio_->sampleRate();
-        startDecoder(at);
-        return false;
+    if (!playing()) return false;
+    // the stream gone: another sound took the device (the chop window), or its rate changed (then on at the new one)
+    if (!out_.streamLive(token_)) {
+        const uint32_t r = out_.engineRate();
+        if (r && r != (uint32_t)rate_ && !out_.busy()) {
+            const double at = position();
+            stopDecoderNow();
+            feed_->ring.discard();
+            feed_->played = 0;
+            rate_ = r;
+            token_ = out_.streamBeginPull((int)rate_, 2, &Player::pull, feed_.get());
+            if (token_) { startDecoder(at); return false; }
+        }
+        stop();
+        return true;
     }
     if (feed_->eof && feed_->ring.available() == 0) {
         endedEmpty_ = from_ == 0 && feed_->played == 0;
