@@ -1,4 +1,4 @@
-// The Tauri app's window settings, once: its webview kept them in localStorage under the same wd-latch-* names the
+// The Tauri app's window settings, once: its webview kept them in localStorage under the same wd-latch-* (and latch-chop-*) names the
 // native window reads from native_ui.json (the save folder, format, mode, thumbnails, cookies browser ...). WebView2
 // keeps localStorage in a LevelDB: <LOCALAPPDATA>\com.vacantsystems.latch\EBWebView\Default\Local Storage\leveldb.
 // Its write-ahead logs (*.log) hold every write as a record (the table files a compaction makes are not read: that
@@ -65,7 +65,7 @@ bool varint(const std::string& b, size_t& at, uint32_t& out) {
     return false;
 }
 
-// one LevelDB log's write batches, in order, into `kv` (wd-latch-* of the tauri.localhost origins only)
+// one LevelDB log's write batches, in order, into `kv` (wd-latch-* and latch-chop-* of the tauri.localhost origins only)
 void readLog(const fs::path& p, std::map<std::string, std::optional<std::string>>& kv) {
     std::ifstream in(p, std::ios::binary);
     if (!in) return;
@@ -94,7 +94,7 @@ void readLog(const fs::path& p, std::map<std::string, std::optional<std::string>
             const std::string origin = key.substr(0, nul);
             if (origin != "_http://tauri.localhost" && origin != "_https://tauri.localhost") continue;
             const std::optional<std::string> name = decodeText(key.substr(nul + 1));
-            if (!name || name->rfind("wd-latch-", 0) != 0) continue;
+            if (!name || (name->rfind("wd-latch-", 0) != 0 && name->rfind("latch-chop-", 0) != 0)) continue;   // (the chop window's too)
             kv[*name] = val ? decodeText(*val) : std::nullopt;
         }
     };

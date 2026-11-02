@@ -214,6 +214,12 @@ Editor* createEditor(vpf::gui::EditorHost& host) {
         cw->onLanded = [app](const std::vector<std::string>& outs) {   // (Tauri's wd-latch-clip-exported: the clips join Outputs)
             for (const std::string& o : outs) { latch::log("chop landed: " + o); app->addOutput(o); }
         };
+        cw->clipsFolder = [](const std::string& source) {   // (settings.json clipsDir: a link's clips, as Tauri's chop.rs; a local file's beside it)
+            if (!source.empty()) return std::string();
+            std::string d = wdn::settings::text("clipsDir", "");
+            const size_t a = d.find_first_not_of(" \t\r\n"), b = d.find_last_not_of(" \t\r\n");
+            return a == std::string::npos ? std::string() : d.substr(a, b - a + 1);
+        };
         cw->onToast = [app](const std::string& t) { latch::log("toast: " + t); app->toast(t); };
         const int W = wdn::LatchChopWindow::kWidth, H = wdn::LatchChopWindow::kHeight;
         cw->bounds = {(app->bounds.w - W) / 2, (app->bounds.h - H) / 2, W, H};
