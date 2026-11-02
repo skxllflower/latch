@@ -186,6 +186,7 @@ Editor* createEditor(vpf::gui::EditorHost& host) {
     applySkin(skinName);
 
     auto* app = ed->root().make<latch::LatchApp>();
+    app->ownTips = true;   // (no main window to show the parts' tips: ExtWindow rests the pointer itself)
     app->skinName = skinName;
     app->bounds = {0, 0, latch::LatchApp::kWidth, latch::LatchApp::kHeight};
     app->onBoundsChanged();
@@ -210,6 +211,7 @@ Editor* createEditor(vpf::gui::EditorHost& host) {
         wdn::LatchChopWindow* cw = w.get();
         *chopWin = cw;
         cw->synchronous = quiet;
+        cw->ownTips = true;
         cw->onClosed = [ed, chopWin, chopOpen] { if (chopOpen()) ed->closePopup(*chopWin); *chopWin = nullptr; };
         cw->onLanded = [app](const std::vector<std::string>& outs) {   // (Tauri's wd-latch-clip-exported: the clips join Outputs)
             for (const std::string& o : outs) { latch::log("chop landed: " + o); app->addOutput(o); }
