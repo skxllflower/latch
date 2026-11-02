@@ -34,7 +34,7 @@ FetchContent_Declare(vacantlabs
 )
 FetchContent_Declare(wavdesk
     GIT_REPOSITORY https://github.com/skxllflower/wavdesk.git
-    GIT_TAG        b493153cbe3c2d9c023b81e138fa43892da9c036   # claude/native-latch-hooks-d65df5 (off feat/native-shell 65cd0a8c: enqueue, thumbnail / fold-out hooks, the chop library)
+    GIT_TAG        4e84795f7d6dd00723e68a4bea5740afec89a333   # claude/native-latch-hooks-d65df5 (off feat/native-shell 65cd0a8c: enqueue, thumbnail / fold-out hooks, the chop library, the row icons' gap)
     GIT_SUBMODULES ""
 )
 set(JSON_BuildTests OFF CACHE INTERNAL "")
