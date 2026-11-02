@@ -9,6 +9,7 @@ Short hashes are optional and get backfilled; never block a commit on one.
 
 ## 2026-11-01
 
+- **Native Latch on WAVdesk c381b77**: a child process inherits only its own std handles, so a tool's answer no longer waits seconds for an unrelated child started at the same moment (ffprobe beside an ffmpeg decode took ~4 s).
 - **Native Latch: Mac thumbnails, start-delay logging**: the Mac build fetches card thumbnails with the system's curl (Windows keeps URLMon). The log now names the audio driver and block size and how long Audition took to sound (about 90 ms here); the ~1 s chop delay seen earlier came from the headless test runner, not the app.
 - **Native Latch on WAVdesk 4e84795**: a 4 px gap between a row's icon buttons (Play, Chop, Reveal, X), which touched in the VX, Focused and Zen Dark looks.
 - **Native Latch card thumbnails and the audition waveform** (`native/app/thumbs.*`, `latch_app.cpp`): a link's card shows its image (downloaded once, cropped square by the suite's ffmpeg, which reads YouTube's WebP as well as JPEG / PNG, cached under the data folder); the row that is playing folds out its waveform with the played part and the playhead, and a click there seeks.
