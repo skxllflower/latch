@@ -4,6 +4,7 @@
 #   & .\tools\build-release-native.ps1              # full release build: both installers
 #   & .\tools\build-release-native.ps1 -SkipCpp     # reuse the core + GUI builds
 #   & .\tools\build-release-native.ps1 -SkipYtdlp   # ship without a bundled yt-dlp (the first extract downloads it)
+#   & .\tools\build-release-native.ps1 -Publish     # also copy them where WAVdesk's release takes Latch's from
 #
 # Two installers, as the Tauri build made (build-release.ps1 and its -Embedded):
 #   standalone  native\build-release\Latch_<ver>_x64-setup.exe           bundles yt-dlp AND ffmpeg + ffprobe: Latch
@@ -16,8 +17,9 @@
 #   2. the GUI (native/, its own build tree on the pinned vpf and WAVdesk commits) -> stage\latch-gui.exe
 #   3. yt-dlp into stage\resources\ytdlp, ffmpeg + ffprobe into ffmpeg\ (the Tauri build's vendored copies when present)
 #   4. makensis native/installer/latch.nsi, twice (with /DFFMPEG, then without)
-#   5. copies into gui\src-tauri\target\release\bundle\nsis\ (standalone) and nsis-embedded\ (embedded), where
-#      WAVdesk's build-release-native.ps1 picks up Latch's installer for its companion offer (the embedded one)
+#   5. with -Publish only: copies into gui\src-tauri\target\release\bundle\nsis\ (standalone) and nsis-embedded\
+#      (embedded), where WAVdesk's release takes the newest Latch installer for its companion offer (the embedded
+#      one). Without it the Tauri installers there stay what WAVdesk ships: an untested native build never rides along
 #
 # The GUI builds in native\build-release with no FETCHCONTENT_SOURCE_DIR_* overrides: a release is the pinned commits
 # (native/CMakeLists.txt GIT_TAG), never a local checkout's working tree. Quit Latch first.
@@ -27,7 +29,8 @@ param(
     [string]$Makensis      = '',
     [switch]$Clean,
     [switch]$SkipCpp,
-    [switch]$SkipYtdlp
+    [switch]$SkipYtdlp,
+    [switch]$Publish
 )
 
 $ErrorActionPreference = 'Stop'
@@ -134,13 +137,14 @@ Invoke-Native { & $Makensis /V2 "/DVERSION=$version" "/DSTAGE=$stage" "/DOUTFILE
 
 # ---- 5: where WAVdesk's release looks for them ----
 Step 5 "copy for WAVdesk's companion offer"
-foreach ($pair in @(@($setup, 'nsis'), @($embedded, 'nsis-embedded'))) {
+if (-not $Publish) { Write-Host "  skipped (no -Publish): the Tauri bundle folders keep what WAVdesk ships" -ForegroundColor Yellow }
+else { foreach ($pair in @(@($setup, 'nsis'), @($embedded, 'nsis-embedded'))) {
     $dir = Join-Path $repo "gui\src-tauri\target\release\bundle\$($pair[1])"
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
     Copy-Item $pair[0] $dir -Force
     (Get-Item (Join-Path $dir (Split-Path -Leaf $pair[0]))).LastWriteTime = Get-Date   # (WAVdesk takes the newest)
     Write-Host "  -> $dir"
-}
+} }
 
 Write-Host "`nInstallers ready:" -ForegroundColor Green
 Write-Host "  standalone  $setup ($([math]::Round((Get-Item $setup).Length / 1MB, 1)) MB)"

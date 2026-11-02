@@ -52,7 +52,8 @@ macOS (Developer ID signed + notarized DMG). Day-to-day development happens on t
 - Release (Windows): `& .\tools\build-release-native.ps1` -> `native/build-release/Latch_<ver>_x64-setup.exe`
   (standalone: bundles yt-dlp + ffmpeg) and `native/build-release/embedded/` (no ffmpeg: the copy WAVdesk
   ships), both from `native/installer/latch.nsi` (the Tauri install folder, uninstall key and exe name);
-  copied to `gui/src-tauri/target/release/bundle/nsis{,-embedded}/` where WAVdesk's release picks them up.
+  with `-Publish` also copied to `gui/src-tauri/target/release/bundle/nsis{,-embedded}/`, where WAVdesk's
+  release takes the newest (without it the Tauri installers there stay what WAVdesk ships).
 - Data: `%LOCALAPPDATA%\Vacant Systems\Latch` (settings.json: the Tauri keys + `skin`; native_ui.json:
   the window's settings under the Tauri localStorage key names; logs/latch.log).
 
