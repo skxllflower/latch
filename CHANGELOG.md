@@ -9,6 +9,7 @@ Short hashes are optional and get backfilled; never block a commit on one.
 
 ## 2026-11-02
 
+- **Native Latch parity, chop video (WAVdesk a1b7d262)**: a region row drags out as an audio file, Shift+arrows wrap through regions, and the video preview gains volume / mute, fullscreen (F), frame step, IN / OUT / loop, HDR, palette and histogram, pop-out and zoom / pan, which Tauri's preview had.
 - **Native Latch parity, chop (WAVdesk 5d6efa39)**: Settings' clip folder now takes a link's chop exports (it was shown but ignored), a local file's go to `<its folder>/Latch Chops` as in Tauri, plus a resume-from-stop toggle and a channel split button; the Tauri import also carries the chop window's own settings.
 - **Native Latch parity, main window (WAVdesk dbd5bf9a)**: drop files from Explorer (one media file opens Chop, several queue), Backspace on an empty prompt removes the last row, local rows show their length, and Chop's exports join Outputs as they did in Tauri.
 
