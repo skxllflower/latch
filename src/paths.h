@@ -36,6 +36,10 @@ std::string latch_temp_dir();
 // real command reaches). Best-effort and silent.
 void sweep_stale_temp();
 
+// The PyInstaller unpack folders (%TEMP%\_MEI<digits>, ~40 MB each) a killed yt-dlp.exe leaves behind: only
+// yt-dlp's (its yt_dlp_ejs inside), only ones no running yt-dlp holds, nothing else in %TEMP%. Windows; silent.
+void sweep_stale_ytdlp_unpacks();
+
 // The ffmpeg binary to use. Resolution order:
 //   1. LATCH_FFMPEG env var (explicit override)
 //   2. ffmpeg.exe next to latch.exe (portable override)

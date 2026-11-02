@@ -160,6 +160,7 @@ int run_probe(const std::vector<std::string>& args) {
   std::vector<std::string> argv = {
     ytdlp_utf8,
     "--ignore-config",
+    "--encoding", "utf-8",   // (piped, yt-dlp writes the ANSI code page: CJK and the rest became nothing)
     "--cache-dir", latch::ytdlp_cache_dir(),
     "--no-warnings",
     "--no-colors",
@@ -327,6 +328,7 @@ int run_expand(const std::vector<std::string>& args) {
   std::vector<std::string> argv = {
     ytdlp_utf8,
     "--ignore-config",
+    "--encoding", "utf-8",   // (piped, yt-dlp writes the ANSI code page: CJK and the rest became nothing)
     "--cache-dir", latch::ytdlp_cache_dir(),
     "--no-warnings",
     "--no-colors",
@@ -521,6 +523,7 @@ int run_cli(const std::vector<std::string>& args) {
   // the one that started a download to get the cleanup. Age-guarded (1h) so an
   // in-flight rung is untouched.
   latch::sweep_stale_temp();
+  latch::sweep_stale_ytdlp_unpacks();
 
   if (cmd == "bootstrap") {
     return latch::ensure_required() ? 0 : 1;

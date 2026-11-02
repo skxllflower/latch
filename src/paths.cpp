@@ -10,6 +10,14 @@
 #include <string>
 #include <vector>
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 namespace latch {
 
 namespace fs = std::filesystem;
@@ -219,6 +227,48 @@ void sweep_stale_temp() {
     fs::remove_all(e.path(), rm_ec);      // best-effort; a locked dir waits for next run
   }
 }
+
+#ifdef _WIN32
+void sweep_stale_ytdlp_unpacks() {
+  namespace ch = std::chrono;
+  wchar_t buf[MAX_PATH + 1];
+  const DWORD n = GetTempPathW(MAX_PATH + 1, buf);
+  if (n == 0 || n > MAX_PATH) return;
+  const fs::path tmp(std::wstring(buf, n));
+  // A onefile yt-dlp.exe (PyInstaller) unpacks itself into %TEMP%\_MEI<digits> and removes it on a normal exit; a
+  // hard kill (every cancel: the job object) leaves it, ~40 MB each. Only ours are touched: the name, the
+  // yt_dlp_ejs package inside (yt-dlp's own bundle), older than a live run's start, and free: the folder is renamed
+  // aside first, which Windows refuses while a running yt-dlp has its files open, so a live one is never emptied.
+  const auto cutoff = ch::minutes(5);
+  const auto now = fs::file_time_type::clock::now();
+  std::error_code ec;
+  for (auto& e : fs::directory_iterator(tmp, ec)) {
+    if (ec) break;
+    const std::wstring name = e.path().filename().wstring();
+    if (name.size() < 5 || name.compare(0, 4, L"_MEI") != 0) continue;
+    if (name.find_first_not_of(L"0123456789", 4) != std::wstring::npos) continue;
+    std::error_code fe;
+    if (!e.is_directory(fe) || !fs::is_directory(e.path() / L"yt_dlp_ejs", fe)) continue;
+    const auto mtime = fs::last_write_time(e.path(), fe);
+    if (fe || now - mtime < cutoff) continue;
+    const fs::path aside = e.path().wstring() + L".latch-sweep";
+    if (!MoveFileExW(e.path().c_str(), aside.c_str(), 0)) continue;
+    fs::remove_all(aside, fe);
+  }
+  // (an earlier sweep cut short: its renamed folders)
+  for (auto& e : fs::directory_iterator(tmp, ec)) {
+    if (ec) break;
+    const std::wstring name = e.path().filename().wstring();
+    const std::wstring tail = L".latch-sweep";
+    if (name.rfind(L"_MEI", 0) == 0 && name.size() > tail.size() && name.compare(name.size() - tail.size(), tail.size(), tail) == 0) {
+      std::error_code fe;
+      fs::remove_all(e.path(), fe);
+    }
+  }
+}
+#else
+void sweep_stale_ytdlp_unpacks() {}
+#endif
 
 std::string resolved_ffmpeg() {
   return resolve_binary("LATCH_FFMPEG", ffmpeg_name(), shared_bin_path());

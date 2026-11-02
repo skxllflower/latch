@@ -164,6 +164,7 @@ ExtractResult extract(const std::string& url,
   std::vector<std::string> base = {
     ytdlp_path(),
     "--ignore-config",
+    "--encoding", "utf-8",   // (piped, yt-dlp writes the ANSI code page: CJK and the rest became nothing)
     "--cache-dir", ytdlp_cache_dir(),
     "--no-warnings",
     "--no-colors",
