@@ -9,6 +9,7 @@ Short hashes are optional and get backfilled; never block a commit on one.
 
 ## 2026-11-02
 
+- **Native Latch: one file per drop (WAVdesk a36a2832)**: a drop opens its first media file in Chop and says "Latch opens one file at a time" instead of queueing the rest; the owner's call, departing from Tauri, since a queue of dropped local files had no clear purpose.
 - **Native Latch parity round 2 (WAVdesk ae44fc0b)**: chop drag-outs go to the clips folder (Video and Speed honored) and join Outputs, Tauri's resume-from-stop rules, IN / OUT loop with a time readout, the vertical volume fader, opus / webm / mkv lengths, the Drop to chop cover, chapter ticks, and the Close / Close audition tips.
 - **Native Latch: Minimize has its tooltip** (Tauri's "Minimize"), the one title-strip button Latch draws itself.
 - **Native Latch on WAVdesk 813b9a8a**: Tauri's tooltips on the main window, chop and its video preview (about 88 parts), shown after a short rest, including over the picture and the waveform.
