@@ -5,7 +5,6 @@
 #include <algorithm>
 #include <cstdio>
 #include <filesystem>
-#include <vpf/app/text_field.h>
 #include <vpf/gui/editor.h>
 
 namespace latch {
@@ -85,21 +84,9 @@ void LatchApp::toast(const std::string& message) {
     repaint();
 }
 
-// each one through the prompt's own Enter (a URL, a path, else a search), whichever of the two prompts the view shows;
-// what the user had typed in either is put back
+// each one as the prompt's Enter takes it (a URL, a path, else a search); the prompts untouched
 void LatchApp::take(const std::vector<std::string>& args) {
-    vpf::app::TextField* line = fields_.count("prompt") ? fields_["prompt"] : nullptr;
-    vpf::app::TextField* card = fields_.count("cardprompt") ? fields_["cardprompt"] : nullptr;
-    if (!line || !card || !line->onEnter) return;
-    for (const std::string& a : args) {
-        if (a.empty()) continue;
-        const std::string oldLine = line->value(), oldCard = card->value();
-        line->setValue(a);
-        card->setValue(a);
-        line->onEnter();
-        for (auto [f, old] : {std::pair{line, oldLine}, std::pair{card, oldCard}})
-            if (f->value() == a || f->value().empty()) f->setValue(old);
-    }
+    enqueue(args);
     repaint();
 }
 
