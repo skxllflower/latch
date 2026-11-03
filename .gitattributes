@@ -1,0 +1,4 @@
+# Cargo manifests and locks: LF everywhere, so a Windows tool rewriting one with CRLF is not a change (it left
+# line-ending-only stashes behind before every pull).
+Cargo.toml text eol=lf
+Cargo.lock text eol=lf
