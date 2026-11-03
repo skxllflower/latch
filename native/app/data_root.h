@@ -9,7 +9,8 @@ void setWritable(bool on);       // false: settings.json is never written (headl
 bool isWritable();
 bool writeFileAtomic(const std::string& path, const std::string& text);   // (temp sibling, renamed over)
 
-// This app's own latch CLI: <exe dir>/coredist/latch (the installed layout on both platforms), then beside the exe;
+// This app's own latch CLI: <exe dir>/coredist/latch (the installed layout on both platforms), then beside the exe
+// (not on the Mac, where .../MacOS/latch is this GUI, .../MacOS/Latch);
 // in a dev run (the exe in a CMake build tree) the repo's own build (build/Release, then build/, build/Debug).
 // "" when none is there.
 std::string ownCore();

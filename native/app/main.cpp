@@ -187,6 +187,8 @@ Editor* createEditor(vpf::gui::EditorHost& host) {
     }
     latch::log("core: " + (core.empty() ? std::string("(none of its own)") : core));
 
+    // (macOS: the traffic lights hidden; the title strip draws its own Minimize and Close at the right, as the Tauri window did)
+    Editor::setSystemButtonsHidden(true);
     auto* ed = new Editor(host, latch::LatchApp::kWidth, latch::LatchApp::kHeight);
     ed->setResizable(latch::LatchApp::kWidth, latch::LatchApp::kHeight);   // (tauri.conf: resizable, never smaller than its first size)
     ed->setCustomFrame(Editor::customFrameSupported());   // (the title strip is the window's: decorations false)

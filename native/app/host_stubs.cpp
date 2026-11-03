@@ -1,5 +1,5 @@
-// The WAVdesk-library calls the shared window files and the chop library make (WAVdesk's native/shell/library.cpp and commands.cpp define
-// them there), here for Latch: its data root is Latch's own folder, not WAVdesk's index copy. settings.json (the skin,
+// The WAVdesk-library calls the shared window files and the chop library make (WAVdesk's native/shell/library.cpp defines
+// them there; its commands.cpp, the hints' and menus' key chords, Latch compiles as it is), here for Latch: its data root is Latch's own folder, not WAVdesk's index copy. settings.json (the skin,
 // the Tauri app's tool paths and folders) and native_ui.json (the window's settings, under the Tauri localStorage key names) live in it.
 #include "app_data.h"
 #include "library.h"
@@ -118,12 +118,5 @@ std::string upperAscii(std::string s) {
     for (char& c : s) if ((unsigned char)c < 0x80) c = (char)std::toupper((unsigned char)c);
     return s;
 }
-
-// (commands.cpp: the Mac's key chords in a row label; Latch's menus carry no shortcuts)
-std::string menuLabel(const std::string& label) { return label; }
-
-// (commands.cpp: "Ctrl+Enter" in a hint written as the Mac's chord there; the Mac build still owes that form)
-std::string keyText(const std::string& text) { return text; }
-std::string hostedKeyText(const std::string& text) { return text; }   // (the chop library's hints: as written)
 
 }  // namespace wdn

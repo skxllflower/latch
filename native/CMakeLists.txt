@@ -4,6 +4,9 @@
 #   cmake -S native -B native/build -A x64 [-DFETCHCONTENT_SOURCE_DIR_VACANTLABS=<vacant-labs checkout>]
 #                                           [-DFETCHCONTENT_SOURCE_DIR_WAVDESK=<wavdesk checkout>]
 #   cmake --build native/build --config Release     -> native/build/bin/Release/latch-gui.exe
+#   macOS: cmake -S native -B native/build -DCMAKE_BUILD_TYPE=Release && cmake --build native/build
+#                                                    -> native/build/bin/Latch.app (build/latch, the core, copied in)
+#   a release: tools/build-release-native.ps1 (Windows), tools/build-release-native-mac.sh (macOS)
 #
 # The window itself is WAVdesk's native Latch window (native/shell/latch_window.*, on the shared ExtWindow, the skins, the
 # dialogs and the tool runner), compiled from a pinned WAVdesk commit rather than forked: the two apps show one window.
@@ -16,6 +19,9 @@ if(CMAKE_HOST_APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
   set(CMAKE_OSX_DEPLOYMENT_TARGET "12.0" CACHE STRING "Minimum macOS (the core's floor)" FORCE)
 endif()
 project(latch_native C CXX)
+if(APPLE)
+    enable_language(OBJCXX)   # (the chop library's and the shell's macOS sides: *_mac.mm)
+endif()
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
@@ -34,7 +40,7 @@ FetchContent_Declare(vacantlabs
 )
 FetchContent_Declare(wavdesk
     GIT_REPOSITORY https://github.com/skxllflower/wavdesk.git
-    GIT_TAG        9904b24945616d0113b8148b5b7619932b1e3f84   # feat/native-shell (the Latch hooks merged in: enqueue, thumbnail / fold-out hooks, the chop library, the row icons' gap, std-handle-only inheritance, drop / addOutput / Backspace / local lengths, chop folders / resume / channel split, region drag-out, video controls, ExtWindow tooltips + Tauri's tip texts, parity round 2, one-file drop; the "1-Bit" look label, vacant-labs 030d8d34; VX menus hover green)
+    GIT_TAG        c017f855e52def91de6adc1d16f671dc0aa84438   # feat/native-shell-mac (macOS: the own bundle's coredist core, never the GUI itself; Command+Enter), on feat/native-shell (--setup's verbs under HKCU, not the HKLM root; the Manager --setup / --uninstall; the Latch hooks merged in: enqueue, thumbnail / fold-out hooks, the chop library, the row icons' gap, std-handle-only inheritance, drop / addOutput / Backspace / local lengths, chop folders / resume / channel split, region drag-out, video controls, ExtWindow tooltips + Tauri's tip texts, parity round 2, one-file drop; the "1-Bit" look label, vacant-labs 030d8d34; VX menus hover green)
     GIT_SUBMODULES ""
 )
 set(JSON_BuildTests OFF CACHE INTERNAL "")
@@ -67,7 +73,7 @@ set(LATCH_SHARED_SOURCES
     ${WD}/look.cpp ${WD}/skin.cpp ${WD}/skin_focused.cpp ${WD}/skin_vx.cpp ${WD}/skin_zen.cpp
     ${WD}/dialog_window.cpp ${WD}/popup_motion.cpp ${WD}/window_place.cpp ${WD}/window_fit.cpp
     ${WD}/ui_state.cpp ${WD}/settings_store.cpp ${WD}/core_process.cpp ${WD}/dev_run.cpp
-    ${WD}/menus.cpp ${WD}/context_menu.cpp)
+    ${WD}/menus.cpp ${WD}/context_menu.cpp ${WD}/commands.cpp)
 set(LATCH_APP_SOURCES app/main.cpp app/latch_app.cpp app/about_window.cpp app/host_stubs.cpp app/self_register.cpp app/setup_cli.cpp app/app_log.cpp
     app/player.cpp app/tool_paths.cpp app/settings_window.cpp app/tauri_import.cpp app/audio_out.cpp app/thumbs.cpp)
 
@@ -79,6 +85,7 @@ endif()
 vpf_add_standalone_app(latch_gui NAME ${LATCH_EXE_NAME} BUNDLE_ID com.vacantsystems.latch VERSION ${LATCH_VERSION}
     SOURCES ${LATCH_APP_SOURCES} ${LATCH_SHARED_SOURCES}
     PLIST ${CMAKE_CURRENT_SOURCE_DIR}/app/Info.plist.in
+    ICON ${CMAKE_CURRENT_SOURCE_DIR}/../gui/src-tauri/icons/icon.icns
     WIN_RC ${CMAKE_CURRENT_BINARY_DIR}/latch_gui.rc)
 target_include_directories(latch_gui PRIVATE ${WD} ${CMAKE_CURRENT_SOURCE_DIR}/compat)
 target_link_libraries(latch_gui PRIVATE vpf::app nlohmann_json::nlohmann_json wdn_latch_chop)
@@ -94,5 +101,16 @@ if(WIN32)
     target_compile_definitions(latch_gui PRIVATE UNICODE _UNICODE)
     target_link_libraries(latch_gui PRIVATE shell32 ole32 urlmon)
 elseif(APPLE)
-    target_link_libraries(latch_gui PRIVATE "-framework Foundation" "-framework AppKit")
+    # the shell's macOS OS calls (context_menu.h's os::openPath and the rest: Finder, the window frames)
+    target_sources(latch_gui PRIVATE ${WD}/os_shell_mac.mm)
+    set_source_files_properties(${WD}/os_shell_mac.mm PROPERTIES COMPILE_OPTIONS -fobjc-arc)
+    target_link_libraries(latch_gui PRIVATE "-framework Foundation" "-framework AppKit" "-framework CoreServices" "-framework IOKit")
+    # the latch CLI into the bundle after every build (app/bundle_core.cmake: Contents/MacOS/coredist/latch, re-signed);
+    # LATCH_CORE_BINARY is the core's own build (the repo's build/, as tools/build-release-native-mac.sh makes it)
+    set(LATCH_CORE_BINARY ${CMAKE_CURRENT_SOURCE_DIR}/../build/latch CACHE FILEPATH "The latch CLI Latch.app carries")
+    add_custom_target(latch_bundle_core ALL
+        COMMAND ${CMAKE_COMMAND} -DCORE=${LATCH_CORE_BINARY} -DAPP=$<TARGET_BUNDLE_DIR:latch_gui>
+                -DIDENTITY=${VPF_CODESIGN_IDENTITY} -P ${CMAKE_CURRENT_SOURCE_DIR}/app/bundle_core.cmake
+        COMMENT "Latch.app: its latch CLI" VERBATIM)
+    add_dependencies(latch_bundle_core latch_gui)
 endif()

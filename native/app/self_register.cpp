@@ -24,8 +24,10 @@ std::string ownCore() {
     const std::string own = wdn::vendorExeDir();
     if (own.empty()) return {};
     const fs::path dir = fs::u8path(own);
-    for (const fs::path& c : {dir / "coredist" / kCore, dir / kCore})
-        if (isFile(c)) return c.generic_u8string();
+    if (isFile(dir / "coredist" / kCore)) return (dir / "coredist" / kCore).generic_u8string();
+#if !defined(__APPLE__)   // (on the Mac's case-insensitive disk Contents/MacOS/latch is this GUI itself, .../MacOS/Latch)
+    if (isFile(dir / kCore)) return (dir / kCore).generic_u8string();
+#endif
     if (!wdn::dev::devRun()) return {};
     // native/build/bin/Release/latch-gui.exe (or native/build/bin/latch-gui): the repo is the folder over native/
     for (fs::path d = dir; !d.empty() && d != d.parent_path(); d = d.parent_path()) {
