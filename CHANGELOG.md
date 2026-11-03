@@ -9,6 +9,7 @@ Short hashes are optional and get backfilled; never block a commit on one.
 
 ## 2026-11-02
 
+- **Native Latch on WAVdesk 9904b249**: in the VX look a menu's hovered row is Afterglow's green.
 - **Native Latch on vacant-labs 030d8d34 + WAVdesk 700a742f**: Etch's own look label reads "1-Bit" too, matching the rest of the suite.
 - **Native Latch on WAVdesk feat/native-shell a863ee80**: the cream-pixel look is now called "1-Bit" (was "Dev look") in the title strip and the look picker; its id stays "dev", so a saved choice carries over. Latch now pins feat/native-shell, where the hooks branch was merged.
 - **Native Latch: one file per drop (WAVdesk a36a2832)**: a drop opens its first media file in Chop and says "Latch opens one file at a time" instead of queueing the rest; the owner's call, departing from Tauri, since a queue of dropped local files had no clear purpose.
