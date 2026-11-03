@@ -29,12 +29,12 @@ string(REPLACE "." "," LATCH_VERSION_COMMAS "${LATCH_VERSION},0")
 include(FetchContent)
 FetchContent_Declare(vacantlabs
     GIT_REPOSITORY https://github.com/skxllflower/vacant-labs.git
-    GIT_TAG        11a77309c670284aab3a6b3ec422dd7e966f575d   # (WAVdesk native's own pin: the shared window was written on it)
+    GIT_TAG        030d8d345cddb9851be7bed2084d5503e780c523   # vacant-labs main, WAVdesk native's own pin (Etch: the Dev Look is called 1-Bit)
     GIT_SUBMODULES vpf/third_party/clap vpf/third_party/vst3/pluginterfaces
 )
 FetchContent_Declare(wavdesk
     GIT_REPOSITORY https://github.com/skxllflower/wavdesk.git
-    GIT_TAG        a863ee80ddff1fb74d154970fcc33ad6cc45f129   # feat/native-shell (the Latch hooks merged in: enqueue, thumbnail / fold-out hooks, the chop library, the row icons' gap, std-handle-only inheritance, drop / addOutput / Backspace / local lengths, chop folders / resume / channel split, region drag-out, video controls, ExtWindow tooltips + Tauri's tip texts, parity round 2, one-file drop; the "1-Bit" look label)
+    GIT_TAG        700a742fadd7bce207747079cdad2cacd24e2c98   # feat/native-shell (the Latch hooks merged in: enqueue, thumbnail / fold-out hooks, the chop library, the row icons' gap, std-handle-only inheritance, drop / addOutput / Backspace / local lengths, chop folders / resume / channel split, region drag-out, video controls, ExtWindow tooltips + Tauri's tip texts, parity round 2, one-file drop; the "1-Bit" look label, vacant-labs 030d8d34)
     GIT_SUBMODULES ""
 )
 set(JSON_BuildTests OFF CACHE INTERNAL "")
