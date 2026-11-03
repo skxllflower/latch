@@ -21,8 +21,12 @@ void unregisterSelf(const std::string& shared = "");
 
 // the manager's install contract (vacant-labs apps/manager/docs/app-contract.md): --setup, the three --uninstall forms,
 // --test-root. -1: not such a launch (the app runs); else the process's exit code (0 done, 1 failed, 2 usage). Before
-// the window and the one-instance hand-off. Windows only (elsewhere -1)
+// the window, from main (main.cpp latchDef, vpf's first call into the app), never from a static initializer. Windows
+// only (elsewhere -1)
 int setupCli(int argc, wchar_t** argv);
+// --setup or --uninstall on the command line (the command line only, no globals: safe from a static initializer, which
+// uses it to stand aside: the one-instance hand-off). Windows only (elsewhere false)
+bool setupRequested();
 
 // tools.rs provision_ytdlp / provision_ffmpeg: the installer's bundled yt-dlp.exe into Latch's managed bin
 // (%ProgramData%\Vacant Systems\Latch\bin) and ffmpeg.exe + ffprobe.exe into Shared\bin, each only when absent there

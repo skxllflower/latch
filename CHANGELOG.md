@@ -7,6 +7,10 @@ non-obvious why. The commit body is the detail; this file is the skim layer.
 (formatting, ignore files) are exempt. Cross-repo rounds add a line in each repo they touched.
 Short hashes are optional and get backfilled; never block a commit on one.
 
+## 2026-11-03
+
+- **Native Latch: `--setup` / `--uninstall` run from main, not a static initializer**: in WAVdesk the same pattern ran setup before its string key globals were built, so it wrote onto the HKLM root and tried to delete HKLM itself; Latch was safe only by luck. The registry helpers now refuse an empty or root key, and the one-copy hand-off stands aside for these runs. `native/tests/setup/check_setup.py` proves a `--test-root` run changes nothing outside the test root.
+
 ## 2026-11-02
 
 - **Native Latch's release also writes the manager's package**: `native/build-release/manager/Latch-<version>-win-x64.zip`, the embedded build under one Latch folder (ffmpeg downloads on first run), which Vacant Systems Manager installs; it passes the manager's check_app.py.
