@@ -14,7 +14,7 @@
 #   4. signed inside out (the core, then the app; never --deep)
 #   5. with a Developer ID only: notarized and stapled
 #   6. the manager's package (vacant-labs apps/manager/docs/app-contract.md, 8):
-#      native/build-release/manager/Latch-<version>-mac.zip holding Latch.app/ (ditto -c -k --keepParent)
+#      native/build-release/manager/Latch-<version>-mac.zip holding Latch.app/ (ditto -c -k --keepParent, no extended attributes)
 #
 # Signing modes (as tools/build-release-mac.sh and vacant-labs' tools/build-release-mac.sh):
 #   - APPLE_SIGNING_IDENTITY unset: ad hoc. Runs on THIS mac only; the manager's `catalog.py pack` re-signs it inside out
@@ -156,7 +156,7 @@ elif [ "$SKIP_NOTARIZE" = "1" ]; then
 else
   SUB="$OUT/Latch-notarize.zip"
   rm -f "$SUB"
-  /usr/bin/ditto -c -k --keepParent "$APP" "$SUB"
+  /usr/bin/ditto -c -k --norsrc --noextattr --noacl --keepParent "$APP" "$SUB"
   notarize "$SUB"
   rm -f "$SUB"
   xcrun stapler staple -q "$APP" || die "stapling failed"
@@ -169,7 +169,12 @@ step 6 "the manager's zip"
 mkdir -p "$MGR"
 ZIP="$MGR/Latch-$VERSION-mac.zip"
 rm -f "$ZIP"
-/usr/bin/ditto -c -k --keepParent "$APP" "$ZIP"
+# (--norsrc --noextattr: no AppleDouble ._ entries for the files' extended attributes, com.apple.provenance and the
+# like; unpacked by the manager they would be plain files inside the sealed bundle, and its signature would break)
+/usr/bin/ditto -c -k --norsrc --noextattr --noacl --keepParent "$APP" "$ZIP"
+if /usr/bin/unzip -Z1 "$ZIP" | grep -qvE '^Latch\.app/' || /usr/bin/unzip -Z1 "$ZIP" | grep -qE '(^|/)\._|__MACOSX'; then
+  die "$ZIP holds more than Latch.app/ (or an AppleDouble ._ entry)"
+fi
 
 printf '\n\033[32mLatch %s (native, macOS):\033[0m\n' "$VERSION"
 printf '  app      %s\n' "$APP"
