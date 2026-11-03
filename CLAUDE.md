@@ -51,6 +51,9 @@ macOS (Developer ID signed + notarized DMG). Day-to-day development happens on t
   downloadDir, clipsDir); `tool_paths.cpp` turns the overrides into LATCH_* for the children. `tauri_import.cpp`
   reads the Tauri webview's localStorage (wd-latch-*) into native_ui.json once (flag `tauriImported`), then
   deletes `%LOCALAPPDATA%\com.vacantsystems.latch`; a dev run skips it unless LATCH_TAURI_IMPORT is set.
+- Manager install (vacant-labs apps/manager/docs/app-contract.md): `app/setup_cli.cpp` handles `--setup`, the three
+  `--uninstall` forms and `--test-root` before main (no window, no hand-off), mirroring latch.nsi's Install / Uninstall
+  sections: change both together. Test only with `--test-root` (HKCU test key, shortcuts under the root).
 - Not yet: no Mac build.
 - Dev: `cmake -S native -B native/build -A x64 -DFETCHCONTENT_SOURCE_DIR_WAVDESK=<wavdesk checkout>`
   then `cmake --build native/build --config Release` -> `native/build/bin/Release/latch-gui.exe`.

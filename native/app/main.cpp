@@ -56,6 +56,19 @@ const bool g_parentConsole = [] {
     return true;
 }();
 
+// (before main, before the hand-off below) the manager's --setup / --uninstall (setup_cli.cpp): done, and this process
+// exits with its code; no window, no second-launch hand-off
+const bool g_setupDone = [] {
+    int n = 0;
+    LPWSTR* w = CommandLineToArgvW(GetCommandLineW(), &n);
+    const int rc = w ? latch::setupCli(n, w) : -1;
+    if (w) LocalFree(w);
+    if (rc < 0) return false;
+    std::fflush(stdout);
+    std::fflush(stderr);
+    ExitProcess((UINT)rc);
+}();
+
 // ---- one Latch at a time: a named mutex, and a message-only window the second launch sends its arguments to ----
 const wchar_t* const kMutex = L"Local\\VacantSystems.Latch.Native";
 const wchar_t* const kHandoffClass = L"VacantSystems.Latch.Handoff";

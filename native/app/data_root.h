@@ -14,8 +14,15 @@ bool writeFileAtomic(const std::string& path, const std::string& text);   // (te
 // "" when none is there.
 std::string ownCore();
 // Shared/registry.json's "latch" entry pointed at `core` (registry.rs register_self: WAVdesk finds this install's CLI
-// there); siblings kept, written to a temp file and renamed over
-void registerSelf(const std::string& core);
+// there); siblings kept, written to a temp file and renamed over. `shared`: that folder instead of the suite's (the
+// manager's --setup --test-root); unregisterSelf takes the entry out again (--uninstall), siblings kept
+void registerSelf(const std::string& core, const std::string& shared = "");
+void unregisterSelf(const std::string& shared = "");
+
+// the manager's install contract (vacant-labs apps/manager/docs/app-contract.md): --setup, the three --uninstall forms,
+// --test-root. -1: not such a launch (the app runs); else the process's exit code (0 done, 1 failed, 2 usage). Before
+// the window and the one-instance hand-off. Windows only (elsewhere -1)
+int setupCli(int argc, wchar_t** argv);
 
 // tools.rs provision_ytdlp / provision_ffmpeg: the installer's bundled yt-dlp.exe into Latch's managed bin
 // (%ProgramData%\Vacant Systems\Latch\bin) and ffmpeg.exe + ffprobe.exe into Shared\bin, each only when absent there

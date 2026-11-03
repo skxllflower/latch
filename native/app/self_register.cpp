@@ -38,19 +38,37 @@ std::string ownCore() {
     return {};
 }
 
-void registerSelf(const std::string& core) {
+namespace {
+nlohmann::json readRegistry(const fs::path& p) {
+    nlohmann::json root;
+    std::ifstream in(p, std::ios::binary);
+    if (in) { std::ostringstream ss; ss << in.rdbuf(); root = nlohmann::json::parse(ss.str(), nullptr, false); }
+    return root.is_object() ? root : nlohmann::json::object();
+}
+
+bool writeRegistry(const fs::path& p, const nlohmann::json& root) {
+    const fs::path tmp = fs::path(p).concat(".tmp");
+    {
+        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+        if (!out) return false;
+        out << root.dump(2);
+        if (!out) return false;
+    }
+    std::error_code ec;
+    fs::rename(tmp, p, ec);
+    if (ec) fs::remove(tmp, ec);
+    return !ec;
+}
+}  // namespace
+
+void registerSelf(const std::string& core, const std::string& sharedDir) {
     if (core.empty() || !isWritable()) return;
-    const std::string shared = wdn::vendorSharedDir();
+    const std::string shared = sharedDir.empty() ? wdn::vendorSharedDir() : sharedDir;
     if (shared.empty()) return;
     const fs::path p = fs::u8path(shared + "/registry.json");
     std::error_code ec;
     fs::create_directories(p.parent_path(), ec);
-    nlohmann::json root;
-    {
-        std::ifstream in(p, std::ios::binary);
-        if (in) { std::ostringstream ss; ss << in.rdbuf(); root = nlohmann::json::parse(ss.str(), nullptr, false); }
-    }
-    if (!root.is_object()) root = nlohmann::json::object();
+    nlohmann::json root = readRegistry(p);
 #if defined(_WIN32)
     std::string native = core;
     for (char& c : native) if (c == '/') c = '\\';   // (the Tauri app wrote the OS's own separators)
@@ -58,15 +76,20 @@ void registerSelf(const std::string& core) {
     const std::string& native = core;
 #endif
     root["latch"] = {{"path", native}, {"version", LATCH_VERSION}};
-    const fs::path tmp = fs::u8path(shared + "/registry.json.tmp");
-    {
-        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
-        if (!out) return;
-        out << root.dump(2);
-        if (!out) return;
-    }
-    fs::rename(tmp, p, ec);
-    if (ec) fs::remove(tmp, ec);
+    writeRegistry(p, root);
+}
+
+void unregisterSelf(const std::string& sharedDir) {
+    const std::string shared = sharedDir.empty() ? wdn::vendorSharedDir() : sharedDir;
+    if (shared.empty()) return;
+    const fs::path p = fs::u8path(shared + "/registry.json");
+    std::error_code ec;
+    if (!fs::exists(p, ec)) return;
+    nlohmann::json root = readRegistry(p);
+    if (!root.contains("latch")) return;
+    root.erase("latch");
+    if (root.empty()) fs::remove(p, ec);
+    else writeRegistry(p, root);
 }
 
 }  // namespace latch

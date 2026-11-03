@@ -15,6 +15,9 @@
 ;   coredist\latch.exe          the CLI that does every probe and download (the Tauri layout: the app finds it there,
 ;                               WAVdesk through Shared\registry.json)
 ;   resources\ytdlp\yt-dlp.exe  (optional) seeded into ProgramData\Vacant Systems\Latch\bin on first launch
+;
+; native/app/setup_cli.cpp does the Install and Uninstall sections' work from the app (latch-gui --setup / --uninstall,
+; Vacant Systems Manager's zip install): change both together (same keys, values, folders).
 
 Unicode true
 ManifestDPIAware true
