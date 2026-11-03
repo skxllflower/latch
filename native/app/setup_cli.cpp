@@ -8,7 +8,8 @@
 //
 // --test-root R touches nothing real: the entry under HKCU\Software\Vacant Systems\Manager Test\Apps\Latch, the
 // shortcuts under R\StartMenu and R\Desktop, R\ProgramData for %ProgramData% (its Shared\registry.json included), no
-// vacantsystems key, no icacls, no ie4uinit. Runs before main's statics hand off to a running Latch (main.cpp).
+// vacantsystems key, no icacls, no ie4uinit (native/tests/setup/check_setup.py: nothing outside the test root changes).
+// Runs from main (main.cpp latchDef), never from a static initializer; the hand-off to a running Latch stands aside.
 #include "data_root.h"
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
@@ -20,6 +21,7 @@
 #include <shlobj.h>
 #include <shobjidl.h>
 #include <cstdio>
+#include <cwchar>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -30,11 +32,14 @@ namespace latch {
 
 namespace {
 
+// (latch.nsi's defines. Every name a compile-time constant, never a std::wstring global: WAVdesk once ran its setup from
+// a static initializer before its string key globals were built, and the empty keys opened the HKLM root itself)
 const wchar_t* const kProduct = L"Latch";
 const wchar_t* const kExe = L"latch-gui.exe";
 const wchar_t* const kUninstKey = L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Latch";
 const wchar_t* const kDirKey = L"Software\\vacantsystems\\Latch";
 const wchar_t* const kTestKey = L"Software\\Vacant Systems\\Manager Test\\Apps\\Latch";
+const wchar_t* const kDirKeyParent = L"Software\\vacantsystems";
 const wchar_t* const kMutex = L"Local\\VacantSystems.Latch.Native";   // (main.cpp's: a running Latch holds it)
 
 struct Where {
@@ -72,6 +77,21 @@ bool setString(HKEY k, const wchar_t* name, const std::wstring& v) {
 }
 bool setDword(HKEY k, const wchar_t* name, DWORD v) {
     return RegSetValueExW(k, name, 0, REG_DWORD, (const BYTE*)&v, sizeof v) == ERROR_SUCCESS;
+}
+
+// a sub-key path that names a key under the hive, never the hive itself ("" or a leading backslash opens the root)
+bool underHive(const wchar_t* sub) { return sub && std::wcslen(sub) > 9 && sub[0] != L'\\' && std::wcschr(sub, L'\\'); }
+
+HKEY createKey(HKEY hive, const wchar_t* sub, REGSAM view) {
+    if (!underHive(sub)) { fail("refused to write a registry key that names no key under the hive"); return nullptr; }
+    HKEY k = nullptr;
+    return RegCreateKeyExW(hive, sub, 0, nullptr, 0, KEY_WRITE | view, nullptr, &k, nullptr) == ERROR_SUCCESS ? k : nullptr;
+}
+
+// the key itself (RegDeleteKeyEx: only when it has no subkeys left); ERROR_SUCCESS or why not
+LSTATUS deleteKey(HKEY hive, const wchar_t* sub, REGSAM view) {
+    if (!underHive(sub)) { fail("refused to delete a registry key that names no key under the hive"); return ERROR_INVALID_PARAMETER; }
+    return RegDeleteKeyExW(hive, sub, view, 0);
 }
 
 std::wstring widen(const std::string& s) {
@@ -165,14 +185,14 @@ int setup(const Where& w) {
     const REGSAM view = w.test() ? 0 : KEY_WOW64_64KEY;   // (the installer's SetRegView 64)
     HKEY k = nullptr;
     if (!w.test()) {
-        if (RegCreateKeyExW(HKEY_LOCAL_MACHINE, kDirKey, 0, nullptr, 0, KEY_WRITE | view, nullptr, &k, nullptr) != ERROR_SUCCESS) {
+        if (!(k = createKey(HKEY_LOCAL_MACHINE, kDirKey, view))) {
             fail("cannot write HKLM\\Software\\vacantsystems\\Latch (not elevated?)");
             return 1;
         }
         setString(k, nullptr, w.dir.wstring());
         RegCloseKey(k);
     }
-    if (RegCreateKeyExW(w.hive(), w.entryKey(), 0, nullptr, 0, KEY_WRITE | view, nullptr, &k, nullptr) != ERROR_SUCCESS) {
+    if (!(k = createKey(w.hive(), w.entryKey(), view))) {
         fail("cannot write the uninstall entry (not elevated?)");
         return 1;
     }
@@ -208,13 +228,13 @@ bool unsetup(const Where& w) {
     const REGSAM view = w.test() ? 0 : KEY_WOW64_64KEY;
     bool ok = true;
     auto drop = [&](HKEY hive, const wchar_t* key) {
-        const LSTATUS r = RegDeleteKeyExW(hive, key, view, 0);
+        const LSTATUS r = deleteKey(hive, key, view);
         if (r != ERROR_SUCCESS && r != ERROR_FILE_NOT_FOUND) ok = false;
     };
     drop(w.hive(), w.entryKey());
     if (!w.test()) {
         drop(HKEY_LOCAL_MACHINE, kDirKey);
-        RegDeleteKeyExW(HKEY_LOCAL_MACHINE, L"Software\\vacantsystems", view, 0);   // (only when empty: no subkeys left)
+        deleteKey(HKEY_LOCAL_MACHINE, kDirKeyParent, view);   // (only when empty: no subkeys left)
     }
     const fs::path pd = w.programData();
     if (!pd.empty()) unregisterSelf((pd / "Vacant Systems" / "Shared").generic_u8string());
@@ -309,6 +329,15 @@ int uninstallFull(const Where& w, bool quiet, const std::wstring& params) {
 
 }  // namespace
 
+bool setupRequested() {
+    int n = 0;
+    LPWSTR* a = CommandLineToArgvW(GetCommandLineW(), &n);
+    bool yes = false;
+    for (int i = 1; a && i < n; ++i) yes |= std::wcscmp(a[i], L"--setup") == 0 || std::wcscmp(a[i], L"--uninstall") == 0;
+    if (a) LocalFree(a);
+    return yes;
+}
+
 int setupCli(int argc, wchar_t** argv) {
     bool doSetup = false, doUninstall = false, quiet = false, keep = false, bad = false;
     fs::path root;
@@ -352,5 +381,6 @@ int setupCli(int argc, wchar_t** argv) {
 #else
 namespace latch {
 int setupCli(int, wchar_t**) { return -1; }
+bool setupRequested() { return false; }
 }  // namespace latch
 #endif

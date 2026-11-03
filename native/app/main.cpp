@@ -56,19 +56,6 @@ const bool g_parentConsole = [] {
     return true;
 }();
 
-// (before main, before the hand-off below) the manager's --setup / --uninstall (setup_cli.cpp): done, and this process
-// exits with its code; no window, no second-launch hand-off
-const bool g_setupDone = [] {
-    int n = 0;
-    LPWSTR* w = CommandLineToArgvW(GetCommandLineW(), &n);
-    const int rc = w ? latch::setupCli(n, w) : -1;
-    if (w) LocalFree(w);
-    if (rc < 0) return false;
-    std::fflush(stdout);
-    std::fflush(stderr);
-    ExitProcess((UINT)rc);
-}();
-
 // ---- one Latch at a time: a named mutex, and a message-only window the second launch sends its arguments to ----
 const wchar_t* const kMutex = L"Local\\VacantSystems.Latch.Native";
 const wchar_t* const kHandoffClass = L"VacantSystems.Latch.Handoff";
@@ -104,6 +91,9 @@ LRESULT CALLBACK handoffProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
 
 // (before main) false: another Latch has this launch's arguments, and this process exits
 const bool g_sole = [] {
+    // (the manager's --setup / --uninstall: no hand-off and no mutex, which --uninstall reads as "Latch is running"; they
+    // run from latchDef)
+    if (latch::setupRequested()) return true;
     // (vpf has not parsed the arguments yet: before main, the command line itself)
     for (const std::string& a : ownArgs()) if (a == "--steps" || a == "--screenshot" || a == "--dump-tree") return true;
     CreateMutexW(nullptr, TRUE, kMutex);
@@ -370,7 +360,21 @@ Editor* createEditor(vpf::gui::EditorHost& host) {
     return ed;
 }
 
+// vpf's main asks for the definition first, before it reads a flag or builds anything: the manager's --setup /
+// --uninstall (setup_cli.cpp) run there, after every static initializer (never from one: a file's globals may not be
+// built yet), with no window; the process exits with its code
 const vpf::PluginDef& latchDef() {
+#if defined(_WIN32)
+    if (latch::setupRequested()) {
+        int n = 0;
+        LPWSTR* w = CommandLineToArgvW(GetCommandLineW(), &n);
+        const int rc = w ? latch::setupCli(n, w) : 1;
+        if (w) LocalFree(w);
+        std::fflush(stdout);
+        std::fflush(stderr);
+        std::_Exit(rc < 0 ? 2 : rc);
+    }
+#endif
     static vpf::PluginDef d = [] {
         vpf::PluginDef p;
         p.info.id = "com.vacantsystems.latch";
