@@ -16,7 +16,8 @@
 #   1. the core CLI (cmake build/ --target latch)            -> stage\coredist\latch.exe
 #   2. the GUI (native/, its own build tree on the pinned vpf and WAVdesk commits) -> stage\latch-gui.exe
 #   3. yt-dlp into stage\resources\ytdlp, ffmpeg + ffprobe into ffmpeg\ (the Tauri build's vendored copies when present)
-#   4. makensis native/installer/latch.nsi, twice (with /DFFMPEG, then without)
+#   4. makensis native/installer/latch.nsi, twice (with /DFFMPEG, then without), and the manager's zip of the embedded
+#      build: native\build-release\manager\Latch-<ver>-win-x64.zip (one Latch\ folder; Vacant Systems Manager's package)
 #   5. with -Publish only: copies into gui\src-tauri\target\release\bundle\nsis\ (standalone) and nsis-embedded\
 #      (embedded), where WAVdesk's release takes the newest Latch installer for its companion offer (the embedded
 #      one). Without it the Tauri installers there stay what WAVdesk ships: an untested native build never rides along
@@ -135,6 +136,21 @@ New-Item -ItemType Directory -Force -Path (Join-Path $out 'embedded') | Out-Null
 $embedded = Join-Path $out "embedded\Latch_${version}_x64-setup.exe"
 Invoke-Native { & $Makensis /V2 "/DVERSION=$version" "/DSTAGE=$stage" "/DOUTFILE=$embedded" "/DICON=$icon" $nsi } "makensis (embedded)"
 
+# the manager's package (vacant-labs apps/manager/docs/app-contract.md, 2): the embedded build (the stage: no ffmpeg,
+# fetched on first run) as one Latch\ folder, no uninstall.exe (NSIS's own, never staged). Windows' bsdtar writes
+# forward slashes; fixed timestamps so the same stage packs the same (catalog.py pack sorts it again)
+$mgr  = Join-Path $out 'manager'
+$zip  = Join-Path $mgr "Latch-$version-win-x64.zip"
+$pack = Join-Path $out 'manager-pack'
+if (Test-Path $pack) { Remove-Item -Recurse -Force $pack }
+New-Item -ItemType Directory -Force -Path (Join-Path $pack 'Latch'), $mgr | Out-Null
+Copy-Item (Join-Path $stage '*') (Join-Path $pack 'Latch') -Recurse -Force
+$fixed = Get-Date '2020-01-01T00:00:00'
+Get-ChildItem $pack -Recurse | ForEach-Object { $_.LastWriteTime = $fixed }
+if (Test-Path $zip) { Remove-Item -Force $zip }
+Invoke-Native { & "$env:SystemRoot\System32\tar.exe" -a -cf $zip -C $pack Latch } "tar (manager zip)"
+Remove-Item -Recurse -Force $pack
+
 # ---- 5: where WAVdesk's release looks for them ----
 Step 5 "copy for WAVdesk's companion offer"
 if (-not $Publish) { Write-Host "  skipped (no -Publish): the Tauri bundle folders keep what WAVdesk ships" -ForegroundColor Yellow }
@@ -149,3 +165,4 @@ else { foreach ($pair in @(@($setup, 'nsis'), @($embedded, 'nsis-embedded'))) {
 Write-Host "`nInstallers ready:" -ForegroundColor Green
 Write-Host "  standalone  $setup ($([math]::Round((Get-Item $setup).Length / 1MB, 1)) MB)"
 Write-Host "  embedded    $embedded ($([math]::Round((Get-Item $embedded).Length / 1MB, 1)) MB)"
+Write-Host "  manager     $zip ($([math]::Round((Get-Item $zip).Length / 1MB, 1)) MB)"

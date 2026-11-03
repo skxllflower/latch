@@ -9,6 +9,7 @@ Short hashes are optional and get backfilled; never block a commit on one.
 
 ## 2026-11-02
 
+- **Native Latch's release also writes the manager's package**: `native/build-release/manager/Latch-<version>-win-x64.zip`, the embedded build under one Latch folder (ffmpeg downloads on first run), which Vacant Systems Manager installs; it passes the manager's check_app.py.
 - **Native Latch sets itself up for Vacant Systems Manager**: `latch-gui --setup` does the installer's work (shortcuts, the uninstall entry, Shared's CLI registration) and `--uninstall` undoes it, so the manager can install Latch from a zip; `--test-root` keeps checks off the real system. The NSIS installers stay.
 - **Native Latch on WAVdesk 9904b249**: in the VX look a menu's hovered row is Afterglow's green.
 - **Native Latch on vacant-labs 030d8d34 + WAVdesk 700a742f**: Etch's own look label reads "1-Bit" too, matching the rest of the suite.
