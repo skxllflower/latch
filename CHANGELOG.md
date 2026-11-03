@@ -9,6 +9,7 @@ Short hashes are optional and get backfilled; never block a commit on one.
 
 ## 2026-11-02
 
+- **Native Latch on WAVdesk feat/native-shell a863ee80**: the cream-pixel look is now called "1-Bit" (was "Dev look") in the title strip and the look picker; its id stays "dev", so a saved choice carries over. Latch now pins feat/native-shell, where the hooks branch was merged.
 - **Native Latch: one file per drop (WAVdesk a36a2832)**: a drop opens its first media file in Chop and says "Latch opens one file at a time" instead of queueing the rest; the owner's call, departing from Tauri, since a queue of dropped local files had no clear purpose.
 - **Native Latch parity round 2 (WAVdesk ae44fc0b)**: chop drag-outs go to the clips folder (Video and Speed honored) and join Outputs, Tauri's resume-from-stop rules, IN / OUT loop with a time readout, the vertical volume fader, opus / webm / mkv lengths, the Drop to chop cover, chapter ticks, and the Close / Close audition tips.
 - **Native Latch: Minimize has its tooltip** (Tauri's "Minimize"), the one title-strip button Latch draws itself.
