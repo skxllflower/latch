@@ -9,6 +9,7 @@ Short hashes are optional and get backfilled; never block a commit on one.
 
 ## 2026-11-03
 
+- **Native Latch: built on vacant-labs main 7895084e and WAVdesk cf91e516**: the shared windows get the Etch bug sweep (Unicode paths, UTF-8 text) and long VX menus scroll to the row the keys land on; the first catalog release ships on it.
 - **Native Latch: `--setup` / `--uninstall` run from main, not a static initializer**: in WAVdesk the same pattern ran setup before its string key globals were built, so it wrote onto the HKLM root and tried to delete HKLM itself; Latch was safe only by luck. The registry helpers now refuse an empty or root key, and the one-copy hand-off stands aside for these runs. `native/tests/setup/check_setup.py` proves a `--test-root` run changes nothing outside the test root.
 
 ## 2026-11-02

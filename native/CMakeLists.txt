@@ -35,12 +35,12 @@ string(REPLACE "." "," LATCH_VERSION_COMMAS "${LATCH_VERSION},0")
 include(FetchContent)
 FetchContent_Declare(vacantlabs
     GIT_REPOSITORY https://github.com/skxllflower/vacant-labs.git
-    GIT_TAG        030d8d345cddb9851be7bed2084d5503e780c523   # vacant-labs main, WAVdesk native's own pin (Etch: the Dev Look is called 1-Bit)
+    GIT_TAG        7895084e537f3892fb04ae0f50e395bb7eddda35   # vacant-labs main (the Etch bug sweep, the vpf menu fix, the manager's Mac port); vacant-labs main, WAVdesk native's own pin (Etch: the Dev Look is called 1-Bit)
     GIT_SUBMODULES vpf/third_party/clap vpf/third_party/vst3/pluginterfaces
 )
 FetchContent_Declare(wavdesk
     GIT_REPOSITORY https://github.com/skxllflower/wavdesk.git
-    GIT_TAG        75cff8d0ce9f950aa5d2c7ec36609baadc51a824   # wavdesk main (the Mac shell merged in) (macOS: the own bundle's coredist core, never the GUI itself; Command+Enter), on feat/native-shell (--setup's verbs under HKCU, not the HKLM root; the Manager --setup / --uninstall; the Latch hooks merged in: enqueue, thumbnail / fold-out hooks, the chop library, the row icons' gap, std-handle-only inheritance, drop / addOutput / Backspace / local lengths, chop folders / resume / channel split, region drag-out, video controls, ExtWindow tooltips + Tauri's tip texts, parity round 2, one-file drop; the "1-Bit" look label, vacant-labs 030d8d34; VX menus hover green)
+    GIT_TAG        cf91e5168a830647e893503cb41769cd428bf371   # wavdesk main (its vacant-labs pin 7895084e); wavdesk main (the Mac shell merged in) (macOS: the own bundle's coredist core, never the GUI itself; Command+Enter), on feat/native-shell (--setup's verbs under HKCU, not the HKLM root; the Manager --setup / --uninstall; the Latch hooks merged in: enqueue, thumbnail / fold-out hooks, the chop library, the row icons' gap, std-handle-only inheritance, drop / addOutput / Backspace / local lengths, chop folders / resume / channel split, region drag-out, video controls, ExtWindow tooltips + Tauri's tip texts, parity round 2, one-file drop; the "1-Bit" look label, vacant-labs 030d8d34; VX menus hover green)
     GIT_SUBMODULES ""
 )
 set(JSON_BuildTests OFF CACHE INTERNAL "")
