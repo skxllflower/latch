@@ -14,6 +14,10 @@ public:
     bool onKey(const vpf::gui::KeyEvent& e) override;
     bool wantsShortcuts() const override { return true; }
     std::function<void()> onToolsChanged;   // (an override edited: the app hands it to the children it starts)
+    // the look (the skins: wdn::skinChoices), here rather than on the title strip (the owner, 2026-11-03): the one in use,
+    // and a pick handed to the app, which applies it and keeps it
+    std::string skinName = "dev";
+    std::function<void(const std::string& skin)> onSkin;
 
 protected:
     std::string titleText() const override { return "Settings"; }

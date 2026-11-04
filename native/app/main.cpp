@@ -177,7 +177,8 @@ Editor* createEditor(vpf::gui::EditorHost& host) {
     }
     latch::log("core: " + (core.empty() ? std::string("(none of its own)") : core));
 
-    // (macOS: the traffic lights hidden; the title strip draws its own Minimize and Close at the right, as the Tauri window did)
+    // (macOS: the traffic lights hidden; the title strip draws its own Close and Minimize at its left in the Mac's order,
+    // ExtWindow::macButtons, as WAVdesk's title bar; elsewhere at the right, as the Tauri window did)
     Editor::setSystemButtonsHidden(true);
     auto* ed = new Editor(host, latch::LatchApp::kWidth, latch::LatchApp::kHeight);
     ed->setResizable(latch::LatchApp::kWidth, latch::LatchApp::kHeight);   // (tauri.conf: resizable, never smaller than its first size)
@@ -196,6 +197,7 @@ Editor* createEditor(vpf::gui::EditorHost& host) {
     app->bounds = {0, 0, latch::LatchApp::kWidth, latch::LatchApp::kHeight};
     app->onBoundsChanged();
     ed->onResize = [app](int w, int h) { app->bounds = {0, 0, w, h}; app->onBoundsChanged(); };
+    ed->onWindowStateChanged = [app] { app->repaint(); };   // (macOS: the strip's buttons grey in a background window)
     ed->setFocus(app);
 
     // the one output (audio_out.h): Audition's stream and the chop window's engine take turns on it. It outlives every
@@ -305,10 +307,12 @@ Editor* createEditor(vpf::gui::EditorHost& host) {
     app->onAbout = [openOne, about] {
         openOne(about, [] { return std::make_unique<latch::AboutWindow>(); }, latch::AboutWindow::kWidth, latch::AboutWindow::kHeight);
     };
-    app->onSettings = [openOne, settings] {
-        openOne(settings, [] {
+    app->onSettings = [openOne, settings, app] {
+        openOne(settings, [app] {
             auto w = std::make_unique<latch::SettingsWindow>();
             w->onToolsChanged = [] { latch::applyToolEnv(); };
+            w->skinName = app->skinName;
+            w->onSkin = [app](const std::string& name) { if (app->onSkin) app->onSkin(name); };   // (the look: Settings' own row)
             return w;
         }, latch::SettingsWindow::kWidth, latch::SettingsWindow::kHeight);
     };
@@ -320,7 +324,7 @@ Editor* createEditor(vpf::gui::EditorHost& host) {
         app->skinName = name;
         app->onBoundsChanged();
         if (*about && wdn::liveWindow(*ed, *about)) (*about)->onBoundsChanged();
-        if (*settings && wdn::liveWindow(*ed, *settings)) (*settings)->onBoundsChanged();
+        if (*settings && wdn::liveWindow(*ed, *settings)) { (*settings)->skinName = name; (*settings)->onBoundsChanged(); }
         ed->requestRepaint();
     };
 

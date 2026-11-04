@@ -119,6 +119,14 @@ void SettingsWindow::layout() {
         y += 24;
     };
 
+    section("Look");
+    {
+        std::vector<Opt> looks;
+        for (const auto& l : wdn::skinChoices()) looks.push_back({l.first, l.second});
+        select(body, {x, y, std::min(fw, 200), 20}, "select:skin", looks, skinName, true);
+        y += 20 + 16;
+    }
+
     section("Tool paths");
     for (const std::string& l : wrap("Leave a field empty to auto-resolve. Set a path to override. The resolved path in use is shown under each field.", fw, 9)) {
         label(body, x, y, l, 9, faint);
@@ -164,6 +172,11 @@ void SettingsWindow::layout() {
 
 void SettingsWindow::act(const std::string& id, const vpf::gui::MouseEvent&) {
     if (id == "close") { if (onClose) onClose(); return; }
+    if (id == "select:skin") {
+        if (!selectOpts_.count(id)) return;
+        openSelectList(id, selectOpts_[id], skinName, [this](const std::string& v) { if (v != skinName && onSkin) onSkin(v); });
+        return;
+    }
     auto setField = [this](const std::string& key, const std::string& v) {
         if (fields_.count(key)) fields_[key]->setValue(v);
         save(key, v);

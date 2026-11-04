@@ -1,4 +1,5 @@
 #include "latch_app.h"
+#include "app_icon.h"
 #include "data_root.h"
 #include "pipe_run.h"
 #include "chop_engine.h"
@@ -17,7 +18,16 @@ using vpf::gui::Rect;
 using wdn::Style;
 using wdn::skin;
 
-LatchApp::LatchApp() { name = "latch-app"; }
+bool LatchApp::drawTitleIcon(const vpf::gui::Paint& p, int cx, int cy, int px) const {
+    return skinName == "dev" && drawAppIconInk(p, cx, cy, px, skin().style("tool.titlebar").ink);
+}
+
+LatchApp::LatchApp() {
+    name = "latch-app";
+#if defined(__APPLE__)
+    macButtons = true;   // (the Mac's close and minimize at the strip's left: ExtWindow::macButtons)
+#endif
+}
 
 // the title strip is the window's frame: a press on it (not on a button) moves the window, as the Tauri drag region did
 namespace {
@@ -235,12 +245,12 @@ void LatchApp::draw(const Paint& p) {
     wdn::look::text(p, r.x + 10, wdn::look::baselineIn(p, r.y, r.h, false), toast_, t.ink);
 }
 
-// right to left, left of the X: Minimize, the window's own refresh (latch update), the look, Settings, About
+// right to left, left of the X (macOS: from the strip's right end): Minimize (not on macOS: ExtWindow's, at the left), the window's own refresh (latch update), Settings (the look is there), About
 void LatchApp::titleExtras(std::vector<El>& out, int& right) {
     const Rect all{0, 0, bounds.w, bounds.h};
     const Style& t = skin().style("tool.titlebar");
     const int h = kTitle;
-    {
+    if (!macButtons) {   // (macOS: ExtWindow draws it at the left, after the close)
         const Rect r = wdn::look::stripButton({right - 28, 0, 28, h}, bounds.w, 1, h);
         right = r.x;
         add(r, all, "app:minimize", true, [t](const Paint& p, const Rect& rr, bool hot) {
@@ -262,10 +272,7 @@ void LatchApp::titleExtras(std::vector<El>& out, int& right) {
             wdn::look::text(p, rr.x + 7, wdn::look::baselineIn(p, rr.y, rr.h, true), text, hot ? t.ink : t.soft);
         });
     };
-    std::string lookLabel = skinName;
-    for (const auto& c : wdn::skinChoices()) if (c.first == skinName) lookLabel = c.second;
-    textButton("app:skin", upper(lookLabel));
-    textButton("app:settings", "SETTINGS");
+    textButton("app:settings", "SETTINGS");   // (the look is chosen there: SettingsWindow)
     textButton("app:about", "ABOUT");
 }
 
@@ -273,12 +280,6 @@ void LatchApp::act(const std::string& id, const vpf::gui::MouseEvent& e) {
     if (id == "app:minimize") { if (editor()) editor()->minimizeWindow(); return; }
     if (id == "app:about") { if (onAbout) onAbout(); return; }
     if (id == "app:settings") { if (onSettings) onSettings(); return; }
-    if (id == "app:skin") {
-        std::vector<Opt> opts;
-        for (const auto& c : wdn::skinChoices()) opts.push_back({c.first, c.second});
-        openSelectList(id, opts, skinName, [this](const std::string& v) { if (v != skinName && onSkin) onSkin(v); });
-        return;
-    }
     LatchWindow::act(id, e);
 }
 

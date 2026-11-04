@@ -7,8 +7,16 @@ non-obvious why. The commit body is the detail; this file is the skim layer.
 (formatting, ignore files) are exempt. Cross-repo rounds add a line in each repo they touched.
 Short hashes are optional and get backfilled; never block a commit on one.
 
+## 2026-11-04
+
+- **Native Latch: built on WAVdesk 9463b9e9** (ExtWindow::macButtons for the Mac's buttons; the rules in a scrolling column cut to it, which drew over the title strip when scrolled).
+
 ## 2026-11-03
 
+- **Native Latch on macOS: close and minimize at the strip's left in the Mac's order** (WAVdesk's ExtWindow::macButtons), greyed while the window is in the background, the title after them; they were at the right, as on Windows.
+- **Native Latch: opens at 600 x 340, WAVdesk's Latch window's size**, which is also its smallest (the owner's call: Latch and Lathe the same size).
+- **Native Latch: the look is chosen in Settings** (a Look row at the top), no longer a button on the title strip.
+- **Native Latch: the 1-Bit title strip shows Latch's own mark in the strip's ink** (app_icon.cpp, a copy of Lathe's), where the download glyph was; the other looks keep the glyph.
 - **Native Latch: built on vacant-labs main 7895084e and WAVdesk cf91e516**: the shared windows get the Etch bug sweep (Unicode paths, UTF-8 text) and long VX menus scroll to the row the keys land on; the first catalog release ships on it.
 - **Native Latch: `--setup` / `--uninstall` run from main, not a static initializer**: in WAVdesk the same pattern ran setup before its string key globals were built, so it wrote onto the HKLM root and tried to delete HKLM itself; Latch was safe only by luck. The registry helpers now refuse an empty or root key, and the one-copy hand-off stands aside for these runs. `native/tests/setup/check_setup.py` proves a `--test-root` run changes nothing outside the test root.
 

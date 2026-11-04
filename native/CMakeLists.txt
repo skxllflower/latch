@@ -40,7 +40,7 @@ FetchContent_Declare(vacantlabs
 )
 FetchContent_Declare(wavdesk
     GIT_REPOSITORY https://github.com/skxllflower/wavdesk.git
-    GIT_TAG        cf91e5168a830647e893503cb41769cd428bf371   # wavdesk main (its vacant-labs pin 7895084e); wavdesk main (the Mac shell merged in) (macOS: the own bundle's coredist core, never the GUI itself; Command+Enter), on feat/native-shell (--setup's verbs under HKCU, not the HKLM root; the Manager --setup / --uninstall; the Latch hooks merged in: enqueue, thumbnail / fold-out hooks, the chop library, the row icons' gap, std-handle-only inheritance, drop / addOutput / Backspace / local lengths, chop folders / resume / channel split, region drag-out, video controls, ExtWindow tooltips + Tauri's tip texts, parity round 2, one-file drop; the "1-Bit" look label, vacant-labs 030d8d34; VX menus hover green)
+    GIT_TAG        9463b9e9bc48600c2cdfbb19829c92d2210d5895   # wavdesk main (ExtWindow::macButtons, the scrolled rules cut to their column); wavdesk main (its vacant-labs pin 7895084e); wavdesk main (the Mac shell merged in) (macOS: the own bundle's coredist core, never the GUI itself; Command+Enter), on feat/native-shell (--setup's verbs under HKCU, not the HKLM root; the Manager --setup / --uninstall; the Latch hooks merged in: enqueue, thumbnail / fold-out hooks, the chop library, the row icons' gap, std-handle-only inheritance, drop / addOutput / Backspace / local lengths, chop folders / resume / channel split, region drag-out, video controls, ExtWindow tooltips + Tauri's tip texts, parity round 2, one-file drop; the "1-Bit" look label, vacant-labs 030d8d34; VX menus hover green)
     GIT_SUBMODULES ""
 )
 set(JSON_BuildTests OFF CACHE INTERNAL "")
@@ -74,7 +74,7 @@ set(LATCH_SHARED_SOURCES
     ${WD}/dialog_window.cpp ${WD}/popup_motion.cpp ${WD}/window_place.cpp ${WD}/window_fit.cpp
     ${WD}/ui_state.cpp ${WD}/settings_store.cpp ${WD}/core_process.cpp ${WD}/dev_run.cpp
     ${WD}/menus.cpp ${WD}/context_menu.cpp ${WD}/commands.cpp)
-set(LATCH_APP_SOURCES app/main.cpp app/latch_app.cpp app/about_window.cpp app/host_stubs.cpp app/self_register.cpp app/setup_cli.cpp app/app_log.cpp
+set(LATCH_APP_SOURCES app/main.cpp app/latch_app.cpp app/app_icon.cpp app/about_window.cpp app/host_stubs.cpp app/self_register.cpp app/setup_cli.cpp app/app_log.cpp
     app/player.cpp app/tool_paths.cpp app/settings_window.cpp app/tauri_import.cpp app/audio_out.cpp app/thumbs.cpp)
 
 if(APPLE)
@@ -93,6 +93,8 @@ target_compile_definitions(latch_gui PRIVATE LATCH_VERSION="${LATCH_VERSION}")
 # the VX skin's packs, embedded as WAVdesk embeds them (skin_vx.cpp reads kWavdeskVx)
 file(GLOB LATCH_VX_FILES CONFIGURE_DEPENDS ${wavdesk_SOURCE_DIR}/native/assets/vx/*.json ${wavdesk_SOURCE_DIR}/native/assets/vx/*.pack)
 vpf_embed_assets(latch_gui SYMBOL kWavdeskVx FILES ${LATCH_VX_FILES})
+# the app's own icon picture (the 1-Bit title strip, drawn in its ink: app_icon.cpp)
+vpf_embed_assets(latch_gui SYMBOL kLatchIcon FILES ${CMAKE_CURRENT_SOURCE_DIR}/../gui/src/assets/app-icon.png)
 if(WIN32)
     set(LATCH_ICON ${CMAKE_CURRENT_SOURCE_DIR}/../gui/src-tauri/icons/icon.ico)
     configure_file(app/latch_gui.rc.in ${CMAKE_CURRENT_BINARY_DIR}/latch_gui.rc @ONLY)

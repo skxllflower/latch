@@ -20,7 +20,9 @@ namespace latch {
 
 class LatchApp : public wdn::LatchWindow {
 public:
-    static constexpr int kWidth = 700, kHeight = 440;   // (tauri.conf's main window: its size and its minimum)
+    // (WAVdesk's Latch window's size, LatchWindow::kWidth / kHeight, and the minimum: the owner, 2026-11-03, over
+    // tauri.conf's 700 x 440)
+    static constexpr int kWidth = 600, kHeight = 340;
     LatchApp();
     std::function<void()> onAbout, onSettings;
     std::function<void(const std::string& skin)> onSkin;   // (a look picked: the app applies it and keeps it)
@@ -34,6 +36,8 @@ public:
     void wireHooks(std::shared_ptr<vpf::gui::UiQueue> ui);   // (thumbnails, the fold-out: once the editor is up)
     std::function<void()> onTeardown;   // (the destructor: the chop engine and the output let go, once)
     ~LatchApp() override;
+    // (1-Bit: the app's own mark in the strip's ink, app_icon.cpp; the other looks keep the window's download glyph)
+    bool drawTitleIcon(const vpf::gui::Paint& p, int cx, int cy, int px) const override;
     bool onMouseDown(const vpf::gui::MouseEvent& e) override;
     void onMouseDrag(const vpf::gui::MouseEvent& e) override;
     void onMouseUp(const vpf::gui::MouseEvent& e) override;
