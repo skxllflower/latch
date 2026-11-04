@@ -9,6 +9,7 @@ Short hashes are optional and get backfilled; never block a commit on one.
 
 ## 2026-11-04
 
+- **Version 0.1.9.** The Mac's buttons at the strip's left, 600 x 340, the look in Settings, the 1-Bit mark, the scrolled divider fixed (WAVdesk 9463b9e9).
 - **Native Latch: built on WAVdesk 9463b9e9** (ExtWindow::macButtons for the Mac's buttons; the rules in a scrolling column cut to it, which drew over the title strip when scrolled).
 
 ## 2026-11-03
