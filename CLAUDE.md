@@ -43,7 +43,8 @@ macOS (Developer ID signed + notarized DMG). Day-to-day development happens on t
   vacant-labs) linked as is, `chopHooks()` unset (Etch's chop alone: no stems / palette / Apply). main.cpp
   opens one `LatchChopWindow(AudioOut)` per `onChop` (as WAVdesk's `app/mw_latch_chop.cpp`); quitting
   closes it, then `ChopEngine::shutdown()`, then the output (LatchApp's destructor in any other teardown).
-  Headless: `LATCH_CHOP=<file>` opens it, `WDN_SAVE_DIR` answers Export's folder; always pass `--data-dir`
+  `LATCH_CHOP=<file or link>` opens it (headless or windowed; a link with the shared cookie source),
+  `LATCH_CHOP_SIZE=WxH` sizes it (scroll timing: `VPF_FRAMESTATS=1` prints paint ms), `WDN_SAVE_DIR` answers Export's folder; always pass `--data-dir`
   (the chop sidecars go under the data root, which follows it).
   A headless `wait` step does not tick: anything a tick drives (chop's deferred Play, drags) stalls until the next
   `ticks`, so time playback with `{"ticks":1},{"wait":16}` pairs, not one long wait.

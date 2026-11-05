@@ -35,12 +35,12 @@ string(REPLACE "." "," LATCH_VERSION_COMMAS "${LATCH_VERSION},0")
 include(FetchContent)
 FetchContent_Declare(vacantlabs
     GIT_REPOSITORY https://github.com/skxllflower/vacant-labs.git
-    GIT_TAG        a2990c993cf94f339ee139adb56ae69f4698f519   # vacant-labs main (the 0.1.1 release: the drag-out race, the plugin host helper); vacant-labs main (the Etch bug sweep, the vpf menu fix, the manager's Mac port); vacant-labs main, WAVdesk native's own pin (Etch: the Dev Look is called 1-Bit)
+    GIT_TAG        d43d2598f2a8bbc007a0b13d8044e30e688aa2d0   # vacant-labs fix/latch-owner-batch (window popups paint only their dirty rects; Etch WaveView::cornerToggles); vacant-labs main (the 0.1.1 release: the drag-out race, the plugin host helper); vacant-labs main (the Etch bug sweep, the vpf menu fix, the manager's Mac port); vacant-labs main, WAVdesk native's own pin (Etch: the Dev Look is called 1-Bit)
     GIT_SUBMODULES vpf/third_party/clap vpf/third_party/vst3/pluginterfaces
 )
 FetchContent_Declare(wavdesk
     GIT_REPOSITORY https://github.com/skxllflower/wavdesk.git
-    GIT_TAG        f4de354e7083e3f8c6ca9cd5ccc4711770f8b79a   # wavdesk main (0.3.1, its vacant-labs pin a2990c99); wavdesk main (ExtWindow::macButtons, the scrolled rules cut to their column); wavdesk main (its vacant-labs pin 7895084e); wavdesk main (the Mac shell merged in) (macOS: the own bundle's coredist core, never the GUI itself; Command+Enter), on feat/native-shell (--setup's verbs under HKCU, not the HKLM root; the Manager --setup / --uninstall; the Latch hooks merged in: enqueue, thumbnail / fold-out hooks, the chop library, the row icons' gap, std-handle-only inheritance, drop / addOutput / Backspace / local lengths, chop folders / resume / channel split, region drag-out, video controls, ExtWindow tooltips + Tauri's tip texts, parity round 2, one-file drop; the "1-Bit" look label, vacant-labs 030d8d34; VX menus hover green)
+    GIT_TAG        9b652d6e17e87b4dc82d92ee1a35359023524a3a   # wavdesk fix/latch-owner-batch (the Latch round: chop cookies + tool log, one-pass chop wave, VX / Focused chop UI); wavdesk main (0.3.1, its vacant-labs pin a2990c99); wavdesk main (ExtWindow::macButtons, the scrolled rules cut to their column); wavdesk main (its vacant-labs pin 7895084e); wavdesk main (the Mac shell merged in) (macOS: the own bundle's coredist core, never the GUI itself; Command+Enter), on feat/native-shell (--setup's verbs under HKCU, not the HKLM root; the Manager --setup / --uninstall; the Latch hooks merged in: enqueue, thumbnail / fold-out hooks, the chop library, the row icons' gap, std-handle-only inheritance, drop / addOutput / Backspace / local lengths, chop folders / resume / channel split, region drag-out, video controls, ExtWindow tooltips + Tauri's tip texts, parity round 2, one-file drop; the "1-Bit" look label, vacant-labs 030d8d34; VX menus hover green)
     GIT_SUBMODULES ""
 )
 set(JSON_BuildTests OFF CACHE INTERNAL "")

@@ -22,6 +22,7 @@
 #include "skin.h"
 #include "ui_state.h"
 #include "window_place.h"
+#include <algorithm>
 #include <cstdlib>
 #include <filesystem>
 #include <thread>
@@ -151,6 +152,17 @@ void applySkin(const std::string& name) {
     wdn::look::setTextScale(1.0f);
 }
 
+// the text size as WAVdesk's (MainWindow::applyTextSize, its default 110 %): a look in the system font (Focused, Zen
+// Dark) zooms the whole window, so its 8 and 9 px words read as they do in WAVdesk; the pixel-font looks stay at 1
+void applyTextSize(Editor* ed) {
+    const double ts = std::clamp(wdn::settings::number("text_size", 1.10), 0.88, 1.60);
+    const double z = wdn::skin().font.system ? ts : 1.0;
+    ed->setBodyScales({z, 1.5 * z, 2 * z, 3 * z});
+    ed->setZoom(z);
+    if (!headless()) ed->refitToHost();
+    wdn::look::setLayoutZoom(z);
+}
+
 Editor* createEditor(vpf::gui::EditorHost& host) {
     wdn::dev::dropBinaryOverrides();   // (a packaged run: LATCH_EXE and the rest never reach the children)
     const bool quiet = headless();
@@ -176,6 +188,13 @@ Editor* createEditor(vpf::gui::EditorHost& host) {
         latch::registerSelf(core);
     }
     latch::log("core: " + (core.empty() ? std::string("(none of its own)") : core));
+    wdn::ext::setToolLog([](const std::string& line) { latch::log(line); });   // (each latch run and the yt-dlp line it runs)
+    {
+        const wdn::ext::CookiePrefs c = wdn::ext::cookiePrefsGet();
+        const int age = c.cookiesFromBrowser == "firefox" ? wdn::ext::firefoxCookieAgeDays() : -1;
+        latch::log("cookies: " + (c.cookiesFromBrowser.empty() ? std::string("no browser") : c.cookiesFromBrowser) +
+                   (age >= 0 ? " (its store last written " + std::to_string(age) + " days ago)" : "") + (c.cookiesFile.empty() ? "" : ", a cookies.txt"));
+    }
 
     // (macOS: the traffic lights hidden; the title strip draws its own Close and Minimize at its left in the Mac's order,
     // ExtWindow::macButtons, as WAVdesk's title bar; elsewhere at the right, as the Tauri window did)
@@ -190,6 +209,7 @@ Editor* createEditor(vpf::gui::EditorHost& host) {
     std::string skinName = vpf::standaloneArgValue("--skin");
     if (skinName.empty()) skinName = wdn::settings::text("skin", "dev");
     applySkin(skinName);
+    applyTextSize(ed);
 
     auto* app = ed->root().make<latch::LatchApp>();
     app->ownTips = true;   // (no main window to show the parts' tips: ExtWindow rests the pointer itself)
@@ -230,7 +250,8 @@ Editor* createEditor(vpf::gui::EditorHost& host) {
             return a == std::string::npos ? std::string() : d.substr(a, b - a + 1);
         };
         cw->onToast = [app](const std::string& t) { latch::log("toast: " + t); app->toast(t); };
-        const int W = wdn::LatchChopWindow::kWidth, H = wdn::LatchChopWindow::kHeight;
+        int W = wdn::LatchChopWindow::kWidth, H = wdn::LatchChopWindow::kHeight;
+        if (const char* sz = std::getenv("LATCH_CHOP_SIZE")) std::sscanf(sz, "%dx%d", &W, &H);   // (a dev run's scroll timing at a size)
         cw->bounds = {(app->bounds.w - W) / 2, (app->bounds.h - H) / 2, W, H};
         cw->onBoundsChanged();
         vpf::gui::PopupOptions o;
@@ -246,12 +267,21 @@ Editor* createEditor(vpf::gui::EditorHost& host) {
         cw->seed(seed);
     };
     app->onChop = openChop;
-    // (a headless run: LATCH_CHOP=<local file> opens it once the window is up, the screenshots' fixture)
-    if (const char* f = std::getenv("LATCH_CHOP"); f && *f && quiet) {
+    // (LATCH_CHOP=<local file or link> opens it once the window is up: the screenshots' fixture, a link's loading plate,
+    // and a dev run's scroll timing)
+    if (const char* f = std::getenv("LATCH_CHOP"); f && *f) {
         wdn::LatchChopSeed s;
-        s.localFile = f;
-        s.includeVideo = wdn::ext::isVideoPath(f);
-        s.title = std::filesystem::u8path(f).filename().u8string();
+        if (std::string(f).rfind("http", 0) == 0) {
+            s.url = f;
+            const wdn::ext::CookiePrefs c = wdn::ext::cookiePrefsGet();
+            s.cookiesFromBrowser = c.cookiesFromBrowser;
+            s.cookiesFile = c.cookiesFile;
+            s.title = f;
+        } else {
+            s.localFile = f;
+            s.includeVideo = wdn::ext::isVideoPath(f);
+            s.title = std::filesystem::u8path(f).filename().u8string();
+        }
         ed->uiQueue()->post([openChop, s] { openChop(s); });
     }
     // quitting: the chop session let go, then the engine, then the output. On a close the window is still up (it is
@@ -320,6 +350,7 @@ Editor* createEditor(vpf::gui::EditorHost& host) {
     // another look: applied at once, kept in settings.json
     app->onSkin = [app, about, settings, ed](const std::string& name) {
         applySkin(name);
+        applyTextSize(ed);
         wdn::settings::set("skin", name);
         app->skinName = name;
         app->onBoundsChanged();

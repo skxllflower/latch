@@ -7,6 +7,11 @@ non-obvious why. The commit body is the detail; this file is the skim layer.
 (formatting, ignore files) are exempt. Cross-repo rounds add a line in each repo they touched.
 Short hashes are optional and get backfilled; never block a commit on one.
 
+## 2026-11-05
+
+- About and Settings are icon buttons (an (i) and a gear); in VX Minimize sits beside Close instead of 11 px off it. Focused (and Zen Dark) zoom the window to WAVdesk's default text size (110 %): their 8 and 9 px words were too small to read.
+- latch.log now records every `latch` run, the yt-dlp command line it runs, the cookie source at launch with the age of Firefox's cookie store, and a failure's reason. The owner's bot wall: the cookies did reach yt-dlp (`--cookies-from-browser firefox`, now in the log), but every Google / YouTube sign-in cookie in Firefox's store had expired (February to March; the store was last written in April, Chrome being the default browser). The chop download now also passes a cookies.txt, and its error says to sign in again in Firefox.
+- WAVdesk's fixes for the chop window and the shared windows (its CHANGELOG, 2026-11-05) and vpf's partial popup paint: scrolling the chop waveform takes ~60 % of the paint time it did.
 ## 2026-11-04
 
 - **Version 0.1.9.** The Mac's buttons at the strip's left, 600 x 340, the look in Settings, the 1-Bit mark, the scrolled divider fixed (WAVdesk 9463b9e9).
