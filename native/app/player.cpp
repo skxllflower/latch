@@ -13,6 +13,7 @@
 #if defined(_WIN32)
 #include "win_spawn.h"
 #else
+#include <cerrno>
 #include <csignal>
 #include <fcntl.h>
 #include <spawn.h>
@@ -77,6 +78,10 @@ bool runPiped(const std::string& exe, const std::vector<std::string>& args, cons
 #else
     int fds[2];
     if (pipe(fds) != 0) return false;
+    // both ends close-on-exec (dup2 onto the child's stdout clears it there): any other child this process spawns no
+    // longer inherits the write end, which kept the pipe open past ffmpeg's exit
+    fcntl(fds[0], F_SETFD, FD_CLOEXEC);
+    fcntl(fds[1], F_SETFD, FD_CLOEXEC);
     posix_spawn_file_actions_t fa;
     posix_spawn_file_actions_init(&fa);
     posix_spawn_file_actions_adddup2(&fa, fds[1], 1);
@@ -85,7 +90,11 @@ bool runPiped(const std::string& exe, const std::vector<std::string>& args, cons
     posix_spawn_file_actions_addclose(&fa, fds[0]);
     posix_spawnattr_t at;
     posix_spawnattr_init(&at);
-    posix_spawnattr_setflags(&at, POSIX_SPAWN_SETPGROUP);   // (killChildProcesses's group)
+    short flags = POSIX_SPAWN_SETPGROUP;   // (killChildProcesses's group)
+#if defined(POSIX_SPAWN_CLOEXEC_DEFAULT)
+    flags |= POSIX_SPAWN_CLOEXEC_DEFAULT;   // (macOS: the child gets the three descriptors set here, nothing else of ours)
+#endif
+    posix_spawnattr_setflags(&at, flags);
     std::vector<std::string> all = {exe};
     all.insert(all.end(), args.begin(), args.end());
     std::vector<char*> argv;
@@ -97,16 +106,24 @@ bool runPiped(const std::string& exe, const std::vector<std::string>& args, cons
     posix_spawnattr_destroy(&at);
     close(fds[1]);
     if (rc != 0) { close(fds[0]); return false; }
-    fcntl(fds[0], F_SETFL, O_NONBLOCK);
+    fcntl(fds[0], F_SETFL, fcntl(fds[0], F_GETFL) | O_NONBLOCK);
     char buf[1 << 16];
+    bool exited = false;   // (reaped: its pid is no longer ours to signal)
     while (!stop) {
         const ssize_t got = read(fds[0], buf, sizeof buf);
         if (got > 0) { onData(buf, (size_t)got); continue; }
         if (got == 0) break;
+        if (errno == EINTR) continue;
+        if (errno != EAGAIN && errno != EWOULDBLOCK) break;
+        // the pipe empty: as on Windows, the process's exit with nothing left in it is the end (a late EOF aside)
+        if (exited) break;
+        if (waitpid(pid, nullptr, WNOHANG) == pid) { exited = true; continue; }   // (one more read drains what it wrote last)
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
-    kill(pid, SIGKILL);
-    waitpid(pid, nullptr, 0);
+    if (!exited) {
+        kill(pid, SIGKILL);
+        waitpid(pid, nullptr, 0);
+    }
     close(fds[0]);
 #endif
     return true;

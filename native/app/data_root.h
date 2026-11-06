@@ -32,7 +32,8 @@ bool setupRequested();
 // tools.rs provision_ytdlp / provision_ffmpeg: the installer's bundled yt-dlp.exe into Latch's managed bin
 // (%ProgramData%\Vacant Systems\Latch\bin) and ffmpeg.exe + ffprobe.exe into Shared\bin, each only when absent there
 // (never over a newer download). From <exe dir>/resources/{ytdlp,ffmpeg}; a build without them (the embedded
-// installer, a dev run) leaves the first extract to download them (the window shows that progress). Windows only.
+// installer, a dev run) leaves the first extract to download them (the window shows that progress). On a thread of its
+// own (joined at exit), each copied to a temp name and renamed into place, never over a tool already there. Windows only.
 void provisionBundled();
 
 // the yt-dlp / ffmpeg / ffprobe the core runs (paths.cpp resolve_binary): the Settings override (settings.json
