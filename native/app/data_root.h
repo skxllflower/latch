@@ -5,6 +5,12 @@
 namespace latch {
 
 std::string dataRoot();          // Latch's data folder, '/' separated (settings.json, native_ui.json)
+// true when dataRoot() is not the user's own (LATCH_DATA_ROOT, the runner's --data-dir): a scratch run's. Then
+// LATCH_DATA_ROOT is set to it for every child core, so their yt-dlp cache and temp stay in it (src/paths.cpp)
+bool dataRootOverridden();
+void exportDataRoot();
+// an environment variable as UTF-8 ("" unset): read wide on Windows (std::getenv answers in the ANSI code page)
+std::string envUtf8(const char* name);
 void setWritable(bool on);       // false: settings.json is never written (headless runs)
 bool isWritable();
 bool writeFileAtomic(const std::string& path, const std::string& text);   // (temp sibling, renamed over)

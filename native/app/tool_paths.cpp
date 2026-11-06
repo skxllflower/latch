@@ -26,16 +26,6 @@ std::string trimmed(std::string s) {
     return s;
 }
 
-std::string envOf(const char* var) {
-#if defined(_WIN32)
-    const wchar_t* w = _wgetenv(fs::u8path(var).wstring().c_str());
-    return w && *w ? fs::path(w).u8string() : std::string();
-#else
-    const char* v = std::getenv(var);
-    return v ? v : "";
-#endif
-}
-
 void setEnv(const char* var, const std::string& value) {
 #if defined(_WIN32)
     _wputenv_s(fs::u8path(var).wstring().c_str(), fs::u8path(value).wstring().c_str());   // ("" removes it)
@@ -73,7 +63,7 @@ std::string toolPath(const std::string& name, std::string* source) {
     if (name == "ffprobe")
         if (const std::string o = toolOverride("ffmpeg"); !o.empty() && isFile(fs::u8path(o).parent_path() / file))
             return found(fs::u8path(o).parent_path() / file, "override");
-    if (const std::string e = envOf(t.env); !e.empty() && isFile(fs::u8path(e))) return found(fs::u8path(e), "env");
+    if (const std::string e = envUtf8(t.env); !e.empty() && isFile(fs::u8path(e))) return found(fs::u8path(e), "env");
     if (const std::string core = ownCore(); !core.empty() && isFile(fs::u8path(core).parent_path() / file))
         return found(fs::u8path(core).parent_path() / file, "portable");
     const std::string shared = wdn::vendorSharedDir();

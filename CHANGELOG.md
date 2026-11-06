@@ -7,6 +7,12 @@ non-obvious why. The commit body is the detail; this file is the skim layer.
 (formatting, ignore files) are exempt. Cross-repo rounds add a line in each repo they touched.
 Short hashes are optional and get backfilled; never block a commit on one.
 
+## 2026-11-06
+
+- Native Latch: quitting with a link's chop regions staged but not exported asks first (WAVdesk's LatchChopWindow::confirmQuit), after the downloads prompt; the quit used to close the chop window and drop them silently. Needs the WAVdesk pin that adds confirmQuit.
+- Native Latch: Settings and About open centred on the main window as it is now (they were placed from its first size, at the top, over the title strip), and Settings opens tall enough for its whole body (the Clip export folder row was cut off).
+- A scratch data root (LATCH_DATA_ROOT, or --data-dir) now reaches the child latch core, whose yt-dlp cache and temp follow LATCH_DATA_ROOT, so a test run no longer writes into the real Latch folder. A dev run with no core built in the checkout logs that the registry's (installed) core runs instead. LATCH_DATA_ROOT / LATCH_CHOP are read wide on Windows (a non-ASCII path was mangled by the ANSI code page).
+
 ## 2026-11-05
 
 - Version 0.1.10: the fixes below; built on vacant-labs main af95bf99 and WAVdesk main b63fbc73 (its Latch chop fixes and button widths).

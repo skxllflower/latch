@@ -170,6 +170,13 @@ void SettingsWindow::layout() {
     g.scroll = std::clamp(g.scroll, 0, std::max(0, g.content - view.h));
 }
 
+int SettingsWindow::wantedHeight() {
+    changed();
+    const auto it = regions_.find("body");
+    const int content = it == regions_.end() ? 0 : it->second.content;
+    return std::clamp((int)kTitle + content, (int)kHeight, (int)kMaxHeight);
+}
+
 void SettingsWindow::act(const std::string& id, const vpf::gui::MouseEvent&) {
     if (id == "close") { if (onClose) onClose(); return; }
     if (id == "select:skin") {

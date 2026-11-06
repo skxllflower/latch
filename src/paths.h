@@ -21,6 +21,7 @@ std::string latch_bin_dir();
 // yt-dlp invocation as --cache-dir so its signature/token cache stays
 // inside the vendor folder instead of scattering to %LOCALAPPDATA%\yt-dlp.
 // Not pre-created; yt-dlp creates it on first use.
+// LATCH_DATA_ROOT, when set, replaces <vendor root>\Latch here and for latch_temp_dir.
 std::string ytdlp_cache_dir();
 
 // %LOCALAPPDATA%\Vacant Systems\Latch\tmp (created on demand) — scratch

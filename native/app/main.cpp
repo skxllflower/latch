@@ -163,11 +163,17 @@ void applyTextSize(Editor* ed) {
     wdn::look::setLayoutZoom(z);
 }
 
+// a window's height to open at: Settings' is its laid-out content (it grows with the look's text), any other its own
+int contentHeight(latch::SettingsWindow& w, int) { return w.wantedHeight(); }
+int contentHeight(wdn::ExtWindow&, int h) { return h; }
+
 Editor* createEditor(vpf::gui::EditorHost& host) {
     wdn::dev::dropBinaryOverrides();   // (a packaged run: LATCH_EXE and the rest never reach the children)
     const bool quiet = headless();
     latch::setWritable(!quiet);
     latch::logInit();
+    latch::exportDataRoot();   // (a scratch run's data root: the child cores' yt-dlp cache and temp follow it)
+    if (latch::dataRootOverridden()) latch::log("data root: " + latch::dataRoot());
     latch::provisionBundled();
     latch::applyToolEnv();
     wdn::ui_state::setEnabled(!quiet);   // (the checks start from the defaults and leave nothing behind)
@@ -188,6 +194,10 @@ Editor* createEditor(vpf::gui::EditorHost& host) {
         latch::registerSelf(core);
     }
     latch::log("core: " + (core.empty() ? std::string("(none of its own)") : core));
+    // (a dev run with no core built in this checkout and no LATCH_EXE: the children run whatever the registry names,
+    // usually the installed Latch's, which may be older than this checkout and ignore a scratch data root)
+    if (core.empty() && wdn::dev::devRun() && latch::envUtf8("LATCH_EXE").empty())
+        latch::log("dev run: no latch core in this checkout's build/ and no LATCH_EXE; the registry's core runs instead");
     wdn::ext::setToolLog([](const std::string& line) { latch::log(line); });   // (each latch run and the yt-dlp line it runs)
     {
         const wdn::ext::CookiePrefs c = wdn::ext::cookiePrefsGet();
@@ -251,7 +261,7 @@ Editor* createEditor(vpf::gui::EditorHost& host) {
         };
         cw->onToast = [app](const std::string& t) { latch::log("toast: " + t); app->toast(t); };
         int W = wdn::LatchChopWindow::kWidth, H = wdn::LatchChopWindow::kHeight;
-        if (const char* sz = std::getenv("LATCH_CHOP_SIZE")) std::sscanf(sz, "%dx%d", &W, &H);   // (a dev run's scroll timing at a size)
+        if (const std::string sz = latch::envUtf8("LATCH_CHOP_SIZE"); !sz.empty()) std::sscanf(sz.c_str(), "%dx%d", &W, &H);   // (a dev run's scroll timing at a size)
         cw->bounds = {(app->bounds.w - W) / 2, (app->bounds.h - H) / 2, W, H};
         cw->onBoundsChanged();
         vpf::gui::PopupOptions o;
@@ -269,9 +279,9 @@ Editor* createEditor(vpf::gui::EditorHost& host) {
     app->onChop = openChop;
     // (LATCH_CHOP=<local file or link> opens it once the window is up: the screenshots' fixture, a link's loading plate,
     // and a dev run's scroll timing)
-    if (const char* f = std::getenv("LATCH_CHOP"); f && *f) {
+    if (const std::string f = latch::envUtf8("LATCH_CHOP"); !f.empty()) {
         wdn::LatchChopSeed s;
-        if (std::string(f).rfind("http", 0) == 0) {
+        if (f.rfind("http", 0) == 0) {
             s.url = f;
             const wdn::ext::CookiePrefs c = wdn::ext::cookiePrefsGet();
             s.cookiesFromBrowser = c.cookiesFromBrowser;
@@ -303,10 +313,18 @@ Editor* createEditor(vpf::gui::EditorHost& host) {
         finish();
     };
 
-    // the close (the X, Alt+F4, Cmd+Q): asked first while downloading or updating, as WAVdesk's Latch window asks
-    ed->onCloseRequest = [ed, app, quit] {
-        if (!app->busy()) { quit(); return true; }
-        wdn::askConfirm(*ed, "Stop downloading?", "Closing Latch stops the downloads in progress.", "Stop and Close", [ed, quit] { quit(); ed->closeStandaloneWindow(); });
+    // the close (the X, Alt+F4, Cmd+Q): asked first while downloading or updating, as WAVdesk's Latch window asks; then a
+    // link's chop session with regions not yet exported asks too (LatchChopWindow::confirmQuit: its prompt, proceed on
+    // Close; false when there is nothing to ask)
+    ed->onCloseRequest = [ed, app, quit, chopWin, chopOpen] {
+        auto close = [ed, quit] { quit(); ed->closeStandaloneWindow(); };
+        auto askChop = [chopWin, chopOpen, close] { return chopOpen() && (*chopWin)->confirmQuit(close); };
+        if (!app->busy()) {
+            if (askChop()) return false;
+            quit();
+            return true;
+        }
+        wdn::askConfirm(*ed, "Stop downloading?", "Closing Latch stops the downloads in progress.", "Stop and Close", [askChop, close] { if (!askChop()) close(); });
         return false;
     };
     app->onClose = [ed, quit] { if (ed->closeRequested()) { quit(); ed->closeStandaloneWindow(); } };
@@ -323,7 +341,14 @@ Editor* createEditor(vpf::gui::EditorHost& host) {
         auto win = make();
         auto* raw = win.get();
         *slot = raw;
-        raw->bounds = {(latch::LatchApp::kWidth - w) / 2, 0, w, h};
+        raw->bounds = {0, 0, w, h};
+        raw->onBoundsChanged();
+        h = contentHeight(*raw, h);
+        // centred on the main window as it is now (it may have been resized), as the chop window and the dialogs are;
+        // openWindow keeps it on the main window's monitor. Headless, popups are drawn in the editor's canvas: kept in it
+        const vpf::gui::Rect m = ed->root().bounds;
+        const int x = (m.w - w) / 2, y = (m.h - h) / 2;
+        raw->bounds = ed->popupsEscape() ? vpf::gui::Rect{x, y, w, h} : vpf::gui::Rect{std::max(0, x), std::max(0, y), w, h};
         raw->onBoundsChanged();
         raw->onClose = [ed, raw, slot] { if (wdn::liveWindow(*ed, raw)) ed->closePopup(raw); *slot = nullptr; };
         vpf::gui::PopupOptions o;
