@@ -63,12 +63,29 @@ bool writeFileAtomic(const std::string& path, const std::string& text) {
     return true;
 }
 
+std::string envUtf8(const char* name) {
+#if defined(_WIN32)
+    const wchar_t* w = _wgetenv(fs::u8path(name).wstring().c_str());
+    return w && *w ? fs::path(w).u8string() : std::string();
+#else
+    const char* v = std::getenv(name);
+    return v ? v : "";
+#endif
+}
+
+namespace {
+bool g_overridden = false;
+}  // namespace
+
 // %LOCALAPPDATA%\Vacant Systems\Latch (the uninstaller's "delete app data" folder), ~/Library/Application
 // Support/Vacant Systems/Latch on the Mac; LATCH_DATA_ROOT another (a test's scratch folder), as is the runner's --data-dir
 std::string dataRoot() {
     static const std::string root = [] {
-        if (const char* d = std::getenv("LATCH_DATA_ROOT"); d && *d) return slashes(d);
-        if (const std::string d = vpf::dataFolderOverride(); !d.empty()) return slashes(d) + "/Vacant Systems/Latch";   // (a headless --data-dir)
+        if (const std::string d = envUtf8("LATCH_DATA_ROOT"); !d.empty()) { g_overridden = true; return slashes(d); }
+        if (const std::string d = vpf::dataFolderOverride(); !d.empty()) {   // (a headless --data-dir)
+            g_overridden = true;
+            return slashes(d) + "/Vacant Systems/Latch";
+        }
 #if defined(_WIN32)
         const wchar_t* la = _wgetenv(L"LOCALAPPDATA");
         const fs::path base = la && *la ? fs::path(la) : fs::path(L"C:\\Users\\Default\\AppData\\Local");
@@ -79,6 +96,17 @@ std::string dataRoot() {
 #endif
     }();
     return root;
+}
+
+bool dataRootOverridden() { dataRoot(); return g_overridden; }
+
+void exportDataRoot() {
+    if (!dataRootOverridden()) return;
+#if defined(_WIN32)
+    _wputenv_s(L"LATCH_DATA_ROOT", fs::u8path(dataRoot()).wstring().c_str());
+#else
+    ::setenv("LATCH_DATA_ROOT", dataRoot().c_str(), 1);
+#endif
 }
 
 void setWritable(bool on) { writable = on; }

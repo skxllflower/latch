@@ -9,8 +9,10 @@ namespace latch {
 
 class SettingsWindow : public wdn::ExtWindow {
 public:
-    static constexpr int kWidth = 460, kHeight = 440;
+    static constexpr int kWidth = 460, kHeight = 440, kMaxHeight = 720;
     SettingsWindow();
+    // the height that shows the whole body (laid out at its width), within kHeight..kMaxHeight; a taller one scrolls
+    int wantedHeight();
     bool onKey(const vpf::gui::KeyEvent& e) override;
     bool wantsShortcuts() const override { return true; }
     std::function<void()> onToolsChanged;   // (an override edited: the app hands it to the children it starts)

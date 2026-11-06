@@ -116,6 +116,20 @@ fs::path shared_root() {
 fs::path shared_bin_path() { return shared_root() / kSharedDir / "bin"; }
 fs::path latch_bin_path()  { return shared_root() / kLatchDir / "bin"; }
 
+// Latch's own per-user folder (the yt-dlp cache, the ladder's scratch):
+// LATCH_DATA_ROOT when set (the GUI's scratch data root, a headless run's
+// --data-dir, so a test never touches the real one), else the vendor root's.
+fs::path latch_data_path() {
+#ifdef _WIN32
+  const fs::path d = env_path(L"LATCH_DATA_ROOT");
+  if (!d.empty()) return d;
+#else
+  const char* d = std::getenv("LATCH_DATA_ROOT");
+  if (d && *d) return fs::path(d);
+#endif
+  return vendor_root() / kLatchDir;
+}
+
 std::string json_escape(const std::string& s) {
   std::string out;
   out.reserve(s.size() + 8);
@@ -221,11 +235,11 @@ std::string latch_bin_dir() {
 }
 
 std::string ytdlp_cache_dir() {
-  return path_to_utf8(vendor_root() / kLatchDir / "ytdlp-cache");
+  return path_to_utf8(latch_data_path() / "ytdlp-cache");
 }
 
 std::string latch_temp_dir() {
-  fs::path p = vendor_root() / kLatchDir / "tmp";
+  fs::path p = latch_data_path() / "tmp";
   std::error_code ec;
   fs::create_directories(p, ec);
   return path_to_utf8(p);
@@ -234,7 +248,7 @@ std::string latch_temp_dir() {
 void sweep_stale_temp() {
   namespace ch = std::chrono;
   std::error_code ec;
-  fs::path tmp = vendor_root() / kLatchDir / "tmp";
+  fs::path tmp = latch_data_path() / "tmp";
   if (!fs::exists(tmp, ec)) return;  // nothing ever created it: nothing to sweep
 
   // Latch\tmp is exclusively the ladder's rung-3 scratch; nothing else writes
