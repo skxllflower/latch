@@ -316,7 +316,14 @@ ClipResult clip(const std::string& input,
     // Genuine ffmpeg error line at -loglevel error. Keep a bounded tail.
     err_tail += line;
     err_tail += '\n';
-    if (err_tail.size() > 4000) err_tail.erase(0, err_tail.size() - 4000);
+    if (err_tail.size() > 4000) {
+      size_t cut = err_tail.size() - 4000;
+      // (never start inside a UTF-8 sequence: the stray continuation bytes
+      // made the error line invalid UTF-8)
+      while (cut < err_tail.size() &&
+             (static_cast<unsigned char>(err_tail[cut]) & 0xC0) == 0x80) ++cut;
+      err_tail.erase(0, cut);
+    }
   });
 
   if (was_cancelled()) {

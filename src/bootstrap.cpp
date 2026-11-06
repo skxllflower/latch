@@ -195,7 +195,7 @@ bool install_from_extract(const fs::path& extract_d, const std::string& filename
   }
   std::error_code ec;
   fs::path tmp = target;
-  tmp += ".tmp";
+  tmp += ".tmp-" + unique_token();
   fs::copy_file(found, tmp, fs::copy_options::overwrite_existing, ec);
   std::string install_err = ec ? ec.message() : std::string();
   if (!ec) {
@@ -212,6 +212,28 @@ bool install_from_extract(const fs::path& extract_d, const std::string& filename
     return false;
   }
   return true;
+}
+
+// Staging names are per process (unique_token), so two bootstraps at once
+// (two extracts, or a sibling app) never remove or truncate each other's
+// files. A run killed mid-download leaves its own; anything of ours older than
+// an hour can only be such an orphan.
+void sweep_stale_staging(const fs::path& dir) {
+  namespace ch = std::chrono;
+  const auto now = fs::file_time_type::clock::now();
+  std::error_code ec;
+  for (auto& e : fs::directory_iterator(dir, ec)) {
+    if (ec) break;
+    const std::string name = path_to_utf8(e.path().filename());
+    const bool ours = name.rfind("_ffmpeg_", 0) == 0 || name.rfind("_ffprobe_", 0) == 0 ||
+                      name.find(".tmp-") != std::string::npos ||
+                      name.find(".download-") != std::string::npos;
+    if (!ours) continue;
+    std::error_code fe;
+    const auto mtime = fs::last_write_time(e.path(), fe);
+    if (fe || now - mtime < ch::hours(1)) continue;
+    fs::remove_all(e.path(), fe);
+  }
 }
 
 }  // namespace
@@ -231,15 +253,15 @@ bool ensure_ffmpeg() {
   // Files. Staging lives in the same dir so the final rename is
   // same-volume (atomic).
   fs::path bin_dir   = path_from_utf8(shared_bin_dir());
+  sweep_stale_staging(bin_dir);
+  const std::string tok = unique_token();
 #ifdef _WIN32
-  fs::path zip_path  = bin_dir / "_ffmpeg_download.zip";
-  fs::path extract_d = bin_dir / "_ffmpeg_extract";
+  fs::path zip_path  = bin_dir / path_from_utf8("_ffmpeg_download-" + tok + ".zip");
+  fs::path extract_d = bin_dir / path_from_utf8("_ffmpeg_extract-" + tok);
   fs::path target    = bin_dir / "ffmpeg.exe";
   fs::path probe_tgt = bin_dir / "ffprobe.exe";
 
   std::error_code ec;
-  fs::remove(zip_path, ec);
-  fs::remove_all(extract_d, ec);
 
   const std::string url =
     "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/"
@@ -293,18 +315,14 @@ bool ensure_ffmpeg() {
   // which runs under Rosetta, or not at all on a Mac without it. Those are pinned
   // (martin-riedl.de build 1783011502_8.1.2, the build WAVdesk <= 0.1.9 bundled)
   // and checksum-verified; Intel Macs keep evermeet's latest.
-  fs::path ff_zip    = bin_dir / "_ffmpeg_download.zip";
-  fs::path fp_zip    = bin_dir / "_ffprobe_download.zip";
-  fs::path ff_ex     = bin_dir / "_ffmpeg_extract";
-  fs::path fp_ex     = bin_dir / "_ffprobe_extract";
+  fs::path ff_zip    = bin_dir / ("_ffmpeg_download-" + tok + ".zip");
+  fs::path fp_zip    = bin_dir / ("_ffprobe_download-" + tok + ".zip");
+  fs::path ff_ex     = bin_dir / ("_ffmpeg_extract-" + tok);
+  fs::path fp_ex     = bin_dir / ("_ffprobe_extract-" + tok);
   fs::path target    = bin_dir / "ffmpeg";
   fs::path probe_tgt = bin_dir / "ffprobe";
 
   std::error_code ec;
-  fs::remove(ff_zip, ec);
-  fs::remove(fp_zip, ec);
-  fs::remove_all(ff_ex, ec);
-  fs::remove_all(fp_ex, ec);
 
 #if defined(__aarch64__) || defined(__arm64__)
   const std::string ff_url =
@@ -396,10 +414,10 @@ bool ensure_ytdlp() {
   // the real path looking installed.
 #ifdef _WIN32
   fs::path target  = path_from_utf8(latch_bin_dir()) / "yt-dlp.exe";
+  sweep_stale_staging(target.parent_path());
   fs::path staging = target;
-  staging += ".download";
+  staging += path_from_utf8(".download-" + unique_token());
   std::error_code ec;
-  fs::remove(staging, ec);
 
   const std::string url =
     "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe";
@@ -434,10 +452,10 @@ bool ensure_ytdlp() {
   // The macOS build ships as a single standalone binary (yt-dlp_macos); save it
   // under the managed name, chmod + dequarantine, install via staging + rename.
   fs::path target  = path_from_utf8(latch_bin_dir()) / "yt-dlp";
+  sweep_stale_staging(target.parent_path());
   fs::path staging = target;
-  staging += ".download";
+  staging += path_from_utf8(".download-" + unique_token());
   std::error_code ec;
-  fs::remove(staging, ec);
 
   const std::string url =
     "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos";

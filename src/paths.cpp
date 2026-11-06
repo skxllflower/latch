@@ -2,6 +2,7 @@
 
 #include "process.h"
 
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -16,6 +17,8 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#else
+#include <unistd.h>
 #endif
 
 namespace latch {
@@ -30,6 +33,13 @@ fs::path path_from_utf8(const std::string& utf8) {
 }
 std::string path_to_utf8(const fs::path& p) {
   return utf16_to_utf8(p.wstring());
+}
+// An env var as a path, read wide: std::getenv answers in the ANSI code page,
+// so a profile like C:\Users\José came back mangled and every path under it
+// missed. Empty when unset or empty.
+fs::path env_path(const wchar_t* name) {
+  const wchar_t* v = _wgetenv(name);
+  return (v && *v) ? fs::path(v) : fs::path();
 }
 #else
 fs::path path_from_utf8(const std::string& utf8) { return fs::path(utf8); }
@@ -65,8 +75,8 @@ const char* ytdlp_name() {
 // across the Vacant Systems repos.
 fs::path vendor_root() {
 #ifdef _WIN32
-  const char* local = std::getenv("LOCALAPPDATA");
-  if (local) return path_from_utf8(local) / "Vacant Systems";
+  const fs::path local = env_path(L"LOCALAPPDATA");
+  if (!local.empty()) return local / "Vacant Systems";
   return fs::path("C:/Users/Public") / "Vacant Systems";  // fallback
 #elif defined(__APPLE__)
   const char* home = std::getenv("HOME");
@@ -95,8 +105,8 @@ constexpr const char* kLatchDir  = "latch";
 // the unelevated app. macOS/Linux keep the shared tree under the vendor root.
 fs::path shared_root() {
 #ifdef _WIN32
-  const char* pd = std::getenv("ProgramData");
-  if (pd) return path_from_utf8(pd) / "Vacant Systems";
+  const fs::path pd = env_path(L"ProgramData");
+  if (!pd.empty()) return pd / "Vacant Systems";
   return fs::path("C:/ProgramData") / "Vacant Systems";  // fallback
 #else
   return vendor_root();
@@ -148,11 +158,16 @@ std::string resolve_binary(const char* env_var, const char* name,
                            const fs::path& managed_dir) {
   std::error_code ec;
 
+#ifdef _WIN32
+  const fs::path p = env_path(utf8_to_utf16(env_var).c_str());
+  if (!p.empty() && fs::exists(p, ec)) return path_to_utf8(p);
+#else
   const char* env = std::getenv(env_var);
   if (env && *env) {
     fs::path p = path_from_utf8(env);
     if (fs::exists(p, ec)) return path_to_utf8(p);
   }
+#endif
 
   fs::path portable = path_from_utf8(exe_dir()) / name;
   if (fs::exists(portable, ec)) return path_to_utf8(portable);
@@ -175,6 +190,20 @@ void migrate_one(const char* name, const fs::path& managed_dir,
   }
 }
 
+}
+
+std::string unique_token() {
+  static std::atomic<unsigned> counter{0};
+  const auto t = std::chrono::steady_clock::now().time_since_epoch().count();
+#ifdef _WIN32
+  const unsigned long pid = GetCurrentProcessId();
+#else
+  const unsigned long pid = static_cast<unsigned long>(getpid());
+#endif
+  char buf[64];
+  std::snprintf(buf, sizeof(buf), "%lu-%u-%llx", pid, counter.fetch_add(1),
+                static_cast<unsigned long long>(t) & 0xffffffffull);
+  return buf;
 }
 
 std::string shared_bin_dir() {

@@ -36,6 +36,14 @@ std::string json_escape(const std::string& s) {
   return out;
 }
 
+// A JSON number (NaN / inf are not JSON, and nothing sent is near 1e15: 0).
+std::string number(double v, const char* fmt) {
+  if (!(v == v) || v > 1e15 || v < -1e15) v = 0.0;
+  char buf[64];
+  std::snprintf(buf, sizeof(buf), fmt, v);
+  return buf;
+}
+
 void emit(const std::string& json) {
   std::lock_guard<std::mutex> lock(g_emit_mutex);
   std::fputs(json.c_str(), stdout);
@@ -45,38 +53,27 @@ void emit(const std::string& json) {
 
 }
 
+// Every line is built as a std::string: a fixed snprintf buffer cut a long
+// escaped title / path / message mid-string (or mid-escape), and the GUI's
+// reader drops an invalid NDJSON line along with the event it carried.
 void progress_start(const std::string& url) {
-  char buf[2048];
-  std::snprintf(buf, sizeof(buf),
-    "{\"type\":\"start\",\"url\":\"%s\"}",
-    json_escape(url).c_str());
-  emit(buf);
+  emit("{\"type\":\"start\",\"url\":\"" + json_escape(url) + "\"}");
 }
 
 void progress_info(const std::string& title, double duration_s) {
-  char buf[2048];
-  std::snprintf(buf, sizeof(buf),
-    "{\"type\":\"info\",\"title\":\"%s\",\"duration_s\":%.3f}",
-    json_escape(title).c_str(), duration_s);
-  emit(buf);
+  emit("{\"type\":\"info\",\"title\":\"" + json_escape(title) +
+       "\",\"duration_s\":" + number(duration_s, "%.3f") + "}");
 }
 
 void progress_update(double percent,
                      const std::string& speed,
                      const std::string& eta) {
-  char buf[1024];
-  std::snprintf(buf, sizeof(buf),
-    "{\"type\":\"progress\",\"percent\":%.2f,\"speed\":\"%s\",\"eta\":\"%s\"}",
-    percent, json_escape(speed).c_str(), json_escape(eta).c_str());
-  emit(buf);
+  emit("{\"type\":\"progress\",\"percent\":" + number(percent, "%.2f") +
+       ",\"speed\":\"" + json_escape(speed) + "\",\"eta\":\"" + json_escape(eta) + "\"}");
 }
 
 void progress_done(const std::string& output) {
-  char buf[2048];
-  std::snprintf(buf, sizeof(buf),
-    "{\"type\":\"done\",\"output\":\"%s\"}",
-    json_escape(output).c_str());
-  emit(buf);
+  emit("{\"type\":\"done\",\"output\":\"" + json_escape(output) + "\"}");
 }
 
 void progress_cancelled() {
@@ -84,11 +81,7 @@ void progress_cancelled() {
 }
 
 void progress_error(const std::string& message) {
-  char buf[4096];
-  std::snprintf(buf, sizeof(buf),
-    "{\"type\":\"error\",\"message\":\"%s\"}",
-    json_escape(message).c_str());
-  emit(buf);
+  emit("{\"type\":\"error\",\"message\":\"" + json_escape(message) + "\"}");
 }
 
 void progress_log(const std::string& phase, const std::string& message) {

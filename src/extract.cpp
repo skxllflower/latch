@@ -92,6 +92,8 @@ AudioTarget audio_target_for(const std::string& fmt) {
 
 // Extension a raw stream copy can safely land in, keyed by ffprobe codec_name.
 // Empty = no clean copy container known, so the caller transcodes instead.
+// PCM keeps its bytes: little-endian in WAV, big-endian (an AIFF's) in AIFF;
+// it used to fall to MP3, a lossy copy of a lossless source.
 std::string copy_ext_for_codec(const std::string& codec) {
   if (codec == "aac" || codec == "alac") return "m4a";
   if (codec == "mp3")                    return "mp3";
@@ -99,7 +101,50 @@ std::string copy_ext_for_codec(const std::string& codec) {
   if (codec == "vorbis")                 return "ogg";
   if (codec == "flac")                   return "flac";
   if (codec == "ac3")                    return "ac3";
+  if (codec == "pcm_s16le" || codec == "pcm_s24le" || codec == "pcm_s32le" ||
+      codec == "pcm_u8"    || codec == "pcm_f32le" || codec == "pcm_f64le" ||
+      codec == "pcm_alaw"  || codec == "pcm_mulaw")
+    return "wav";
+  if (codec == "pcm_s16be" || codec == "pcm_s24be" || codec == "pcm_s32be" ||
+      codec == "pcm_f32be" || codec == "pcm_f64be" || codec == "pcm_s8")
+    return "aiff";
   return "";
+}
+
+// --audio-quality as yt-dlp's own -x would apply it (FFmpegExtractAudioPP):
+// 0..10 is VBR (0 = best), above 10 (or "128K") a bitrate in kbps. libopus has
+// no VBR scale, so 0..10 maps onto 256..64 kbps. Empty when the value does not
+// parse or the encoder takes none (flac, pcm).
+std::vector<std::string> quality_args(const std::string& encoder, const std::string& quality) {
+  std::string q = trim(quality);
+  if (!q.empty() && (q.back() == 'k' || q.back() == 'K')) q.pop_back();
+  double v = 0.0;
+  try {
+    size_t used = 0;
+    v = std::stod(q, &used);
+    if (used != q.size()) return {};
+  } catch (...) {
+    return {};
+  }
+  if (v < 0.0) return {};
+  const bool lossy = encoder == "libmp3lame" || encoder == "aac" ||
+                     encoder == "libopus" || encoder == "libvorbis";
+  if (!lossy) return {};
+  auto num = [](double x) { char b[32]; std::snprintf(b, sizeof(b), "%g", x); return std::string(b); };
+  if (v > 10.0) return {"-b:a", num(v) + "k"};
+  if (encoder == "libmp3lame") return {"-q:a", num(v)};
+  if (encoder == "libvorbis")  return {"-q:a", num(10.0 - v)};
+  if (encoder == "aac")        return {"-q:a", num(4.0 - 0.39 * v)};
+  return {"-b:a", num(256.0 - 19.2 * v) + "k"};
+}
+
+// The first regular file directly in `dir` (none: empty).
+fs::path first_file_in(const fs::path& dir) {
+  std::error_code ec;
+  for (auto& e : fs::directory_iterator(dir, ec)) {
+    if (e.is_regular_file(ec)) return e.path();
+  }
+  return fs::path();
 }
 
 std::string probe_audio_codec(const std::string& file) {
@@ -203,9 +248,9 @@ ExtractResult extract(const std::string& url,
     base.push_back("--force-keyframes-at-cuts");
   }
 
-  // Post-processing extras that only make sense when yt-dlp owns the output
-  // (video mode + audio rungs 1/2). Rung 3 extracts audio itself, so it omits
-  // them deliberately.
+  // Post-processing extras for video mode, where yt-dlp owns the output. Audio
+  // mode encodes locally: it asks yt-dlp for the tags and the thumbnail only and
+  // carries them into the file itself (below).
   std::vector<std::string> extras;
   if (!opts.audio_quality.empty()) {
     extras.push_back("--audio-quality");
@@ -491,18 +536,37 @@ ExtractResult extract(const std::string& url,
     progress_log("rung", std::string(kRung3) +
       ": downloading highest-quality audio source (-f bestaudio/best)");
 
+    // (the pid and a counter too: two extracts started in the same ms shared
+    // one dir, and the first to finish swept the other's download)
     auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::system_clock::now().time_since_epoch()).count();
     fs::path tempdir = path_from_utf8(latch_temp_dir()) /
-                       path_from_utf8("rungc-" + std::to_string(ms));
+                       path_from_utf8("rungc-" + std::to_string(ms) + "-" + unique_token());
     fs::remove_all(tempdir, ec);
     fs::create_directories(tempdir, ec);
     DirSweeper sweeper{tempdir};
 
     std::string temp_template = path_to_utf8(tempdir / "%(title)s.%(ext)s");
+    // The thumbnail lands in its own subfolder, so the media file stays the
+    // only file in tempdir (enumerated below).
+    const fs::path thumb_dir = tempdir / "thumb";
     std::vector<std::string> argv = base;
     argv.push_back("-o");
     argv.push_back(temp_template);
+    if (opts.embed_metadata) {
+      argv.push_back("--embed-metadata");   // (into the source: the ffmpeg pass maps it across)
+    }
+    if (touches_thumbnail) {
+      argv.push_back("-o");
+      argv.push_back("thumbnail:" + path_to_utf8(thumb_dir / "%(title)s.%(ext)s"));
+      argv.push_back("--write-thumbnail");
+      argv.push_back("--convert-thumbnails");
+      argv.push_back("png");
+      if (opts.crop_thumbnail) {
+        argv.push_back("--ppa");
+        argv.push_back("ThumbnailsConvertor+ffmpeg_o:-vf crop=ih:ih");
+      }
+    }
     argv.push_back("-f");
     argv.push_back("bestaudio/best");
     argv.push_back(url);
@@ -555,9 +619,29 @@ ExtractResult extract(const std::string& url,
       std::string codec = probe_audio_codec(path_to_utf8(video_path));
       std::string cext = copy_ext_for_codec(codec);
       if (!cext.empty()) { copy = true; tgt.ext = cext; }
+      else if (codec.rfind("pcm_", 0) == 0) { tgt = {"wav", {"-c:a", "pcm_s24le"}}; }  // (PCM no container takes as is: still lossless)
       else { tgt = audio_target_for("mp3"); }
     } else {
       tgt = audio_target_for(fmt);
+    }
+    if (!copy && !opts.audio_quality.empty() && tgt.codec_args.size() >= 2) {
+      std::vector<std::string> q = quality_args(tgt.codec_args[1], opts.audio_quality);
+      if (!q.empty()) {
+        tgt.codec_args.resize(2);   // (the encoder kept, its default quality replaced)
+        tgt.codec_args.insert(tgt.codec_args.end(), q.begin(), q.end());
+      } else {
+        progress_log("rung", "audio quality " + opts.audio_quality + " does not apply to " + tgt.ext);
+      }
+    }
+
+    // The thumbnail yt-dlp wrote (png; its original if the conversion failed).
+    // Cover art goes into the containers ffmpeg writes a picture into.
+    const fs::path thumb = touches_thumbnail ? first_file_in(thumb_dir) : fs::path();
+    const bool cover_ok = tgt.ext == "mp3" || tgt.ext == "m4a" || tgt.ext == "flac";
+    const bool cover = opts.embed_thumbnail && !thumb.empty() && cover_ok;
+    if (opts.embed_thumbnail && !cover) {
+      progress_log("rung", thumb.empty() ? std::string("no thumbnail to embed")
+                                         : "cover art not embedded: " + tgt.ext + " takes none here");
     }
 
     std::string stem = path_to_utf8(video_path.stem());
@@ -570,27 +654,39 @@ ExtractResult extract(const std::string& url,
     progress_log("rung", std::string(kRung3) + ": extracting audio via ffmpeg -> " +
       tgt.ext + (copy ? " (stream copy)" : " (transcode)"));
 
+    // -loglevel error: only real errors print, and the outcome is the exit code
+    // and the file. (Judging by output text failed any title with "Error" in
+    // it: ffmpeg prints the input and output names.)
     std::vector<std::string> fargv = {
       resolved_ffmpeg(),
-      "-hide_banner", "-nostdin", "-y",
+      "-hide_banner", "-nostdin", "-loglevel", "error", "-y",
       "-i", path_to_utf8(video_path),
-      "-vn", "-map", "0:a:0",
     };
+    if (cover) {
+      fargv.insert(fargv.end(), {"-i", path_to_utf8(thumb),
+                                 "-map", "0:a:0", "-map", "1:0",
+                                 "-c:v", "copy", "-disposition:v:0", "attached_pic"});
+    } else {
+      fargv.insert(fargv.end(), {"-vn", "-map", "0:a:0"});
+    }
     if (copy) {
       fargv.push_back("-c:a");
       fargv.push_back("copy");
     } else {
       for (const auto& a : tgt.codec_args) fargv.push_back(a);
     }
+    if (opts.embed_metadata) {
+      fargv.insert(fargv.end(), {"-map_metadata", "0"});
+      // (Ogg keeps its tags on the stream, not the file)
+      if (tgt.ext == "opus" || tgt.ext == "ogg") fargv.insert(fargv.end(), {"-map_metadata:s:a:0", "0:g"});
+    }
+    if (tgt.ext == "mp3" && (opts.embed_metadata || cover)) {
+      fargv.insert(fargv.end(), {"-id3v2_version", "3"});
+    }
     fargv.push_back(path_to_utf8(out_audio));
 
     std::deque<std::string> ff_tail;
-    bool ff_error = false;
     int frc = run_subprocess(fargv, [&](const std::string& line) {
-      if (line.find("Error") != std::string::npos ||
-          line.rfind("[error]", 0) == 0) {
-        ff_error = true;
-      }
       ff_tail.push_back(line);
       if (ff_tail.size() > 12) ff_tail.pop_front();
     });
@@ -600,7 +696,7 @@ ExtractResult extract(const std::string& url,
     std::error_code out_ec;
     const bool wrote = fs::exists(out_audio, out_ec) &&
                        fs::file_size(out_audio, out_ec) > 0;
-    if (frc != 0 || ff_error || !wrote) {
+    if (frc != 0 || !wrote) {
       std::string tail;
       for (auto it = ff_tail.rbegin(); it != ff_tail.rend(); ++it) {
         if (!it->empty()) { tail = *it; break; }
@@ -610,6 +706,24 @@ ExtractResult extract(const std::string& url,
       progress_log("rung", std::string(kRung3) + " extract failed: " + tail);
       progress_error("all download methods failed. audio extraction error: " + tail);
       return ExtractResult::DownloadFailed;
+    }
+
+    // The sidecar thumbnail beside the output, named as it is (yt-dlp's own
+    // --write-thumbnail layout); one already there is left alone.
+    if (opts.write_thumbnail && !thumb.empty()) {
+      fs::path side = out_audio;
+      side.replace_extension(thumb.extension());
+      std::error_code tec;
+      if (fs::exists(side, tec)) {
+        progress_log("rung", "thumbnail not written: " + path_to_utf8(side) + " exists");
+      } else {
+        fs::rename(thumb, side, tec);
+        if (tec) {
+          tec.clear();
+          fs::copy_file(thumb, side, tec);
+        }
+        if (tec) progress_log("rung", "thumbnail not written: " + tec.message());
+      }
     }
 
     progress_log("rung", std::string(kRung3) + " ok");

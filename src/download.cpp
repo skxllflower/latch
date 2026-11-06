@@ -149,6 +149,10 @@ bool download_with_progress(
 
   f.flush();
   if (!f) return false;
+  // A connection dropped mid-body ends the loop as cleanly as the real end
+  // does; without this a truncated binary got renamed into place as installed.
+  // (No decompression is enabled, so the body is exactly Content-Length bytes.)
+  if (total > 0 && done != total) return false;
   if (on_progress) on_progress(done, total);
   return true;
 }
