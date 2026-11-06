@@ -6,6 +6,7 @@
 #include "look.h"
 #include "skin.h"
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <thread>
@@ -251,7 +252,9 @@ void LatchApp::titleExtras(std::vector<El>& out, int& right) {
     const Style& t = skin().style("tool.titlebar");
     const int h = kTitle;
     if (!macButtons) {   // (macOS: ExtWindow draws it at the left, after the close)
-        const Rect r = wdn::look::stripButton({right - 28, 0, 28, h}, bounds.w, 1, h);
+        // (a look with raised squares (VX): its 17 px square 2 px left of the close's, not centred in a 28 px box beside it)
+        const bool squares = skin().sprite("popup.button") != nullptr && !wdn::look::thinStrips();
+        const Rect r = squares ? Rect{right + (28 - 17) / 2 - 2 - 19, 0, 19, h} : wdn::look::stripButton({right - 28, 0, 28, h}, bounds.w, 1, h);
         right = r.x;
         add(r, all, "app:minimize", true, [t](const Paint& p, const Rect& rr, bool hot) {
             if (wdn::look::spriteSquare(p, rr, "win:minimize", hot, false, t.mark)
@@ -262,18 +265,24 @@ void LatchApp::titleExtras(std::vector<El>& out, int& right) {
         tip("Minimize");   // (ExtractApp.tsx's title)
     }
     LatchWindow::titleExtras(out, right);
-    auto textButton = [&](const std::string& id, const std::string& text) {
-        const int w = measure(text, 8, false, 0.6f) + 14;
-        right -= w + 2;
+    // Settings and About as icon buttons the refresh's size: a gear and an (i), the look's own icons, else pixel ones
+    auto iconButton = [&](const std::string& id, const char* icon, const std::vector<std::string>& art, const char* tipText) {
+        right -= 20;
         const int bh = std::min<int>(18, h);
-        add({right, (h - bh) / 2, w, bh}, all, id, true, [t, text](const Paint& p, const Rect& rr, bool hot) {
-            if (hot) p.canvas.fillRect(p.dev(rr), skin().style("tool.button", wdn::SkinState::Hover).fill);
-            const wdn::look::TextScope ts(8, false, false, 0.6f);
-            wdn::look::text(p, rr.x + 7, wdn::look::baselineIn(p, rr.y, rr.h, true), text, hot ? t.ink : t.soft);
+        add({right, (h - bh) / 2, 18, bh}, all, id, true, [t, icon, art](const Paint& p, const Rect& rr, bool hot) {
+            const vpf::gui::Color c = hot ? t.ink : t.soft;
+            const double cx = rr.x + rr.w / 2.0, cy = rr.y + rr.h / 2.0;
+            if (wdn::look::namedIcon(p, cx, cy, std::string("menu:") + icon, 11, c)) return;
+            const int x0 = (int)std::lround(cx - art[0].size() / 2.0), y0 = (int)std::lround(cy - art.size() / 2.0);
+            for (size_t y = 0; y < art.size(); ++y)
+                for (size_t x = 0; x < art[y].size(); ++x)
+                    if (art[y][x] == '#') p.canvas.fillRect(p.dev({x0 + (int)x, y0 + (int)y, 1, 1}), c);
         });
+        tip(tipText);
     };
-    textButton("app:settings", "SETTINGS");   // (the look is chosen there: SettingsWindow)
-    textButton("app:about", "ABOUT");
+    iconButton("app:settings", "settings", {"...#.#...", ".#######.", ".##...##.", "##.....##", ".#.....#.", "##.....##", ".##...##.", ".#######.", "...#.#..."},
+               "Settings");   // (the look is chosen there: SettingsWindow)
+    iconButton("app:about", "info", {"..#####..", ".#.....#.", "#...#...#", "#.......#", "#...#...#", "#...#...#", "#...#...#", ".#.....#.", "..#####.."}, "About");
 }
 
 void LatchApp::act(const std::string& id, const vpf::gui::MouseEvent& e) {

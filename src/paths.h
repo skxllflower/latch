@@ -40,6 +40,11 @@ void sweep_stale_temp();
 // yt-dlp's (its yt_dlp_ejs inside), only ones no running yt-dlp holds, nothing else in %TEMP%. Windows; silent.
 void sweep_stale_ytdlp_unpacks();
 
+// A name fragment no other process (and no other call in this one) gets:
+// <pid>-<counter>-<clock>. For staging and scratch names two concurrent runs
+// share a folder for.
+std::string unique_token();
+
 // The ffmpeg binary to use. Resolution order:
 //   1. LATCH_FFMPEG env var (explicit override)
 //   2. ffmpeg.exe next to latch.exe (portable override)

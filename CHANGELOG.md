@@ -7,6 +7,14 @@ non-obvious why. The commit body is the detail; this file is the skim layer.
 (formatting, ignore files) are exempt. Cross-repo rounds add a line in each repo they touched.
 Short hashes are optional and get backfilled; never block a commit on one.
 
+## 2026-11-05
+
+- Native Latch: the first launch's copy of the bundled yt-dlp / ffmpeg / ffprobe runs off the UI thread (the window opens at once) and lands by temp name + rename, never over a tool already there, so a quit mid-copy can't leave a half binary that reads as installed. Mac Audition: ffmpeg's pipe is close-on-exec and the read loop also ends on the process's exit, so a sibling child holding the write end can't hang it.
+- Core audit fixes. A Windows profile with a non-ASCII name (C:\Users\José) works: LOCALAPPDATA, ProgramData and LATCH_YTDLP / LATCH_FFMPEG / LATCH_FFPROBE are read wide (std::getenv gave the ANSI code page, and every temp / cache / tool path missed). A title with "Error" in it no longer fails and deletes its download (the ffmpeg pass judged by output text, which names the files; now `-loglevel error`, exit code and the file). Audio mode honors Embed metadata, Embed / Save / Crop thumbnail (cover art into mp3 / m4a / flac, the PNG beside the file) and Audio quality (it was video mode only: audio is converted locally). With no format chosen, PCM stays lossless (WAV; AIFF's big-endian PCM as AIFF) instead of MP3. Two bootstraps or two extracts at once no longer share staging / scratch names (pid + counter), a truncated tool download fails instead of being installed, and long NDJSON lines are never cut into invalid JSON.
+- Pin WAVdesk 113d5077: buttons sized as their labels are drawn (1-Bit's bold capitals clipped the dialogs' buttons; the chop's Pitch / Discard / Chapters / Bring it back).
+- About and Settings are icon buttons (an (i) and a gear); in VX Minimize sits beside Close instead of 11 px off it. Focused (and Zen Dark) zoom the window to WAVdesk's default text size (110 %): their 8 and 9 px words were too small to read.
+- latch.log now records every `latch` run, the yt-dlp command line it runs, the cookie source at launch with the age of Firefox's cookie store, and a failure's reason. The owner's bot wall: the cookies did reach yt-dlp (`--cookies-from-browser firefox`, now in the log), but every Google / YouTube sign-in cookie in Firefox's store had expired (February to March; the store was last written in April, Chrome being the default browser). The chop download now also passes a cookies.txt, and its error says to sign in again in Firefox.
+- WAVdesk's fixes for the chop window and the shared windows (its CHANGELOG, 2026-11-05) and vpf's partial popup paint: scrolling the chop waveform takes ~60 % of the paint time it did.
 ## 2026-11-04
 
 - **Version 0.1.9.** The Mac's buttons at the strip's left, 600 x 340, the look in Settings, the 1-Bit mark, the scrolled divider fixed (WAVdesk 9463b9e9).
