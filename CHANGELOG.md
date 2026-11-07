@@ -8,6 +8,7 @@ non-obvious why. The commit body is the detail; this file is the skim layer.
 Short hashes are optional and get backfilled; never block a commit on one.
 
 ## 2026-11-06
+- Version 0.1.11: the Latch chop audit fixes below; built on vacant-labs main b6c228b2 and WAVdesk main 1bb3f191 (0.3.3).
 - Pins vacant-labs main 2c943a6c and WAVdesk main f076ea57: the Latch chop audit's fixes (no zero-length regions, a quit that asks about unexported regions, the bottom bar fitting its width, keys that work whatever has focus, VX icons, the pixel font's dot and dash).
 
 - Native Latch: quitting with a link's chop regions staged but not exported asks first (WAVdesk's LatchChopWindow::confirmQuit), after the downloads prompt; the quit used to close the chop window and drop them silently. Needs the WAVdesk pin that adds confirmQuit.
