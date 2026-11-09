@@ -27,6 +27,7 @@ LatchApp::LatchApp() {
     name = "latch-app";
 #if defined(__APPLE__)
     macButtons = true;   // (the Mac's close and minimize at the strip's left: ExtWindow::macButtons)
+    titleAtRight = true;   // (the owner's, 2026-11-09: the mark at the right end, the name, the chip, Settings, About)
 #endif
 }
 
@@ -246,7 +247,7 @@ void LatchApp::draw(const Paint& p) {
     wdn::look::text(p, r.x + 10, wdn::look::baselineIn(p, r.y, r.h, false), toast_, t.ink);
 }
 
-// right to left, left of the X (macOS: from the strip's right end): Minimize (not on macOS: ExtWindow's, at the left), the window's own refresh (latch update), Settings (the look is there), About
+// right to left, left of the X (macOS: left of the mark, name and chip at the strip's right end): Minimize (not on macOS: ExtWindow's, at the left), the window's own refresh (latch update), Settings (the look is there), About
 void LatchApp::titleExtras(std::vector<El>& out, int& right) {
     const Rect all{0, 0, bounds.w, bounds.h};
     const Style& t = skin().style("tool.titlebar");
@@ -264,7 +265,7 @@ void LatchApp::titleExtras(std::vector<El>& out, int& right) {
         });
         tip("Minimize");   // (ExtractApp.tsx's title)
     }
-    LatchWindow::titleExtras(out, right);
+    if (!titleAtRight) LatchWindow::titleExtras(out, right);
     // Settings and About as icon buttons the refresh's size: a gear and an (i), the look's own icons, else pixel ones
     auto iconButton = [&](const std::string& id, const char* icon, const std::vector<std::string>& art, const char* tipText) {
         right -= 20;
@@ -283,6 +284,7 @@ void LatchApp::titleExtras(std::vector<El>& out, int& right) {
     iconButton("app:settings", "settings", {"...#.#...", ".#######.", ".##...##.", "##.....##", ".#.....#.", "##.....##", ".##...##.", ".#######.", "...#.#..."},
                "Settings");   // (the look is chosen there: SettingsWindow)
     iconButton("app:about", "info", {"..#####..", ".#.....#.", "#...#...#", "#.......#", "#...#...#", "#...#...#", "#...#...#", ".#.....#.", "..#####.."}, "About");
+    if (titleAtRight) LatchWindow::titleExtras(out, right);   // (the yt-dlp update left of About)
 }
 
 void LatchApp::act(const std::string& id, const vpf::gui::MouseEvent& e) {
