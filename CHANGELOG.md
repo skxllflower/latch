@@ -9,6 +9,7 @@ Short hashes are optional and get backfilled; never block a commit on one.
 
 ## 2026-11-10
 
+- MIDI input: a keyboard plays the chop window's regions and pads (Etch's keymap and Pitch / Regions modes), as WAVdesk's chop does; Settings > MIDI picks the device (Auto takes the first plugged in, or Off). Before, standalone Latch opened no MIDI device at all, so its MIDI UI never heard a note.
 - Chop (via the WAVdesk / vacant-labs pins): drag a region's video out from the right half of its grip strip, the left half its audio, and the strip drawn as the Tauri chop's was; the queue row's scissors sit evenly between the source icon and the X.
 
 ## 2026-11-10

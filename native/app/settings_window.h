@@ -20,6 +20,9 @@ public:
     // and a pick handed to the app, which applies it and keeps it
     std::string skinName = "dev";
     std::function<void(const std::string& skin)> onSkin;
+    // the chop's MIDI input (chop_midi.h): what it is doing now, and a pick made here applied at once
+    std::function<std::string()> midiStatus;
+    std::function<void()> onMidiChanged;
 
 protected:
     std::string titleText() const override { return "Settings"; }

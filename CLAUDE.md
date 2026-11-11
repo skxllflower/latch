@@ -48,6 +48,9 @@ macOS (Developer ID signed + notarized DMG). Day-to-day development happens on t
   (the chop sidecars go under the data root, which follows it).
   A headless `wait` step does not tick: anything a tick drives (chop's deferred Play, drags) stalls until the next
   `ticks`, so time playback with `{"ticks":1},{"wait":16}` pairs, not one long wait.
+- MIDI (`app/chop_midi.*`): WAVdesk's `midi_input` (WinMM / CoreMIDI) compiled in; the device's notes go to the chop's
+  voices from the driver's thread as WAVdesk's `chopMidiDevice` (no sampler: an unmapped note is dropped). settings.json
+  `midiInput`: empty = the first input plugged in, `off`, or a name; listed again every 2 s. Headless runs open none.
 - Settings (`app/settings_window.*`): settings.json under the Tauri keys (ytdlpPath, ffmpegPath, lathePath,
   downloadDir, clipsDir); `tool_paths.cpp` turns the overrides into LATCH_* for the children. `tauri_import.cpp`
   reads the Tauri webview's localStorage (wd-latch-*) into native_ui.json once (flag `tauriImported`), then

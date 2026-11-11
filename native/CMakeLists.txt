@@ -75,7 +75,7 @@ set(LATCH_SHARED_SOURCES
     ${WD}/ui_state.cpp ${WD}/settings_store.cpp ${WD}/core_process.cpp ${WD}/dev_run.cpp
     ${WD}/menus.cpp ${WD}/context_menu.cpp ${WD}/commands.cpp)
 set(LATCH_APP_SOURCES app/main.cpp app/latch_app.cpp app/app_icon.cpp app/about_window.cpp app/host_stubs.cpp app/self_register.cpp app/setup_cli.cpp app/app_log.cpp
-    app/player.cpp app/tool_paths.cpp app/settings_window.cpp app/tauri_import.cpp app/audio_out.cpp app/thumbs.cpp)
+    app/player.cpp app/tool_paths.cpp app/settings_window.cpp app/tauri_import.cpp app/audio_out.cpp app/thumbs.cpp app/chop_midi.cpp)
 
 if(APPLE)
     set(LATCH_EXE_NAME Latch)        # (Latch.app, as the Tauri bundle was named)
@@ -101,12 +101,15 @@ if(WIN32)
     # the UTF-8 active code page: the CRT opens UTF-8 paths as such (the core binary's pair)
     target_sources(latch_gui PRIVATE app/latch_gui.manifest)
     target_compile_definitions(latch_gui PRIVATE UNICODE _UNICODE)
-    target_link_libraries(latch_gui PRIVATE shell32 ole32 urlmon)
+    target_link_libraries(latch_gui PRIVATE shell32 ole32 urlmon winmm)   # (winmm: the chop's MIDI input)
+    target_sources(latch_gui PRIVATE ${WD}/midi_input_win.cpp)
 elseif(APPLE)
     # the shell's macOS OS calls (context_menu.h's os::openPath and the rest: Finder, the window frames)
     target_sources(latch_gui PRIVATE ${WD}/os_shell_mac.mm)
     set_source_files_properties(${WD}/os_shell_mac.mm PROPERTIES COMPILE_OPTIONS -fobjc-arc)
-    target_link_libraries(latch_gui PRIVATE "-framework Foundation" "-framework AppKit" "-framework CoreServices" "-framework IOKit")
+    target_link_libraries(latch_gui PRIVATE "-framework Foundation" "-framework AppKit" "-framework CoreServices" "-framework IOKit"
+                                            "-framework CoreMIDI")   # (the chop's MIDI input)
+    target_sources(latch_gui PRIVATE ${WD}/midi_input_mac.cpp)
     # the latch CLI into the bundle after every build (app/bundle_core.cmake: Contents/MacOS/coredist/latch, re-signed);
     # LATCH_CORE_BINARY is the core's own build (the repo's build/, as tools/build-release-native-mac.sh makes it)
     set(LATCH_CORE_BINARY ${CMAKE_CURRENT_SOURCE_DIR}/../build/latch CACHE FILEPATH "The latch CLI Latch.app carries")

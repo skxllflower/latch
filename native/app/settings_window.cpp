@@ -1,4 +1,5 @@
 #include "settings_window.h"
+#include "chop_midi.h"
 #include "data_root.h"
 #include "external_tools.h"
 #include "look.h"
@@ -127,6 +128,22 @@ void SettingsWindow::layout() {
         y += 20 + 16;
     }
 
+    section("MIDI");
+    {
+        // (settings.json midiInput: "" the first input plugged in, "off", or a device; chop_midi.h)
+        std::vector<Opt> opts{{"", "Auto (the first plugged in)"}};
+        const std::string cur = wdn::settings::text(ChopMidi::kKey, "");
+        std::vector<std::string> names = ChopMidi::devices();
+        if (!cur.empty() && cur != "off" && std::find(names.begin(), names.end(), cur) == names.end()) names.push_back(cur);
+        for (const std::string& n : names) opts.push_back({n, n});
+        opts.push_back({"off", "Off"});
+        select(body, {x, y, std::min(fw, 260), 20}, "select:midi", opts, cur, true);
+        y += 24;
+        const std::string st = midiStatus ? midiStatus() : std::string();
+        label(body, x, y, "Plays the chop window's regions and pads from a MIDI keyboard. " + st + ".", 8, faint, false, false, fw);
+        y += 12 + 16;
+    }
+
     section("Tool paths");
     for (const std::string& l : wrap("Leave a field empty to auto-resolve. Set a path to override. The resolved path in use is shown under each field.", fw, 9)) {
         label(body, x, y, l, 9, faint);
@@ -182,6 +199,15 @@ void SettingsWindow::act(const std::string& id, const vpf::gui::MouseEvent&) {
     if (id == "select:skin") {
         if (!selectOpts_.count(id)) return;
         openSelectList(id, selectOpts_[id], skinName, [this](const std::string& v) { if (v != skinName && onSkin) onSkin(v); });
+        return;
+    }
+    if (id == "select:midi") {
+        if (!selectOpts_.count(id)) return;
+        openSelectList(id, selectOpts_[id], wdn::settings::text(ChopMidi::kKey, ""), [this](const std::string& v) {
+            if (v.empty()) wdn::settings::erase(ChopMidi::kKey); else wdn::settings::set(ChopMidi::kKey, v);
+            if (onMidiChanged) onMidiChanged();
+            changed();
+        });
         return;
     }
     auto setField = [this](const std::string& key, const std::string& v) {

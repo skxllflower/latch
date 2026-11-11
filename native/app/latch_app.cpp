@@ -194,6 +194,7 @@ void LatchApp::tick() {
     LatchWindow::tick();
     if (out_) out_->poll();
     wdn::ChopEngine::housekeeping();   // (a chop session left unshown 30 s closes; the caches trimmed)
+    if (onTick) onTick();
     if (playing()) {
         if (player_->poll() && player_->endedEmpty()) toast("This file did not play");
         repaint();

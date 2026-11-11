@@ -10,6 +10,7 @@
 #include "about_window.h"
 #include "audio_out.h"
 #include "chop_engine.h"
+#include "chop_midi.h"
 #include "latch_chop_window.h"
 #include "settings_window.h"
 #include "data_root.h"
@@ -237,6 +238,13 @@ Editor* createEditor(vpf::gui::EditorHost& host) {
     app->setAudio(out.get());
     app->wireHooks(ed->uiQueue());
 
+    // MIDI into the chop's voices (chop_midi.h): its device opened and kept as plugged in; a headless run opens none
+    static std::unique_ptr<latch::ChopMidi> midi;
+    if (!quiet) {
+        midi = std::make_unique<latch::ChopMidi>(ed->uiQueue());
+        app->onTick = [] { if (midi) midi->tick(vpf::gui::Editor::now()); };
+    }
+
     // the chop window (WAVdesk's app/mw_latch_chop.cpp): one, a second Chop re-seeds it
     if (!quiet) wdn::LatchChopWindow::sweepStale();
     auto chopWin = std::make_shared<wdn::LatchChopWindow*>(nullptr);
@@ -302,6 +310,8 @@ Editor* createEditor(vpf::gui::EditorHost& host) {
         if (*teardown) return;
         *teardown = true;
         app->stopAudition();
+        app->onTick = nullptr;
+        midi.reset();   // (the input closed before the voices it posts to)
         wdn::ChopEngine::shutdown();
         app->setAudio(nullptr);
         out.reset();
@@ -368,6 +378,8 @@ Editor* createEditor(vpf::gui::EditorHost& host) {
             w->onToolsChanged = [] { latch::applyToolEnv(); };
             w->skinName = app->skinName;
             w->onSkin = [app](const std::string& name) { if (app->onSkin) app->onSkin(name); };   // (the look: Settings' own row)
+            w->midiStatus = [] { return midi ? midi->status() : std::string("Off"); };
+            w->onMidiChanged = [] { if (midi) midi->tick(vpf::gui::Editor::now()); };
             return w;
         }, latch::SettingsWindow::kWidth, latch::SettingsWindow::kHeight);
     };

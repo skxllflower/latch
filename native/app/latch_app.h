@@ -25,7 +25,8 @@ public:
     static constexpr int kWidth = 600, kHeight = 340;
     LatchApp();
     std::function<void()> onAbout, onSettings;
-    std::function<void(const std::string& skin)> onSkin;   // (a look picked: the app applies it and keeps it)
+    std::function<void(const std::string& skin)> onSkin;
+    std::function<void()> onTick;   // (every tick: the chop's MIDI input, main.cpp)   // (a look picked: the app applies it and keeps it)
     std::string skinName = "dev";
 
     void toast(const std::string& message);
