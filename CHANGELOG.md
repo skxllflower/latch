@@ -7,6 +7,10 @@ non-obvious why. The commit body is the detail; this file is the skim layer.
 (formatting, ignore files) are exempt. Cross-repo rounds add a line in each repo they touched.
 Short hashes are optional and get backfilled; never block a commit on one.
 
+## 2026-11-10
+
+- Version 0.1.12: the 2026-11-09 fixes below; built on vacant-labs main 03edbae5 and WAVdesk main f9c3f1cb (0.3.5).
+
 ## 2026-11-09
 
 - macOS title strip: close and minimize stay at the left; from the right end now the Latch mark, LATCH, the link chip, Settings, About, then the yt-dlp update button.
