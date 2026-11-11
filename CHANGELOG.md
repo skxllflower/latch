@@ -9,6 +9,7 @@ Short hashes are optional and get backfilled; never block a commit on one.
 
 ## 2026-11-10
 
+- Version 0.1.13: the chop round below. Pins vacant-labs main 04631240 (Etch 0.1.5) and WAVdesk main c9d5b709 (0.3.6).
 - Chop (via the WAVdesk pin):
   - Loop gestures as Tauri's: an edge past the playhead restarts the loop mid-drag, the playhead hides while a region's wall moves during playback, and a click outside the looping region while it plays drops the loop and plays the file from there.
   - The looped region follows its edits while playing (resize, move, nudge; an edge past the playhead restarts it at the start), picking another region while playing swaps the loop, and Play / Space after a Stop loops the region again instead of the whole file.
