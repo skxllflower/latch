@@ -10,6 +10,7 @@ Short hashes are optional and get backfilled; never block a commit on one.
 ## 2026-11-10
 
 - Chop (via the WAVdesk pin):
+  - The looped region follows its edits while playing (resize, move, nudge; an edge past the playhead restarts it at the start), picking another region while playing swaps the loop, and Play / Space after a Stop loops the region again instead of the whole file.
   - Drags at a changed speed and video drags start instantly: each region's clip is pre-rendered in the background, as Tauri's were.
   - The grip strip's audio half drags at the session's speed.
   - The transports are on the panes as in Tauri: play / stop / resume over the waveform, VideoView's bar (scrub, frame step, time, IN / OUT, loop, speed, level, fullscreen) on the picture.
