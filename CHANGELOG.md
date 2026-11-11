@@ -9,6 +9,10 @@ Short hashes are optional and get backfilled; never block a commit on one.
 
 ## 2026-11-10
 
+- Chop (via the WAVdesk / vacant-labs pins): drag a region's video out from the right half of its grip strip, the left half its audio, and the strip drawn as the Tauri chop's was; the queue row's scissors sit evenly between the source icon and the X.
+
+## 2026-11-10
+
 - Version 0.1.12: the 2026-11-09 fixes below; built on vacant-labs main 03edbae5 and WAVdesk main f9c3f1cb (0.3.5).
 
 ## 2026-11-09
