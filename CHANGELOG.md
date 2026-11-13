@@ -7,6 +7,10 @@ non-obvious why. The commit body is the detail; this file is the skim layer.
 (formatting, ignore files) are exempt. Cross-repo rounds add a line in each repo they touched.
 Short hashes are optional and get backfilled; never block a commit on one.
 
+## 2026-11-13
+
+- Version 0.1.15: built on vacant-labs main ee9f79a8 (Etch 0.1.6) and WAVdesk main f438f5ef (0.3.8), so Latch's chop window carries the palette x chop rounds 1 to 8 (PRE / POST fades and clip gain, Speed before the live plugins, the render host, the picture following a Stretch / Pitch / Reverse).
+
 ## 2026-11-11
 
 - Version 0.1.14: built on vacant-labs main d759f125 and WAVdesk main 15ec9ca7 (0.3.7), so Latch's copy of WAVdesk's shared windows and chop library matches 0.3.7.
