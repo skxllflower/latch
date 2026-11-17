@@ -7,6 +7,10 @@ non-obvious why. The commit body is the detail; this file is the skim layer.
 (formatting, ignore files) are exempt. Cross-repo rounds add a line in each repo they touched.
 Short hashes are optional and get backfilled; never block a commit on one.
 
+## 2026-11-17
+
+- Version 0.1.16: built on vacant-labs main a8d08ff8 (Etch 0.1.7) and WAVdesk main 1b9e877e (0.3.9), so Latch's copy of WAVdesk's shared windows, menus and skins matches 0.3.9.
+
 ## 2026-11-16
 
 - The Mac icon (gui/src-tauri/icons/icon.icns) sits on Apple's icon grid: an 824 px rounded tile in the 1024 px canvas, as the manager's and Etch's, so the suite's icons are one size in the Dock (it filled the whole canvas and looked larger than theirs). Windows' icon is unchanged.
