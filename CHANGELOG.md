@@ -9,6 +9,7 @@ Short hashes are optional and get backfilled; never block a commit on one.
 
 ## 2026-11-17
 
+- Version 0.1.17: built on WAVdesk main 6353fde5 (0.3.10), so Latch's copy of WAVdesk's shared code carries the settings listener crash fix and the disk-truth relisting.
 - Version 0.1.16: built on vacant-labs main a8d08ff8 (Etch 0.1.7) and WAVdesk main 1b9e877e (0.3.9), so Latch's copy of WAVdesk's shared windows, menus and skins matches 0.3.9.
 
 ## 2026-11-16
