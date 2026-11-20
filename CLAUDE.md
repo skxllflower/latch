@@ -4,7 +4,7 @@ Standalone media downloader (yt-dlp front-end) + clip chopper. Tauri v2: React/V
 (`gui/src`), Rust host (`gui/src-tauri`), C++ helper (`src/`, the `latch` CLI: probe/expand/download).
 Being replaced by a native vpf GUI (`native/`, branch `feat/native-vpf`, Windows first; see "Native GUI" below).
 Fork-and-owned from WAVdesk scaffolding; also embedded inside WAVdesk as the Latch window.
-Owner: skxllflower. Default branch: `master` (NOT main). Version 0.1.8. Ships on Windows (NSIS) and
+Owner: skxllflower. Default branch: `master` (NOT main). Version 0.1.8. Ships on Windows (a Vacant Systems Manager zip) and
 macOS (Developer ID signed + notarized DMG). Day-to-day development happens on the Mac.
 
 ## Build / run
@@ -56,19 +56,17 @@ macOS (Developer ID signed + notarized DMG). Day-to-day development happens on t
   reads the Tauri webview's localStorage (wd-latch-*) into native_ui.json once (flag `tauriImported`), then
   deletes `%LOCALAPPDATA%\com.vacantsystems.latch`; a dev run skips it unless LATCH_TAURI_IMPORT is set.
 - Manager install (vacant-labs apps/manager/docs/app-contract.md): `app/setup_cli.cpp` handles `--setup`, the three
-  `--uninstall` forms and `--test-root` before main (no window, no hand-off), mirroring latch.nsi's Install / Uninstall
-  sections: change both together. Test only with `--test-root` (HKCU test key, shortcuts under the root).
+  `--uninstall` forms and `--test-root` before main (no window, no hand-off), the only setup since the NSIS installer
+  was retired (2026-11-20; same keys, so its installs set up in place). Test only with `--test-root` (HKCU test key, shortcuts under the root).
 - Not yet: no Mac build.
 - Dev: `cmake -S native -B native/build -A x64 -DFETCHCONTENT_SOURCE_DIR_WAVDESK=<wavdesk checkout>`
   then `cmake --build native/build --config Release` -> `native/build/bin/Release/latch-gui.exe`.
   A dev run (exe in a build tree) uses the repo's `build/Release/latch.exe` via LATCH_EXE and does not
   self-register; an installed run uses `<exe>/coredist/latch.exe` and registers it in registry.json.
   Headless (`--steps`, `--screenshot`) runs write nothing and never hand off to a running window.
-- Release (Windows): `& .\tools\build-release-native.ps1` -> `native/build-release/Latch_<ver>_x64-setup.exe`
-  (standalone: bundles yt-dlp + ffmpeg) and `native/build-release/embedded/` (no ffmpeg: the copy WAVdesk
-  ships), both from `native/installer/latch.nsi` (the Tauri install folder, uninstall key and exe name);
-  with `-Publish` also copied to `gui/src-tauri/target/release/bundle/nsis{,-embedded}/`, where WAVdesk's
-  release takes the newest (without it the Tauri installers there stay what WAVdesk ships).
+- Release (Windows): `& .\tools\build-release-native.ps1` -> the manager's
+  `native/build-release/manager/Latch-<ver>-win-x64.zip` (yt-dlp bundled, no ffmpeg: the suite's Shared\bin copy,
+  fetched on first run). No standalone installer since 2026-11-20: the manager installs it (also as WAVdesk's companion).
 - Data: `%LOCALAPPDATA%\Vacant Systems\Latch` (settings.json: the Tauri keys + `skin`; native_ui.json:
   the window's settings under the Tauri localStorage key names; logs/latch.log).
 

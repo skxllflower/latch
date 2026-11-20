@@ -7,6 +7,10 @@ non-obvious why. The commit body is the detail; this file is the skim layer.
 (formatting, ignore files) are exempt. Cross-repo rounds add a line in each repo they touched.
 Short hashes are optional and get backfilled; never block a commit on one.
 
+## 2026-11-20
+
+- Windows releases are Vacant Systems Manager zips only: native/installer/latch.nsi and its standalone / embedded installers are retired (the manager installs Latch, alone or as WAVdesk's companion; `latch-gui --setup` does the rest under the installer's keys, so its installs update in place).
+
 ## 2026-11-17
 
 - Version 0.1.17: built on WAVdesk main 6353fde5 (0.3.10), so Latch's copy of WAVdesk's shared code carries the settings listener crash fix and the disk-truth relisting.

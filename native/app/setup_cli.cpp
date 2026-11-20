@@ -1,6 +1,6 @@
-// The manager's install contract (vacant-labs apps/manager/docs/app-contract.md, sections 3 to 5): what
-// native/installer/latch.nsi's Install and Uninstall sections do, from the app itself, so Vacant Systems Manager can
-// install Latch from a zip. Keep the two in step (same keys, same values, same folders).
+// The manager's install contract (vacant-labs apps/manager/docs/app-contract.md, sections 3 to 5): Latch sets itself
+// up, so Vacant Systems Manager can install it from a zip. The only setup since the NSIS installer was retired
+// (2026-11-20): its keys, values and folders are the installer's, so a copy that installer put in place is set up again.
 //
 //   latch-gui --setup [--test-root R]                          after the manager swaps the folder in (elevated, quiet)
 //   latch-gui --uninstall --quiet --keep-files [--test-root R] the manager's remove: what --setup made, not the folder
@@ -32,7 +32,7 @@ namespace latch {
 
 namespace {
 
-// (latch.nsi's defines. Every name a compile-time constant, never a std::wstring global: WAVdesk once ran its setup from
+// (the retired installer's names. Every name a compile-time constant, never a std::wstring global: WAVdesk once ran its setup from
 // a static initializer before its string key globals were built, and the empty keys opened the HKLM root itself)
 const wchar_t* const kProduct = L"Latch";
 const wchar_t* const kExe = L"latch-gui.exe";
